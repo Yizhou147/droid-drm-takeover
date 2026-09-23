@@ -1,0 +1,11 @@
+[Unit]
+Description=plasma-keyboard PC-layout combo key injector (uinput)
+After=systemd-udevd.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/pc-keyd.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

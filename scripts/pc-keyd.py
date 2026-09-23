@@ -82,8 +82,36 @@ class H(BaseHTTPRequestHandler):
         self.send_response(404); self.end_headers()
     def log_message(self, *a): pass
 
+def _expose_devnode():
+    """容器里没有 udevd：手动补 /dev/input/eventNN 节点 + udev 数据库记录，
+    否则 kwin(libinput) 看不见这个虚拟键盘（09-23 DRM 侧实锤）。"""
+    import re, time
+    time.sleep(0.3)
+    try:
+        txt = open("/proc/bus/input/devices").read()
+        m = re.search(r'Name="plasma-keyboard-pc".*?Handlers=event(\d+)', txt, re.S)
+        if not m: return
+        ev = "event" + m.group(1)
+        dev = open("/sys/class/input/%s/dev" % ev).read().strip()  # "13:80"
+        minor = int(dev.split(":")[1])
+        node = "/dev/input/" + ev
+        if not os.path.exists(node):
+            os.mknod(node, 0o666 | 0o020000, os.makedev(13, minor))
+        data = "/run/udev/data/c13:%d" % minor
+        with open(data, "w") as f:
+            f.write("Q:100\n"
+                    "E:DEVPATH=/devices/virtual/input/%s\n"
+                    "E:MAJOR=13\nE:MINOR=%d\nE:SUBSYSTEM=input\n"
+                    "E:DEVNAME=input/%s\nE:ID_INPUT=1\nE:ID_INPUT_KEY=1\n"
+                    "E:ID_INPUT_KEYBOARD=1\nE:LIBINPUT_DEVICE_GROUP=11/1/1:plasma-keyboard-pc\n"
+                    "H:uaccess\nH:seat\n" % (ev, minor, ev))
+        sys.stderr.write("exposed %s c13:%d\n" % (node, minor))
+    except OSError as e:
+        sys.stderr.write("expose failed (need root?): %s\n" % e)
+
 if __name__ == "__main__":
     _open_kb()
+    _expose_devnode()
     srv = HTTPServer(("127.0.0.1", 48222), H)
     sys.stderr.write("pc-keyd up\n"); sys.stderr.flush()
     srv.serve_forever()
