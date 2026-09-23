@@ -42,7 +42,9 @@ kill_desktop() {
     pkill -9 -f "plasma-keyboard"
     pkill -9 -f "xdg-desktop-portal"
     pkill -9 -f "dmesg-harvester.sh"
-    pkill -9 -f "/root/desk-wifi.conf"
+    pkill -9 -f 'wpa_supplicant.*desk-wifi'
+    pkill -9 -f "nm-drm.conf"
+    pkill -x NetworkManager
     pkill -9 -x dhcpcd
 }
 for i in 1 2 3; do
@@ -60,7 +62,13 @@ if [ -n "$ALIVE" ]; then
     sleep 2
 fi
 
-# ---- 2) 释放 wlan0 + 解锁 + 拉起安卓全家 ----
+# ---- 2) 释放 wlan0 + 还原接管期动过的路由 + 拉起安卓全家 ----
+pkill -x NetworkManager 2>/dev/null
+ip -4 addr flush dev wlan0 2>/dev/null
+if [ -f /run/desk-ip-rules.bak ]; then
+    # desk-takeover 的 NM 段 flush 过 rule；原样还原，netd 回来会补建自己的规则
+    ip rule flush; ip rule restore < /run/desk-ip-rules.bak && echo "ip-rule restored from bak"
+fi
 ip link set wlan0 down 2>/dev/null
 run "echo qoderdbg > /sys/power/wake_unlock"
 run "setprop ctl.start system_suspend; setprop ctl.start vendor.qti.hardware.display.composer; start"

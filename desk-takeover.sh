@@ -44,7 +44,9 @@ kill_linux_stack() {
     pkill -9 -f "kactivitymanagerd" 2>/dev/null
     pkill -9 -f "plasma-keyboard" 2>/dev/null
     pkill -9 -f "dmesg-harvester.sh" 2>/dev/null
-    pkill -f "$WIFI_CONF" 2>/dev/null
+    pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
+    pkill -f "nm-drm.conf" 2>/dev/null
+    pkill -x NetworkManager 2>/dev/null
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
     sleep 1
@@ -177,7 +179,62 @@ touch $DIR/takeover.ok
 $DIR/bin/setbright 2048 > /dev/null 2>&1
 echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
 
-# ---- 5) 容器接管 WiFi（桌面已在屏上，网络是第二条腿） ----
+# ---- 5) 容器接管 WiFi：NetworkManager 模式（DRM 桌面设置里可直接点热点、密码持久化） ----
+# 备份安卓策略路由后再动 rule——netd 已死没人管；desk-stop 会原样还原再 start。
+ip rule save > /run/desk-ip-rules.bak 2>/dev/null
+pkill -9 -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
+pkill -x dhcpcd 2>/dev/null
+if command -v NetworkManager >/dev/null 2>&1; then
+    ip link set wlan0 down; sleep 1; ip link set wlan0 up
+    # 安卓把 main 表摘了、全塞 fwmark→1015，NM 的 DHCP 不吃这套 → 恢复内核标准三表
+    ip rule flush
+    ip rule add pref 0 table local        2>/dev/null
+    ip rule add pref 100 table main       2>/dev/null
+    ip rule add pref 32766 table default  2>/dev/null
+    ip -4 addr flush dev wlan0 2>/dev/null
+    cat > /run/nm-drm.conf <<'EOF'
+[main]
+plugins=keyfile
+[connectivity]
+uri=
+[keyfile]
+unmanaged-devices=except:type:wifi
+EOF
+    mkdir -p /run/NetworkManager
+    nohup NetworkManager --config /run/nm-drm.conf --no-daemon > $LOGD/nm-drm.log 2>&1 &
+    for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
+    # 首轮引导：连上当前 SSID 即自动落 keyfile(0600)，以后开机自连、plasma-nm 可改
+    if [ -n "$CUR_SSID" ] && [ -n "$CUR_PSK" ]; then
+        nmcli -g NAME connection list 2>/dev/null | grep -qxF "$CUR_SSID" \
+            || nohup nmcli device wifi connect "$CUR_SSID" password "$CUR_PSK" >> $LOGD/nm-drm.log 2>&1 &
+    fi
+    OK=0
+    for i in $(seq 1 40); do
+        [ "$(nmcli -t -f DEVICE,STATE device status wlan0 2>/dev/null | cut -d: -f2)" = "connected" ] && { OK=1; break; }
+        sleep 1
+    done
+    if [ "$OK" = 1 ]; then
+        echo "WIFI-ASSOC OK (NM) $(date +%T)"
+        NET=0
+        for i in 1 2 3; do
+            ping -c 2 -W 2 223.5.5.5 >/dev/null 2>&1 && { NET=1; break; }
+            sleep 2
+        done
+        if [ "$NET" = 1 ]; then
+            echo "NET-TAKEOVER OK (NM) $(date +%T)"
+        else
+            echo "--- egress diagnosis (NM) ---"
+            ip route show; nmcli device show wlan0 | head -20
+            echo "NET-EGRESS-FAIL (NM) $(date +%T): desktop kept"
+        fi
+    else
+        echo "--- NM diagnosis ---"
+        nmcli device status 2>&1 | head -5
+        tail -n 20 $LOGD/nm-drm.log
+        echo "NET-FAILED (NM) $(date +%T): desktop kept, NO network"
+    fi
+else
+# ---- 5L) legacy 手管段（NM 未安装时的 fallback，原 wpa+dhcpcd+表1015 方案） ----
 if [ -f "$WIFI_GEN" ] || [ -f "$WIFI_CONF" ]; then
 [ -f "$WIFI_GEN" ] && WIFI_CONF="$WIFI_GEN"
 pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
@@ -241,6 +298,7 @@ fi
 fi
 else
     echo "NET-SKIPPED $(date +%T): 无可用 wifi 配置(安卓 SSID/PSK 没读到)，只起桌面"
+fi
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
