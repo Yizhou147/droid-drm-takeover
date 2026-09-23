@@ -14,7 +14,6 @@ import QtQuick.Layouts
 import QtQuick.VirtualKeyboard
 import QtQuick.VirtualKeyboard.Components
 import org.kde.plasma.keyboard
-import org.kde.kirigami as Kirigami
 
 KeyboardLayout {
     id: pcRoot
@@ -43,9 +42,8 @@ KeyboardLayout {
 
     // 粘滞修饰键：普通 Key 面板（40px 小字 + MixedCase 首字母大写，靠 Breeze
     // functionKey 补丁与 uppercased:false）。
-    // v8.2 点亮态修正：Breeze 的 highlightedKeyBackgroundColor 与 normal 同色，
-    // 且原生横条用 textColor（和键文字同色、极细）→ 完全看不出。改为自绘：
-    // 半透明高亮底铺满内层背景 + 一根加粗高对比底部条，用 Kirigami highlightColor。
+    // v8.3 点亮态：Breeze highlighted 与 normal 同色 + 原条半透明 → 看不出。
+    // 改实心黑底条：整键铺一层淡黑底表示按下态，底部一根不透明纯黑粗条。
     component ModeButton: Key {
         property bool mode
         key: Qt.Key_unknown
@@ -53,14 +51,13 @@ KeyboardLayout {
         noKeyEvent: true
         uppercased: false
         onClicked: mode = !mode
-        // 内层可视背景（对齐 BreezeKeyPanel 的 keyBackgroundMargin 内缩）
         Rectangle {
             id: modeTint
             anchors.fill: parent
             anchors.margins: BreezeConstants.keyBackgroundMargin
             radius: BreezeConstants.buttonRadius
-            color: Kirigami.Theme.highlightColor
-            opacity: 0.30
+            color: "#000000"
+            opacity: 0.18
             visible: parent.mode
         }
         Rectangle {
@@ -68,10 +65,10 @@ KeyboardLayout {
             anchors.bottom: modeTint.bottom
             anchors.horizontalCenter: modeTint.horizontalCenter
             anchors.bottomMargin: Math.max(3, Math.round(modeTint.height * 0.12))
-            width: Math.round(modeTint.width * 0.55)
-            height: Math.max(3, Math.round(modeTint.height * 0.10))
+            width: Math.round(modeTint.width * 0.6)
+            height: Math.max(3, Math.round(modeTint.height * 0.11))
             radius: height / 2
-            color: Kirigami.Theme.highlightColor
+            color: "#000000"
             visible: modeTint.visible
         }
     }
