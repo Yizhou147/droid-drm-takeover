@@ -36,6 +36,7 @@ KeyboardLayout {
                 var mods = []
                 if (ctrlKey.mode) mods.push("ctrl")
                 if (altKey.mode) mods.push("alt")
+                if (shiftKey2.mode) mods.push("shift")
                 pcRoot.combo(upperKey, mods.join(","))
                 ctrlKey.mode = false
                 altKey.mode = false
