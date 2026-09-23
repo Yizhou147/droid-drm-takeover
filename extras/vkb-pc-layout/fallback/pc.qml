@@ -1,10 +1,10 @@
-// Copyright (C) 2026 Yizhou — piano-patch full-size PC layout (v5)
+// Copyright (C) 2026 Yizhou — piano-patch full-size PC layout (v7)
 // SPDX-License-Identifier: GPL-3.0-or-later
 // 全尺寸 PC 布局。进入/退出：主键盘 "PC" 键（Qt.Key_F13 + Keyboard.qml pcMode 补丁）。
-// v5：Ctrl/Alt/Shift 用 ModeKey 自身 mode 作唯一状态源（点亮状态可见、可再按取消）；
-//     组合键经 pc-keyd 守护（localhost:48222）走 /dev/uinput 注入真实按键序列
-//     （input-method-v1 的 send_key 协议不带 modifiers，必须绕道）；
-//     本页强制英文（inputMode: Latin）。
+// v7：combo 通道扩展到全键盘（Ctrl+数字/Tab/Enter/方向/功能键均走 pc-keyd uinput）；
+//     ⇧+数字/符号输出上档字符（1→! 2→@ ...）；⇧+Tab/Enter/方向等路由 daemon 带 shift；
+//     自定义 ModeButton 取代 ModeKey（Breeze 样式 modeKey 40px 全大写、key 60px 混排
+//     不一致——统一成 60px MixedCase，标签一律首字母大写）。
 
 import QtQuick
 import QtQuick.Layouts
@@ -22,64 +22,111 @@ KeyboardLayout {
         x.send()
     }
 
-    // 字母键：按住 Ctrl/Alt 时改走 uinput 组合通道；Shift 只放大写字母且一击复位
+    function modsNow() {
+        var mods = []
+        if (ctrlKey.mode) mods.push("ctrl")
+        if (altKey.mode) mods.push("alt")
+        if (shiftKey2.mode) mods.push("shift")
+        return mods.join(",")
+    }
+
+    function releaseModes() {
+        ctrlKey.mode = false
+        altKey.mode = false
+        shiftKey2.mode = false
+    }
+
+    // 粘滞修饰键：普通 Key 面板（60px、MixedCase），点亮=高亮底+右上圆点
+    component ModeButton: Key {
+        property bool mode
+        key: Qt.Key_unknown
+        functionKey: true
+        noKeyEvent: true
+        highlighted: mode
+        smallText: mode ? "\u25cf" : ""
+        onClicked: mode = !mode
+    }
+
+    // 字母键：Ctrl/Alt 走 uinput；⇧ 本地转大写（不走 daemon）
     component PCKeep: Key {
         property int upperKey
-        noKeyEvent: ctrlKey.mode || altKey.mode
-        // 关键：BaseKey.uppercased 默认跟 InputContext.uppercase，Konsole 等终端的
-        // 大写提示会把它焊死成 true（全大写且 shift 切不动）。本页大小写只认 ⇧。
+        readonly property bool modActive: ctrlKey.mode || altKey.mode
+        noKeyEvent: modActive
+        // BaseKey.uppercased 默认跟 InputContext.uppercase（Konsole 恒真 bug 根源），
+        // 本页大小写只认 ⇧
         uppercased: shiftKey2.mode
         key: shiftKey2.mode ? upperKey : (upperKey + 32)
         text: shiftKey2.mode ? String.fromCharCode(upperKey) : String.fromCharCode(upperKey + 32)
         onClicked: {
-            if (ctrlKey.mode || altKey.mode) {
-                var mods = []
-                if (ctrlKey.mode) mods.push("ctrl")
-                if (altKey.mode) mods.push("alt")
-                if (shiftKey2.mode) mods.push("shift")
-                pcRoot.combo(upperKey, mods.join(","))
-                ctrlKey.mode = false
-                altKey.mode = false
+            if (modActive) {
+                pcRoot.combo(upperKey, pcRoot.modsNow())
+                pcRoot.releaseModes()
+            } else {
+                shiftKey2.mode = false
             }
-            shiftKey2.mode = false
+        }
+    }
+
+    // 全键 combo 通道：comboCode=Qt 键码；shiftText=⇧ 本地输出字符（打印键）；
+    // routeShift=true 表示 ⇧ 单独按下也要走 daemon（Tab/Enter/方向/导航，
+    // 这些没有"上档字符"概念，⇧ 是修饰语义如 ⇧+Tab=Backtab）
+    component PCKey: Key {
+        property int comboCode: Qt.Key_unknown
+        property string baseText: ""
+        property string shiftText: ""
+        property bool routeShift: false
+        readonly property bool modActive: ctrlKey.mode || altKey.mode || (routeShift && shiftKey2.mode)
+        functionKey: true
+        noKeyEvent: modActive
+        uppercased: false
+        key: comboCode
+        text: shiftKey2.mode && shiftText.length > 0 ? shiftText : baseText
+        onClicked: {
+            if (modActive) {
+                pcRoot.combo(comboCode, pcRoot.modsNow())
+                pcRoot.releaseModes()
+            } else {
+                shiftKey2.mode = false
+            }
         }
     }
 
     KeyboardRow {
-        Key { key: Qt.Key_Escape; displayText: "Esc"; functionKey: true }
-        Key { key: Qt.Key_F1; displayText: "F1"; functionKey: true }
-        Key { key: Qt.Key_F2; displayText: "F2"; functionKey: true }
-        Key { key: Qt.Key_F3; displayText: "F3"; functionKey: true }
-        Key { key: Qt.Key_F4; displayText: "F4"; functionKey: true }
-        Key { key: Qt.Key_F5; displayText: "F5"; functionKey: true }
-        Key { key: Qt.Key_F6; displayText: "F6"; functionKey: true }
-        Key { key: Qt.Key_F7; displayText: "F7"; functionKey: true }
-        Key { key: Qt.Key_F8; displayText: "F8"; functionKey: true }
-        Key { key: Qt.Key_F9; displayText: "F9"; functionKey: true }
-        Key { key: Qt.Key_F10; displayText: "F10"; functionKey: true }
-        Key { key: Qt.Key_F11; displayText: "F11"; functionKey: true }
-        Key { key: Qt.Key_F12; displayText: "F12"; functionKey: true }
+        PCKey { comboCode: Qt.Key_Escape; displayText: "Esc" }
+        PCKey { comboCode: Qt.Key_F1; displayText: "F1" }
+        PCKey { comboCode: Qt.Key_F2; displayText: "F2" }
+        PCKey { comboCode: Qt.Key_F3; displayText: "F3" }
+        PCKey { comboCode: Qt.Key_F4; displayText: "F4" }
+        PCKey { comboCode: Qt.Key_F5; displayText: "F5" }
+        PCKey { comboCode: Qt.Key_F6; displayText: "F6" }
+        PCKey { comboCode: Qt.Key_F7; displayText: "F7" }
+        PCKey { comboCode: Qt.Key_F8; displayText: "F8" }
+        PCKey { comboCode: Qt.Key_F9; displayText: "F9" }
+        PCKey { comboCode: Qt.Key_F10; displayText: "F10" }
+        PCKey { comboCode: Qt.Key_F11; displayText: "F11" }
+        PCKey { comboCode: Qt.Key_F12; displayText: "F12" }
     }
     KeyboardRow {
-        Key { key: Qt.Key_QuoteLeft; text: "`" }
-        Key { key: Qt.Key_1; text: "1" }
-        Key { key: Qt.Key_2; text: "2" }
-        Key { key: Qt.Key_3; text: "3" }
-        Key { key: Qt.Key_4; text: "4" }
-        Key { key: Qt.Key_5; text: "5" }
-        Key { key: Qt.Key_6; text: "6" }
-        Key { key: Qt.Key_7; text: "7" }
-        Key { key: Qt.Key_8; text: "8" }
-        Key { key: Qt.Key_9; text: "9" }
-        Key { key: Qt.Key_0; text: "0" }
-        Key { key: Qt.Key_Minus; text: "-" }
-        Key { key: Qt.Key_Equal; text: "=" }
-        BackspaceKey { weight: 150 }
-        Key { key: Qt.Key_Insert; displayText: "Ins"; functionKey: true }
-        Key { key: Qt.Key_Delete; displayText: "Del"; functionKey: true }
+        PCKey { comboCode: Qt.Key_QuoteLeft; baseText: "`"; shiftText: "~"; displayText: "`" }
+        PCKey { comboCode: Qt.Key_1; baseText: "1"; shiftText: "!"; displayText: "1" }
+        PCKey { comboCode: Qt.Key_2; baseText: "2"; shiftText: "@"; displayText: "2" }
+        PCKey { comboCode: Qt.Key_3; baseText: "3"; shiftText: "#"; displayText: "3" }
+        PCKey { comboCode: Qt.Key_4; baseText: "4"; shiftText: "$"; displayText: "4" }
+        PCKey { comboCode: Qt.Key_5; baseText: "5"; shiftText: "%"; displayText: "5" }
+        PCKey { comboCode: Qt.Key_6; baseText: "6"; shiftText: "^"; displayText: "6" }
+        PCKey { comboCode: Qt.Key_7; baseText: "7"; shiftText: "&"; displayText: "7" }
+        PCKey { comboCode: Qt.Key_8; baseText: "8"; shiftText: "*"; displayText: "8" }
+        PCKey { comboCode: Qt.Key_9; baseText: "9"; shiftText: "("; displayText: "9" }
+        PCKey { comboCode: Qt.Key_0; baseText: "0"; shiftText: ")"; displayText: "0" }
+        PCKey { comboCode: Qt.Key_Minus; baseText: "-"; shiftText: "_"; displayText: "-" }
+        PCKey { comboCode: Qt.Key_Equal; baseText: "="; shiftText: "+"; displayText: "=" }
+        PCKey { comboCode: Qt.Key_Backspace; weight: 150; routeShift: true;
+                displayText: "\u232B" }
+        PCKey { comboCode: Qt.Key_Insert; displayText: "Ins"; routeShift: true }
+        PCKey { comboCode: Qt.Key_Delete; displayText: "Del"; routeShift: true }
     }
     KeyboardRow {
-        Key { key: Qt.Key_Tab; displayText: "Tab"; functionKey: true; weight: 150 }
+        PCKey { comboCode: Qt.Key_Tab; displayText: "Tab"; routeShift: true; weight: 150 }
         PCKeep { upperKey: Qt.Key_Q }
         PCKeep { upperKey: Qt.Key_W }
         PCKeep { upperKey: Qt.Key_E }
@@ -90,16 +137,16 @@ KeyboardLayout {
         PCKeep { upperKey: Qt.Key_I }
         PCKeep { upperKey: Qt.Key_O }
         PCKeep { upperKey: Qt.Key_P }
-        Key { key: Qt.Key_BracketLeft; text: "[" }
-        Key { key: Qt.Key_BracketRight; text: "]" }
-        Key { key: Qt.Key_Backslash; text: "\\" }
-        Key { key: Qt.Key_Home; displayText: "Home"; functionKey: true }
-        Key { key: Qt.Key_PageUp; displayText: "PgUp"; functionKey: true }
+        PCKey { comboCode: Qt.Key_BracketLeft; baseText: "["; shiftText: "{"; displayText: "[" }
+        PCKey { comboCode: Qt.Key_BracketRight; baseText: "]"; shiftText: "}"; displayText: "]" }
+        PCKey { comboCode: Qt.Key_Backslash; baseText: "\\"; shiftText: "|"; displayText: "\\" }
+        PCKey { comboCode: Qt.Key_Home; displayText: "Home"; routeShift: true }
+        PCKey { comboCode: Qt.Key_PageUp; displayText: "Pgup"; routeShift: true }
     }
     KeyboardRow {
-        ModeKey {
+        ModeButton {
             id: shiftKey2
-            displayText: "\u21e7"
+            displayText: "Shift"
             weight: 150
         }
         PCKeep { upperKey: Qt.Key_A }
@@ -111,14 +158,15 @@ KeyboardLayout {
         PCKeep { upperKey: Qt.Key_J }
         PCKeep { upperKey: Qt.Key_K }
         PCKeep { upperKey: Qt.Key_L }
-        Key { key: Qt.Key_Semicolon; text: ";" }
-        Key { key: Qt.Key_Apostrophe; text: "'" }
-        EnterKey { weight: 150 }
-        Key { key: Qt.Key_End; displayText: "End"; functionKey: true }
-        Key { key: Qt.Key_PageDown; displayText: "PgDn"; functionKey: true }
+        PCKey { comboCode: Qt.Key_Semicolon; baseText: ";"; shiftText: ":"; displayText: ";" }
+        PCKey { comboCode: Qt.Key_Apostrophe; baseText: "'"; shiftText: "\""; displayText: "'" }
+        PCKey { comboCode: Qt.Key_Return; weight: 150; routeShift: true;
+                displayText: "Enter" }
+        PCKey { comboCode: Qt.Key_End; displayText: "End"; routeShift: true }
+        PCKey { comboCode: Qt.Key_PageDown; displayText: "Pgdn"; routeShift: true }
     }
     KeyboardRow {
-        ModeKey {
+        ModeButton {
             id: ctrlKey
             displayText: "Ctrl"
             weight: 125
@@ -130,22 +178,22 @@ KeyboardLayout {
         PCKeep { upperKey: Qt.Key_B }
         PCKeep { upperKey: Qt.Key_N }
         PCKeep { upperKey: Qt.Key_M }
-        Key { key: Qt.Key_Comma; text: "," }
-        Key { key: Qt.Key_Period; text: "." }
-        Key { key: Qt.Key_Slash; text: "/" }
-        Key { key: Qt.Key_Up; displayText: "\u2191"; functionKey: true }
+        PCKey { comboCode: Qt.Key_Comma; baseText: ","; shiftText: "<"; displayText: "," }
+        PCKey { comboCode: Qt.Key_Period; baseText: "."; shiftText: ">"; displayText: "." }
+        PCKey { comboCode: Qt.Key_Slash; baseText: "/"; shiftText: "?"; displayText: "/" }
+        PCKey { comboCode: Qt.Key_Up; displayText: "\u2191"; routeShift: true }
     }
     KeyboardRow {
-        ModeKey {
+        ModeButton {
             id: altKey
             displayText: "Alt"
             weight: 125
         }
-        Key { key: Qt.Key_F13; displayText: "PC"; functionKey: true; weight: 125 }
+        PCKey { comboCode: Qt.Key_F13; displayText: "PC"; weight: 125 }
         SpaceKey { weight: 500 }
-        Key { key: Qt.Key_Menu; displayText: "\u2630"; functionKey: true; weight: 125 }
-        Key { key: Qt.Key_Left; displayText: "\u2190"; functionKey: true }
-        Key { key: Qt.Key_Down; displayText: "\u2193"; functionKey: true }
-        Key { key: Qt.Key_Right; displayText: "\u2192"; functionKey: true }
+        PCKey { comboCode: Qt.Key_Menu; displayText: "Menu"; weight: 125 }
+        PCKey { comboCode: Qt.Key_Left; displayText: "\u2190"; routeShift: true }
+        PCKey { comboCode: Qt.Key_Down; displayText: "\u2193"; routeShift: true }
+        PCKey { comboCode: Qt.Key_Right; displayText: "\u2192"; routeShift: true }
     }
 }
