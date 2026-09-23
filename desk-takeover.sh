@@ -201,15 +201,32 @@ uri=
 unmanaged-devices=except:type:wifi
 EOF
     mkdir -p /run/NetworkManager
+    # plasma-nm 点击连接会被 polkit 拒（"Not authorized to control networking"，
+    # 容器里无 logind active 会话）→ 给本用户放行 NM 动作（仅本机 DRM 场景）
+    mkdir -p /etc/polkit-1/rules.d
+    cat > /etc/polkit-1/rules.d/60-nm-drm.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager") === 0 && subject.user === "xieyizhou")
+        return polkit.Result.YES;
+});
+EOF
+    systemctl try-restart polkit 2>/dev/null
     nohup NetworkManager --config /run/nm-drm.conf --no-daemon > $LOGD/nm-drm.log 2>&1 &
     for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
-    # 首轮引导：连上当前 SSID 即自动落 keyfile(0600)，以后开机自连、plasma-nm 可改
+    # 首轮引导：NM 刚起扫描缓存是空的，先 rescan 再带重试连接；
+    # 成功即自动落 keyfile(0600)，以后自连、plasma-nm 面板可改
     if [ -n "$CUR_SSID" ] && [ -n "$CUR_PSK" ]; then
-        nmcli -g NAME connection list 2>/dev/null | grep -qxF "$CUR_SSID" \
-            || nohup nmcli device wifi connect "$CUR_SSID" password "$CUR_PSK" >> $LOGD/nm-drm.log 2>&1 &
+        (
+            for t in 1 2 3 4 5; do
+                sleep 3
+                nmcli -g NAME connection list 2>/dev/null | grep -qxF "$CUR_SSID" && break
+                nmcli device wifi rescan 2>/dev/null
+                nmcli device wifi connect "$CUR_SSID" password "$CUR_PSK" >> $LOGD/nm-drm.log 2>&1 && break
+            done
+        ) &
     fi
     OK=0
-    for i in $(seq 1 40); do
+    for i in $(seq 1 60); do
         [ "$(nmcli -t -f DEVICE,STATE device status wlan0 2>/dev/null | cut -d: -f2)" = "connected" ] && { OK=1; break; }
         sleep 1
     done
