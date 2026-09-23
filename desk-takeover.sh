@@ -166,56 +166,31 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-# ---- IM 架构（09-23 换 PC 级方案）----
-# plasma-keyboard（无拼音引擎、键位寒酸）退役；改用 fcitx5(拼音/候选) + onboard(uinput 注入的
-# 全键位屏幕键盘)：Qt/GTK/XWayland 应用走 fcitx5 模块；onboard 的按键经 /dev/uinput 变成
-# kwin 眼里的真键盘，全桌面通用。已知缺口：Chrome 只认 kwin text-input，能打字但没拼音。
-# fcitx5 配置：默认英文+拼音（Ctrl+Space 切换），幂等写
-mkdir -p /home/xieyizhou/.config/fcitx5
-cat > /home/xieyizhou/.config/fcitx5/profile <<'EOF'
-[Groups/0]
-Name=Default
-Default Layout=us
-DefaultIM=pinyin
-
-[Groups/0/Items/0]
-Name=keyboard-us
-Layout=
-
-[Groups/0/Items/1]
-Name=pinyin
-Layout=
-
-[GroupOrder]
-0=Default
-EOF
-chown xieyizhou:xieyizhou /home/xieyizhou/.config/fcitx5/profile 2>/dev/null
-nohup runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest QT_QPA_PLATFORM=wayland \
-    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-    fcitx5 -rd > $LOGD/fcitx5.log 2>&1 &
-nohup runuser -u xieyizhou -- env -u DISPLAY \
-    QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 SDL_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 \
+# ---- IM：plasma-keyboard 本体路线（09-23 定案）----
+# Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
+# 所以本会话剥离 QT_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
+# 中文=官方 Qt VirtualKeyboard Pinyin 插件（scripts/install-pinyin-plugin.sh 一次性装入），
+# 布局列表写 plasmakeyboardrc.enabledLocales。
+sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
+    || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
+chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
+grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/null \
+    && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
+nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/bin/plasmashell --replace > $LOGD/plasma.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env -u DISPLAY \
-    QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 SDL_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 \
+nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
     WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/libexec/xdg-desktop-portal > $LOGD/portal.log 2>&1 &
-# onboard：key-synth=uinput 走 /dev/uinput（Wayland 下唯一可靠注入路径；schema 是 org.onboard.keyboard）
-runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-    gsettings set org.onboard.keyboard key-synth uinput 2>/dev/null
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
-    WAYLAND_DISPLAY=taketest GDK_BACKEND=wayland XDG_RUNTIME_DIR=/run/user/1000 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus HOME=/home/xieyizhou \
-    onboard > $LOGD/onboard.log 2>&1 &
 touch $DIR/takeover.ok
 $DIR/bin/setbright 2048 > /dev/null 2>&1
 echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
