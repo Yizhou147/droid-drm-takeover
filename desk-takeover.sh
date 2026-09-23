@@ -204,6 +204,8 @@ uri=
 unmanaged-devices=except:type:wifi
 EOF
     mkdir -p /run/NetworkManager
+    # NM 靠 D-Bus 激活 wpa_supplicant.service 拉起扫描/认证进程——它可以 disabled 但绝不能 masked
+    systemctl unmask wpa_supplicant.service 2>/dev/null
     # plasma-nm 点击连接会被 polkit 拒（"Not authorized to control networking"，
     # 容器里无 logind active 会话）→ 给本用户放行 NM 动作（仅本机 DRM 场景）
     mkdir -p /etc/polkit-1/rules.d
