@@ -86,6 +86,9 @@ fi
 # ---- 1) DRM 节点 + udev 合成记录（与 drm-takeover.sh 同源） ----
 mkdir -p /dev/dri /dev/input
 [ -c /dev/dri/card0 ] || mknod /dev/dri/card0 c 226 0
+# NM 靠 rfkill netlink 控制 WiFi 射频；容器重启后 /dev 重建，缺这节点=扫不到任何热点（09-23 实锤）
+[ -c /dev/rfkill ] || mknod /dev/rfkill c 10 242
+chmod 666 /dev/rfkill 2>/dev/null
 chmod 666 /dev/dri/card0 2>/dev/null
 [ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
 chmod 666 /dev/input/event11 2>/dev/null
@@ -213,6 +216,7 @@ EOF
     systemctl try-restart polkit 2>/dev/null
     nohup NetworkManager --config /run/nm-drm.conf --no-daemon > $LOGD/nm-drm.log 2>&1 &
     for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
+    nmcli radio wifi on 2>/dev/null   # 清掉可能的软阻塞（上一轮残留状态）
     # 首轮引导：NM 刚起扫描缓存是空的，先 rescan 再带重试连接；
     # 成功即自动落 keyfile(0600)，以后自连、plasma-nm 面板可改
     if [ -n "$CUR_SSID" ] && [ -n "$CUR_PSK" ]; then

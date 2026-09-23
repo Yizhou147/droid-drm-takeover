@@ -96,6 +96,13 @@ adb -s "$DEV" shell "su -c 'wm dismiss-keyguard'" >/dev/null 2>&1
 $DIR/bin/setbright 2048 >/dev/null 2>&1
 rm -f $DIR/takeover.ok
 
+# ---- 4b) 复活 anland Linux 会话（kill_desktop 把它的 kwin/plasma 也顺带杀了，
+#          不补起来 Droid Spaces 打开就是白屏，只能重启容器——09-23 用户实测痛点） ----
+if [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-kde.sh ]; then
+    runuser -u xieyizhou -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
+        && echo "anland session relaunched"
+fi
+
 # ---- 5) 结果取证 ----
 sleep 10
 run "getprop init.svc.surfaceflinger; getprop init.svc.zygote; getprop init.svc.wpa_supplicant"
