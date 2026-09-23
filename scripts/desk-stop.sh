@@ -64,6 +64,8 @@ fi
 
 # ---- 2) 释放 wlan0 + 还原接管期动过的路由 + 拉起安卓全家 ----
 pkill -x NetworkManager 2>/dev/null
+# NM 经 D-Bus 激活的 wpa_supplicant 会赖在总线上；只停容器 systemd 的实例（安卓那侧不受影响）
+systemctl stop wpa_supplicant.service 2>/dev/null
 ip -4 addr flush dev wlan0 2>/dev/null
 if [ -f /run/desk-ip-rules.bak ]; then
     # desk-takeover 的 NM 段 flush 过 rule；原样还原，netd 回来会补建自己的规则

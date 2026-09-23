@@ -47,6 +47,7 @@ kill_linux_stack() {
     pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
     pkill -f "nm-drm.conf" 2>/dev/null
     pkill -x NetworkManager 2>/dev/null
+    systemctl stop wpa_supplicant.service 2>/dev/null   # 清掉上一轮 NM 遗留的 supplicant（仅容器实例）
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
     sleep 1
