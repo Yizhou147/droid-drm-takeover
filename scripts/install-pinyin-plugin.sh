@@ -17,5 +17,5 @@ SRC=$(find "$D/build" -type d -name Pinyin -path "*VirtualKeyboard/Plugins*" | h
 DEST=/usr/lib/aarch64-linux-gnu/qt6/qml/QtQuick/VirtualKeyboard/Plugins
 mkdir -p "$DEST/Pinyin"
 cp -r "$SRC"/* "$DEST/Pinyin/"
-grep -q Pinyin "$DEST/qmldir" || sed -i "/import QtQuick.VirtualKeyboard.Plugins.Hangul auto/i import QtQuick.VirtualKeyboard.Plugins.Pinyin/auto" "$DEST/qmldir"
+grep -q Pinyin "$DEST/qmldir" || sed -i "/import QtQuick.VirtualKeyboard.Plugins.Hangul auto/i import QtQuick.VirtualKeyboard.Plugins.Pinyin auto" "$DEST/qmldir"
 echo "PINYIN-PLUGIN INSTALLED: $DEST/Pinyin (tag $TAG)"
