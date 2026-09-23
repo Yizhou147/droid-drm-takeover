@@ -56,6 +56,10 @@ def resolve(key):
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path == "/unstick":
+            for c in (29, 42, 56, 125, 100, 97, 105):
+                _ev(EV_KEY, c, 0); _ev(EV_SYN, 0, 0)
+            self.send_response(204); self.end_headers(); return
         if u.path == "/ping":
             self.send_response(204); self.end_headers(); return
         if u.path == "/combo":
@@ -67,9 +71,13 @@ class H(BaseHTTPRequestHandler):
                     for m in mods: _ev(EV_KEY, MODMAP[m], 1); _ev(EV_SYN, 0, 0)
                     _ev(EV_KEY, code, 1); _ev(EV_SYN, 0, 0)
                     _ev(EV_KEY, code, 0); _ev(EV_SYN, 0, 0)
-                    for m in reversed(mods): _ev(EV_KEY, MODMAP[m], 0); _ev(EV_SYN, 0, 0)
-                except OSError:
-                    pass
+                finally:
+                    # 抬起必须无条件执行，否则内核里留下卡住的修饰键（09-23 实锤）
+                    for m in reversed(mods):
+                        try: _ev(EV_KEY, MODMAP[m], 0); _ev(EV_SYN, 0, 0)
+                        except OSError: pass
+            if u.path == "/unstick":
+                pass
             self.send_response(204); self.end_headers(); return
         self.send_response(404); self.end_headers()
     def log_message(self, *a): pass
