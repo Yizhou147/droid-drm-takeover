@@ -100,6 +100,10 @@ chmod 666 /dev/uinput 2>/dev/null
 # crash-loop 触发内核 uinput 防滥用；daemon 源码已独立成仓 droid-pc-keyboard，
 # 装在 /usr/local/bin/pc-keyd.py。详见 https://github.com/Yizhou147/droid-pc-keyboard）。
 pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+# power-state-sync：小米 BSP 电流符号与内核 ABI 相反 → upower 永远判放电。
+# bind-mount 取反 current_now + 周期 kick（脚本自带幂等挂载判断；跨会话常驻，
+# desk-stop 不杀它，anland 托盘顺带受益）。
+[ -f /usr/local/bin/power-state-sync.py ] && { pgrep -f "power-state-sync" >/dev/null || nohup python3 /usr/local/bin/power-state-sync.py > /tmp/power-sync.log 2>&1 & }
 chmod 666 /dev/dri/card0 2>/dev/null
 [ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
 chmod 666 /dev/input/event11 2>/dev/null
