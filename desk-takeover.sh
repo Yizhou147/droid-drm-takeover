@@ -45,6 +45,7 @@ kill_linux_stack() {
     pkill -9 -f "plasma-keyboard" 2>/dev/null
     pkill -x fcitx5 2>/dev/null
     pkill -x onboard 2>/dev/null
+    pkill -f "pc-keyd.py" 2>/dev/null
     pkill -9 -f "dmesg-harvester.sh" 2>/dev/null
     pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
     pkill -f "nm-drm.conf" 2>/dev/null
@@ -92,7 +93,7 @@ mkdir -p /dev/dri /dev/input
 # NM 靠 rfkill netlink 控制 WiFi 射频；容器重启后 /dev 重建，缺这节点=扫不到任何热点（09-23 实锤）
 [ -c /dev/rfkill ] || mknod /dev/rfkill c 10 242
 chmod 666 /dev/rfkill 2>/dev/null
-# onboard 的 uinput 注入后端要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）
+# pc-keyd（PC 布局组合键守护）的 uinput 注入要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）
 [ -c /dev/uinput ] || mknod /dev/uinput c 10 223
 chmod 666 /dev/uinput 2>/dev/null
 chmod 666 /dev/dri/card0 2>/dev/null
@@ -177,6 +178,9 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
+# pc-keyd：PC 布局组合键守护（uinput 注入，端口 48222，单实例）
+pkill -f "pc-keyd.py" 2>/dev/null
+[ -f /usr/local/bin/pc-keyd.py ] && nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
 nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
     WAYLAND_DISPLAY=taketest \
