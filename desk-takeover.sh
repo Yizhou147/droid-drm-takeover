@@ -95,9 +95,9 @@ chmod 666 /dev/rfkill 2>/dev/null
 # pc-keyd（PC 布局组合键守护）的 uinput 注入要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）
 [ -c /dev/uinput ] || mknod /dev/uinput c 10 223
 chmod 666 /dev/uinput 2>/dev/null
-# pc-keyd（组合键守护）必须在 kwin 之前在场：优先 systemd 单元，无单元环境退回裸进程
-systemctl is-active pc-keyd >/dev/null 2>&1 || systemctl start pc-keyd 2>/dev/null \
-    || { pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 & }
+# pc-keyd（组合键守护）必须在 kwin 之前在场。只从本脚本 nohup 起（pc-keyd.service 已
+# disable，防开机 crash-loop 触发内核 uinput 防滥用，详见 scripts/pc-keyd.py 注释）。
+pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
 chmod 666 /dev/dri/card0 2>/dev/null
 [ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
 chmod 666 /dev/input/event11 2>/dev/null

@@ -19,7 +19,12 @@ def _open_kb():
     fcntl.ioctl(UINPUT_FD, UI_SET_EVBIT, EV_KEY)
     for code in range(0x2ff + 1):
         fcntl.ioctl(UINPUT_FD, UI_SET_KEYBIT, code)
-    name = b"plasma-keyboard-pc"
+    # 09-23 教训：①原名 plasma-keyboard-pc 已作废；②开机时 crash-loop 在 24s 内反复
+    # 拉起（虽未建成设备，但加上白天调试期十几次设备建删风暴）把小米内核的 uinput
+    # 注入防滥用打满 —— 本启动会话内所有后续注入被静默丢弃（write 仍返回 24，evdev
+    # 0 包），冷却或重启恢复。因此：设备名换新；服务禁止 systemd 自启（防开机风暴）；
+    # 调试时严禁反复重启守护进程/反复建删 uinput 设备，一次起、一次验。
+    name = b"pc-keyd-kbd"
     data = name.ljust(80, b"\0") + struct.pack("HHHHI", 0x11, 0x01, 0x01, 0x01, 0) + bytes(4 * 64 * 4)  # ABS_CNT=64 (sizeof(uinput_user_dev)=1116, measured)
     os.write(UINPUT_FD, data)
     fcntl.ioctl(UINPUT_FD, UI_DEV_CREATE)
@@ -89,21 +94,24 @@ def _expose_devnode():
     time.sleep(0.3)
     try:
         txt = open("/proc/bus/input/devices").read()
-        m = re.search(r'Name="plasma-keyboard-pc".*?Handlers=event(\d+)', txt, re.S)
+        m = re.search(r'Name="pc-keyd-kbd".*?Handlers=event(\d+)', txt, re.S)
         if not m: return
         ev = "event" + m.group(1)
         dev = open("/sys/class/input/%s/dev" % ev).read().strip()  # "13:80"
         minor = int(dev.split(":")[1])
         node = "/dev/input/" + ev
         if not os.path.exists(node):
+            # mknod 的 mode 会被进程 umask 削掉（systemd 默认 022 → 0644，
+            # kwin 以 xieyizhou 身份 open 直接 EACCES），必须显式 chmod 兜底
             os.mknod(node, 0o666 | 0o020000, os.makedev(13, minor))
+        os.chmod(node, 0o666)
         data = "/run/udev/data/c13:%d" % minor
         with open(data, "w") as f:
             f.write("Q:100\n"
                     "E:DEVPATH=/devices/virtual/input/%s\n"
                     "E:MAJOR=13\nE:MINOR=%d\nE:SUBSYSTEM=input\n"
                     "E:DEVNAME=input/%s\nE:ID_INPUT=1\nE:ID_INPUT_KEY=1\n"
-                    "E:ID_INPUT_KEYBOARD=1\nE:LIBINPUT_DEVICE_GROUP=11/1/1:plasma-keyboard-pc\n"
+                    "E:ID_INPUT_KEYBOARD=1\nE:LIBINPUT_DEVICE_GROUP=11/1/1:pc-keyd-kbd\n"
                     "H:uaccess\nH:seat\n" % (ev, minor, ev))
         sys.stderr.write("exposed %s c13:%d\n" % (node, minor))
     except OSError as e:

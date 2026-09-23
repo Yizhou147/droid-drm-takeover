@@ -26,6 +26,9 @@ KeyboardLayout {
     component PCKeep: Key {
         property int upperKey
         noKeyEvent: ctrlKey.mode || altKey.mode
+        // 关键：BaseKey.uppercased 默认跟 InputContext.uppercase，Konsole 等终端的
+        // 大写提示会把它焊死成 true（全大写且 shift 切不动）。本页大小写只认 ⇧。
+        uppercased: shiftKey2.mode
         key: shiftKey2.mode ? upperKey : (upperKey + 32)
         text: shiftKey2.mode ? String.fromCharCode(upperKey) : String.fromCharCode(upperKey + 32)
         onClicked: {
