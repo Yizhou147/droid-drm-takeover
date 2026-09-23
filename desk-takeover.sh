@@ -42,6 +42,7 @@ kill_linux_stack() {
     pkill -9 -f "startplasma-wayland" 2>/dev/null
     pkill -9 -f "plasmashell" 2>/dev/null
     pkill -9 -f "kactivitymanagerd" 2>/dev/null
+    pkill -9 -f "org_kde_powerdevil" 2>/dev/null
     pkill -9 -f "plasma-keyboard" 2>/dev/null
     pkill -x fcitx5 2>/dev/null
     pkill -x onboard 2>/dev/null
@@ -188,6 +189,27 @@ nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/bin/plasmashell --replace > $LOGD/plasma.log 2>&1 &
+# ---- 托盘亮度/电池（09-24 三根因定修）----
+# 1) 容器 /sys 挂成 ro → backlighthelper 写亮度 EROFS；remount rw 解决
+# 2) 无 logind active session → polkit 默认拒 org.kde.powerdevil.backlighthelper.*
+# 3) DRM 会话不走 startplasma，powerdevil 守护根本没人拉
+mount -o remount,rw /sys 2>/dev/null || echo "WARN: /sys remount failed, brightness slider will be read-only"
+cat > /etc/polkit-1/rules.d/61-powerdevil-backlight.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.kde.powerdevil.backlighthelper.") === 0 &&
+        subject.user === "xieyizhou") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+systemctl try-restart polkit 2>/dev/null
+PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
+[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE \
+    WAYLAND_DISPLAY=taketest \
+    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    QT_QPA_PLATFORM=wayland \
+    "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
 nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \

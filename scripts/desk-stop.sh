@@ -39,6 +39,7 @@ kill_desktop() {
     pkill -9 -f "dbus-run-session"
     pkill -9 -f "plasmashell"
     pkill -9 -f "kactivitymanagerd"
+    pkill -9 -f "org_kde_powerdevil"
     pkill -9 -f "plasma-keyboard"
     pkill -x fcitx5
     pkill -x onboard
