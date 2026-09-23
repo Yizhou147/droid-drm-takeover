@@ -95,8 +95,9 @@ chmod 666 /dev/rfkill 2>/dev/null
 # pc-keyd（PC 布局组合键守护）的 uinput 注入要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）
 [ -c /dev/uinput ] || mknod /dev/uinput c 10 223
 chmod 666 /dev/uinput 2>/dev/null
-# pc-keyd（组合键守护）必须在 kwin 之前在场。只从本脚本 nohup 起（pc-keyd.service 已
-# disable，防开机 crash-loop 触发内核 uinput 防滥用，详见 scripts/pc-keyd.py 注释）。
+# pc-keyd（组合键守护）必须在 kwin 之前在场。只从本脚本 nohup 起（防开机
+# crash-loop 触发内核 uinput 防滥用；daemon 源码已独立成仓 droid-pc-keyboard，
+# 装在 /usr/local/bin/pc-keyd.py。详见 https://github.com/Yizhou147/droid-pc-keyboard）。
 pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
 chmod 666 /dev/dri/card0 2>/dev/null
 [ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
@@ -121,7 +122,7 @@ sleep 5
 # ---- IM：plasma-keyboard 本体路线（09-23 定案）----
 # Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
 # 所以本会话剥离 QT_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
-# 中文=官方 Qt VirtualKeyboard Pinyin 插件（scripts/install-pinyin-plugin.sh 一次性装入），
+# 中文=官方 Qt VirtualKeyboard Pinyin 插件（droid-pc-keyboard 仓库 scripts/install-pinyin-plugin.sh 一次性装入），
 # 布局列表写 plasmakeyboardrc.enabledLocales。
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
     || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc

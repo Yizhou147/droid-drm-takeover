@@ -50,6 +50,9 @@
 - **虚拟键盘**：kwin 6.6 的 `zwp_input_method_v1` 只对 kwin 自己拉起的 IM 可见——配置
   `setInputMethodCommand` 让 kwin 自动 exec plasma-keyboard；`/etc/environment` 里的
   `QT_IM_MODULE=fcitx5` 会把 Qt 的 text-input 抢走导致键盘永不弹出，必须清掉。
+- **PC 键盘/拼音/组合键**：桌面输入体验的增强（全尺寸 PC 布局、中文拼音、uinput 组合键守护
+  pc-keyd）已拆分为独立项目 [droid-pc-keyboard](https://github.com/Yizhou147/droid-pc-keyboard)；
+  本仓库的 `desk-takeover.sh` 只负责在接管会话里把它拉起来（daemon 装在 `/usr/local/bin`）。
 - **任务栏打不开应用**：`xdg-desktop-portal` 必须带 `XDG_CURRENT_DESKTOP=KDE` 起来才有 KDE 后端。
 - **换网零配置**：接管前先从安卓动态读取当前连接的 SSID/PSK（`cmd wifi status` +
   `WifiConfigStore.xml`）自动生成 wpa 配置；dhcpcd 拿到租约后再动态探测网关/网段，注入安卓遗留的
