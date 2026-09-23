@@ -115,6 +115,17 @@ run "stop"
 run "setprop ctl.stop vendor.qti.hardware.display.composer"
 sleep 5
 
+# ---- IM：plasma-keyboard 本体路线（09-23 定案）----
+# Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
+# 所以本会话剥离 QT_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
+# 中文=官方 Qt VirtualKeyboard Pinyin 插件（scripts/install-pinyin-plugin.sh 一次性装入），
+# 布局列表写 plasmakeyboardrc.enabledLocales。
+sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
+    || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
+chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
+grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/null \
+    && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
+
 # ---- 3) kwin 接管显示（SF 已随 stop 死亡，master 天然空闲）→ 先出桌面 ----
 kill_linux_stack
 rm -f $DIR/takeover.ok
@@ -166,16 +177,6 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-# ---- IM：plasma-keyboard 本体路线（09-23 定案）----
-# Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
-# 所以本会话剥离 QT_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
-# 中文=官方 Qt VirtualKeyboard Pinyin 插件（scripts/install-pinyin-plugin.sh 一次性装入），
-# 布局列表写 plasmakeyboardrc.enabledLocales。
-sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
-    || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
-chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
-grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/null \
-    && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
 nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
     WAYLAND_DISPLAY=taketest \
