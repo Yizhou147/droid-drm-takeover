@@ -40,6 +40,8 @@ kill_desktop() {
     pkill -9 -f "plasmashell"
     pkill -9 -f "kactivitymanagerd"
     pkill -9 -f "plasma-keyboard"
+    pkill -x fcitx5
+    pkill -x onboard
     pkill -9 -f "xdg-desktop-portal"
     pkill -9 -f "dmesg-harvester.sh"
     pkill -9 -f 'wpa_supplicant.*desk-wifi'

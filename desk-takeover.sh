@@ -43,6 +43,8 @@ kill_linux_stack() {
     pkill -9 -f "plasmashell" 2>/dev/null
     pkill -9 -f "kactivitymanagerd" 2>/dev/null
     pkill -9 -f "plasma-keyboard" 2>/dev/null
+    pkill -x fcitx5 2>/dev/null
+    pkill -x onboard 2>/dev/null
     pkill -9 -f "dmesg-harvester.sh" 2>/dev/null
     pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
     pkill -f "nm-drm.conf" 2>/dev/null
@@ -90,6 +92,9 @@ mkdir -p /dev/dri /dev/input
 # NM 靠 rfkill netlink 控制 WiFi 射频；容器重启后 /dev 重建，缺这节点=扫不到任何热点（09-23 实锤）
 [ -c /dev/rfkill ] || mknod /dev/rfkill c 10 242
 chmod 666 /dev/rfkill 2>/dev/null
+# onboard 的 uinput 注入后端要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）
+[ -c /dev/uinput ] || mknod /dev/uinput c 10 223
+chmod 666 /dev/uinput 2>/dev/null
 chmod 666 /dev/dri/card0 2>/dev/null
 [ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
 chmod 666 /dev/input/event11 2>/dev/null
@@ -161,24 +166,56 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-# /etc/environment 的 QT_IM_MODULE=fcitx5 会把 Qt 应用的 text-input 抢去 fcitx，
-# kwin 收不到聚焦事件 → plasma-keyboard 永远不弹（Chrome 自带协议所以能弹）。
-# 一律清掉，让 Qt 回退到 compositor 内置 text-input。
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
+# ---- IM 架构（09-23 换 PC 级方案）----
+# plasma-keyboard（无拼音引擎、键位寒酸）退役；改用 fcitx5(拼音/候选) + onboard(uinput 注入的
+# 全键位屏幕键盘)：Qt/GTK/XWayland 应用走 fcitx5 模块；onboard 的按键经 /dev/uinput 变成
+# kwin 眼里的真键盘，全桌面通用。已知缺口：Chrome 只认 kwin text-input，能打字但没拼音。
+# fcitx5 配置：默认英文+拼音（Ctrl+Space 切换），幂等写
+mkdir -p /home/xieyizhou/.config/fcitx5
+cat > /home/xieyizhou/.config/fcitx5/profile <<'EOF'
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=pinyin
+
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+
+[Groups/0/Items/1]
+Name=pinyin
+Layout=
+
+[GroupOrder]
+0=Default
+EOF
+chown xieyizhou:xieyizhou /home/xieyizhou/.config/fcitx5/profile 2>/dev/null
+nohup runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest QT_QPA_PLATFORM=wayland \
+    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    fcitx5 -rd > $LOGD/fcitx5.log 2>&1 &
+nohup runuser -u xieyizhou -- env -u DISPLAY \
+    QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 SDL_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/bin/plasmashell --replace > $LOGD/plasma.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
+nohup runuser -u xieyizhou -- env -u DISPLAY \
+    QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 SDL_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 \
     WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/libexec/xdg-desktop-portal > $LOGD/portal.log 2>&1 &
+# onboard：key-synth=2 走 uinput（Wayland 下唯一可靠注入路径）；它自己不开 IM 防自噬
+runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    gsettings set org.onboard.preferences key-synth 2 2>/dev/null
+nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
+    WAYLAND_DISPLAY=taketest XDG_RUNTIME_DIR=/run/user/1000 \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus HOME=/home/xieyizhou \
+    onboard > $LOGD/onboard.log 2>&1 &
 touch $DIR/takeover.ok
 $DIR/bin/setbright 2048 > /dev/null 2>&1
 echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
