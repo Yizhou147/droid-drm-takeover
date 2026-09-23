@@ -64,9 +64,9 @@ KeyboardLayout {
             id: modeBar
             anchors.bottom: modeTint.bottom
             anchors.horizontalCenter: modeTint.horizontalCenter
-            anchors.bottomMargin: Math.max(3, Math.round(modeTint.height * 0.12))
-            width: Math.round(modeTint.width * 0.6)
-            height: Math.max(3, Math.round(modeTint.height * 0.11))
+            anchors.bottomMargin: Math.max(2, Math.round(modeTint.height * 0.10))
+            width: Math.max(6, Math.round(modeTint.width * 0.085))
+            height: Math.max(2, Math.round(modeTint.height * 0.055))
             radius: height / 2
             color: "#000000"
             visible: modeTint.visible
