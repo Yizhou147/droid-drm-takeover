@@ -201,7 +201,8 @@ plugins=keyfile
 [connectivity]
 uri=
 [keyfile]
-unmanaged-devices=except:type:wifi
+# 只管真 WiFi 网卡；p2p0 也报 wifi 型，托管它=列表每个热点出现两遍且 p2p0 份永远连不上（09-23 实测）
+unmanaged-devices=except:type=wifi;interface-name:p2p0
 EOF
     mkdir -p /run/NetworkManager
     # NM 靠 D-Bus 激活 wpa_supplicant.service 拉起扫描/认证进程——它可以 disabled 但绝不能 masked
