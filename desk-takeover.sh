@@ -209,11 +209,11 @@ nohup runuser -u xieyizhou -- env -u DISPLAY \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/libexec/xdg-desktop-portal > $LOGD/portal.log 2>&1 &
-# onboard：key-synth=2 走 uinput（Wayland 下唯一可靠注入路径）；它自己不开 IM 防自噬
-runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-    gsettings set org.onboard.preferences key-synth 2 2>/dev/null
+# onboard：key-synth=uinput 走 /dev/uinput（Wayland 下唯一可靠注入路径；schema 是 org.onboard.keyboard）
+runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+    gsettings set org.onboard.keyboard key-synth uinput 2>/dev/null
 nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
-    WAYLAND_DISPLAY=taketest XDG_RUNTIME_DIR=/run/user/1000 \
+    WAYLAND_DISPLAY=taketest GDK_BACKEND=wayland XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus HOME=/home/xieyizhou \
     onboard > $LOGD/onboard.log 2>&1 &
 touch $DIR/takeover.ok
