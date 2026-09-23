@@ -13,6 +13,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.VirtualKeyboard
 import QtQuick.VirtualKeyboard.Components
+import org.kde.plasma.keyboard
 
 KeyboardLayout {
     id: pcRoot
@@ -39,7 +40,9 @@ KeyboardLayout {
         shiftKey2.mode = false
     }
 
-    // 粘滞修饰键：小号标签 + 首字母大写 + 点亮=高亮底色+底部横条（仿 ModeKey 指示）
+    // 粘滞修饰键：普通 Key 面板（40px 小字 + MixedCase 首字母大写，靠 Breeze
+    // functionKey 补丁与 uppercased:false）。点亮指示=高亮底色 + 底部小横条，
+    // 横条按 BreezeConstants.keyBackgroundMargin 内缩对齐到内层圆角背景（v8.1 修正）
     component ModeButton: Key {
         property bool mode
         key: Qt.Key_unknown
@@ -49,16 +52,19 @@ KeyboardLayout {
         highlighted: mode
         onClicked: mode = !mode
         Rectangle {
+            id: modeBar
+            readonly property real m: BreezeConstants.keyBackgroundMargin
+            readonly property real innerW: parent.width - 2 * m
+            readonly property real innerH: parent.height - 2 * m
             visible: parent.mode
             anchors.bottom: parent.bottom
+            anchors.bottomMargin: m + Math.round(innerH * 0.12)
             anchors.horizontalCenter: parent.horizontalCenter
-            width: parent.width * 0.4
-            height: Math.max(2, parent.height * 0.08)
-            radius: 3
-            color: theme_bar_color
+            width: Math.max(2, Math.round(innerW * 0.2))
+            height: Math.max(2, Math.round(innerH * 0.1))
+            radius: BreezeConstants.buttonRadius
+            color: BreezeConstants.modeKeyAccentColor
         }
-        // Breeze 无公开属性可引用，取键文字同色近白
-        property color theme_bar_color: "#dddddd"
     }
 
     // 字母键：Ctrl/Alt 走 uinput；⇧ 本地转大写；键帽实时跟随 ⇧
