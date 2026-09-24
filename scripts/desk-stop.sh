@@ -45,7 +45,14 @@ kill_desktop() {
     pkill -x onboard
     pkill -9 -f "xdg-desktop-portal"
     pkill -9 -f "dmesg-harvester.sh"
-    pkill -9 -f 'wpa_supplicant.*desk-wifi'
+    # 容器与安卓共享 netns → wlan0 只能有一个主人。09-24 起 supplicant 是自拉 nohup 版
+    # （cmdline `wpa_supplicant -u -t -O ...`，不含 desk-wifi），旧模式永远杀不到它，
+    # 残留进程攥着 nl80211/D-Bus 控制权 → 回安卓后 WiFi 开关点了没反应，只能重启（09-24 两次实测）。
+    [ -f /run/desk-wpa.pid ] && kill -9 "$(cat /run/desk-wpa.pid)" 2>/dev/null
+    rm -f /run/desk-wpa.pid
+    pkill -9 -f 'wpa_supplicant -u'        # 容器自拉版 + NM D-Bus 激活版都算（安卓版是 -O/data/vendor/... 无 -u，杀不到）
+    pkill -9 -f 'wpa_supplicant.*desk-wifi'   # 静态 conf fallback 版
+    pkill -9 -f 'strace.*-strace.txt'      # 接管期的 wpa/NM strace 尾巴
     pkill -9 -f "nm-drm.conf"
     pkill -x NetworkManager
     pkill -9 -x dhcpcd
@@ -75,6 +82,10 @@ if [ -f /run/desk-ip-rules.bak ]; then
     ip rule flush; ip rule restore < /run/desk-ip-rules.bak && echo "ip-rule restored from bak"
 fi
 ip link set wlan0 down 2>/dev/null
+# 交还前的残留检查（必须在 4b 重启 anland 会话之前取，否则会把 anland 自己正常拉起的
+# NM/supplicant 误报成泄漏）：容器里还有 wpa_supplicant 活着 = wlan0 主人没换干净
+LEFT=$(pgrep -f 'wpa_supplicant' | tr '\n' ' ')
+[ -n "$LEFT" ] && echo "WIFI-HANDOVER LEAK: 容器侧仍有 $(pgrep -fa wpa_supplicant | tr '\n' ';')"
 run "echo qoderdbg > /sys/power/wake_unlock"
 run "setprop ctl.start system_suspend; setprop ctl.start vendor.qti.hardware.display.composer; start"
 
@@ -107,6 +118,20 @@ if [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-k
     runuser -u xieyizhou -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
         && echo "anland session relaunched"
 fi
+
+# ---- 4c) WiFi 交还取证（容器与安卓共享 netns，wlan0 只能有一个主人；
+#          安卓侧要等 wifi 状态机自己跑完才有结论，故 sleep 后再抓） ----
+WF=$LOGD/wifi-forensic-$(date +%m%d-%H%M%S).log
+sleep 20
+{
+    echo "### $(date)  left_container_supplicant=[$LEFT]"
+    echo "=== settings"; run "settings get global wifi_on"
+    echo "=== dumpsys wifi head"; run "dumpsys wifi 2>/dev/null | head -30"
+    echo "=== iw dev wlan0 link"; run "iw dev wlan0 link 2>/dev/null | head -6"
+    # 注意：run() 会把参数塞进单引号里给 su -c，所以这里内层只能用双引号
+    echo "=== logcat wifi"; run "logcat -d 2>/dev/null | grep -iE \"wifiservice|activemode|wifinative|wificond|HalDevMgmt|StaIface\" | tail -30"
+} > "$WF" 2>&1
+echo "WIFI-FORENSIC -> $WF"
 
 # ---- 5) 结果取证 ----
 sleep 10

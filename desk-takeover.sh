@@ -330,6 +330,7 @@ EOF
     mkdir -p /run/wpa_supplicant
     nohup /usr/sbin/wpa_supplicant -u -t -O "DIR=/run/wpa_supplicant GROUP=netdev" \
         > $LOGD/wpa-drm.log 2>&1 &
+    echo $! > /run/desk-wpa.pid   # desk-stop 按 PID 精确杀（cmdline 无 desk-wifi，模式杀不到）
     echo "WPA_PID=$! $(date +%T)"
     sleep 1
     # 09-24 10:22 轮教训：--log-domains 是白名单；10:39 轮教训：--log-level 命令行无效
