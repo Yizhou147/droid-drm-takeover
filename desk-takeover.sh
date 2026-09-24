@@ -266,12 +266,17 @@ EOF
     # unavailable，桌面里搜不到任何热点）。不再赌它的懒激活：起 NM 前先把 supplicant 拉活。
     systemctl reset-failed wpa_supplicant.service 2>/dev/null
     systemctl start wpa_supplicant.service 2>/dev/null
-    # 09-24 10:10 轮再实锤：supplicant 先起、bus 名已持有，NM 依旧整场不 attach
-    # （journal 里连一条 supplicant 行都没有）→ 预拉活只是必要不充分。开 SUPPLICANT/
-    # DEVICE 域 DEBUG 抓 attach 失败的第一现场（--log-level 是上限，未点名的域仍 INFO）。
-    nohup NetworkManager --config /run/nm-drm.conf --no-daemon \
-        --log-level=DEBUG --log-domains=SUPPLICANT:DEBUG,DEVICE:DEBUG,WIFI:DEBUG,WIFI_SCAN:DEBUG,RFKILL:DEBUG \
+    # 09-24 10:22 轮教训：--log-domains 是白名单，未点名的域（含 DEFAULT/CORE）整条被
+    # 静音，journal 里连 startup 行都丢了。只给 --log-level=DEBUG，全域生效。
+    nohup NetworkManager --config /run/nm-drm.conf --no-daemon --log-level=DEBUG \
         > $LOGD/nm-drm.log 2>&1 &
+    echo "NM_PID=$! $(date +%T)"
+    # 同轮 strace wpa_supplicant 的 dbus 收发：NM 到底对它发了什么、wpa 回了什么，
+    # 10:30 手工复现证实 CreateInterface 在 wpa 参数解析层即被拒（无任何 driver 侧
+    # syscall），需要 NM 视角的第一现场定位是调用方式还是 wpa 2.11 新 dbus 解析的问题。
+    WPAPID=$(pgrep -x wpa_supplicant | head -1)
+    [ -n "$WPAPID" ] && nohup strace -f -tt -s 400 -e trace=network -p "$WPAPID" \
+        -o $LOGD/wpa-strace.txt >/dev/null 2>&1 &
     for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
     nmcli radio wifi on 2>/dev/null   # 清掉可能的软阻塞（上一轮残留状态）
     # 首轮引导：NM 刚起扫描缓存是空的，先 rescan 再带重试连接；
@@ -291,7 +296,7 @@ EOF
     # 永远返回空 → 每轮都误报 NET-FAILED（09-23 晚其实已连上并拿到 DHCP，lease 为证）。
     # LC_ALL=C 钉死英文，防中文 locale 把 "connected" 翻成 "已连接" 再次错过匹配。
     for i in $(seq 1 60); do
-        [ "$(LC_ALL=C nmcli -t -f DEVICE,STATE devices 2>/dev/null | grep '^wlan0:' | cut -d: -f2)" = "connected" ] && { OK=1; break; }
+        [ "$(LC_ALL=C nmcli -t -f DEVICE,STATE device 2>/dev/null | grep '^wlan0:' | cut -d: -f2)" = "connected" ] && { OK=1; break; }
         sleep 1
     done
     if [ "$OK" = 1 ]; then
@@ -311,8 +316,9 @@ EOF
     else
         echo "--- NM diagnosis ---"
         # REASON 列直接给出 unavailable 的第一因（supplicant 相关 vs rfkill vs 驱动）
-        LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE,REASON devices 2>&1 | grep -vE '^(lo|dummy|p2p)' | head -8
-        nmcli -t -f DEVICE,STATE devices 2>&1 | head -5
+        # 注意子命令是单数 device；10:23 轮 `devices` 复数再次全灭过一次
+        LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE,REASON device 2>&1 | grep -vE '^(lo|dummy|p2p)' | head -8
+        gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 Interfaces 2>&1 | head -c 300; echo " <-supplicant Interfaces"
         tail -n 60 $LOGD/nm-drm.log
         echo "NET-FAILED (NM) $(date +%T): desktop kept, NO network"
     fi
