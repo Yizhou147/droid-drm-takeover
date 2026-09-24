@@ -247,6 +247,12 @@ uri=
 [keyfile]
 # 只管真 WiFi 网卡；p2p0 也报 wifi 型，托管它=列表每个热点出现两遍且 p2p0 份永远连不上（09-23 实测）
 unmanaged-devices=except:type=wifi;interface-name:p2p0
+[logging]
+# 09-24 10:39 轮实锤：命令行 --log-level=DEBUG 在这套容器 journal 后端上完全无效
+# （journal 里 debug 行数=0，NM 也没打 "Logging:" 自述行）→ 走官方 conf 路径。
+# domains 必须显式带 DEFAULT:INFO，否则是白名单把整域静音（10:22 轮踩过）。
+level=DEBUG
+domains=DEFAULT:INFO,SUPPLICANT:DEBUG,DEVICE:DEBUG,WIFI:DEBUG,RFKILL:DEBUG,DBUS_PROPS:DEBUG
 EOF
     mkdir -p /run/NetworkManager
     # NM 靠 D-Bus 激活 wpa_supplicant.service 拉起扫描/认证进程——它可以 disabled 但绝不能 masked
@@ -266,17 +272,19 @@ EOF
     # unavailable，桌面里搜不到任何热点）。不再赌它的懒激活：起 NM 前先把 supplicant 拉活。
     systemctl reset-failed wpa_supplicant.service 2>/dev/null
     systemctl start wpa_supplicant.service 2>/dev/null
-    # 09-24 10:22 轮教训：--log-domains 是白名单，未点名的域（含 DEFAULT/CORE）整条被
-    # 静音，journal 里连 startup 行都丢了。只给 --log-level=DEBUG，全域生效。
-    nohup NetworkManager --config /run/nm-drm.conf --no-daemon --log-level=DEBUG \
+    # 09-24 10:22 轮教训：--log-domains 是白名单；10:39 轮教训：--log-level 命令行无效
+    # → 日志级别全部走 /run/nm-drm.conf 的 [logging] 段。
+    nohup NetworkManager --config /run/nm-drm.conf --no-daemon \
         > $LOGD/nm-drm.log 2>&1 &
-    echo "NM_PID=$! $(date +%T)"
-    # 同轮 strace wpa_supplicant 的 dbus 收发：NM 到底对它发了什么、wpa 回了什么，
-    # 10:30 手工复现证实 CreateInterface 在 wpa 参数解析层即被拒（无任何 driver 侧
-    # syscall），需要 NM 视角的第一现场定位是调用方式还是 wpa 2.11 新 dbus 解析的问题。
+    NMPID=$!
+    echo "NM_PID=$NMPID $(date +%T)"
+    # 同轮双 strace：wpa 侧 10:39 轮抓到的量=0（=NM 压根没对 supplicant 发过 dbus 调用，
+    # 这是重要负证据）→ 这轮从 NM 侧看它到底发了什么/为什么不发。
     WPAPID=$(pgrep -x wpa_supplicant | head -1)
     [ -n "$WPAPID" ] && nohup strace -f -tt -s 400 -e trace=network -p "$WPAPID" \
         -o $LOGD/wpa-strace.txt >/dev/null 2>&1 &
+    nohup strace -f -tt -s 400 -e trace=network -p "$NMPID" \
+        -o $LOGD/nm-strace.txt >/dev/null 2>&1 &
     for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
     nmcli radio wifi on 2>/dev/null   # 清掉可能的软阻塞（上一轮残留状态）
     # 首轮引导：NM 刚起扫描缓存是空的，先 rescan 再带重试连接；
@@ -315,9 +323,12 @@ EOF
         fi
     else
         echo "--- NM diagnosis ---"
-        # REASON 列直接给出 unavailable 的第一因（supplicant 相关 vs rfkill vs 驱动）
-        # 注意子命令是单数 device；10:23 轮 `devices` 复数再次全灭过一次
-        LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE,REASON device 2>&1 | grep -vE '^(lo|dummy|p2p)' | head -8
+        # 10:39 轮：REASON 不是本版本 device 表的合法字段。StateReason 走 D-Bus 属性。
+        LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE device 2>&1 | grep -vE '^(lo|dummy|p2p)' | head -8
+        WP=$(nmcli -t -f DEVICE,DBUS-PATH device 2>/dev/null | awk -F: '/^wlan0:/{print $2}')
+        echo "wlan0 dbus path: $WP"
+        busctl get-property org.freedesktop.NetworkManager "$WP" org.freedesktop.NetworkManager.Device StateReason 2>&1
+        busctl introspect org.freedesktop.NetworkManager "$WP" 2>/dev/null | grep -cE "Wireless|Supplicant" 
         gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 Interfaces 2>&1 | head -c 300; echo " <-supplicant Interfaces"
         tail -n 60 $LOGD/nm-drm.log
         echo "NET-FAILED (NM) $(date +%T): desktop kept, NO network"
