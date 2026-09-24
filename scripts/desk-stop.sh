@@ -202,6 +202,6 @@ fi
 # ---- 5) 结果取证 ----
 sleep 10
 run "getprop init.svc.surfaceflinger; getprop init.svc.zygote; getprop init.svc.wpa_supplicant"
-run "dumpsys power | grep -m2 -E 'mWakefulness|mScreenOn'"
+run "dumpsys power 2>/dev/null | grep -m1 -E \"mWakefulness=\" ; dumpsys display 2>/dev/null | grep -m1 -E \"mScreenState=\""
 timeout 8 ping -c 2 -W 1 223.5.5.5 >/dev/null 2>&1 && echo "NET RESTORED VIA ANDROID" || echo "NET STILL DOWN after start"
 echo "=== DESK-STOP DONE $(date +%T) ==="
