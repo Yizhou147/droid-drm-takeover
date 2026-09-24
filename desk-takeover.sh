@@ -261,7 +261,17 @@ polkit.addRule(function(action, subject) {
 });
 EOF
     systemctl try-restart polkit 2>/dev/null
-    nohup NetworkManager --config /run/nm-drm.conf --no-daemon > $LOGD/nm-drm.log 2>&1 &
+    # 09-24 实锤：kill 段的 `systemctl stop wpa_supplicant` 之后，NM 1.54 有时整个会话
+    # 都不发起 fi.w1.wpa_supplicant1 的 D-Bus 激活（journal 零激活请求，wlan0 永久
+    # unavailable，桌面里搜不到任何热点）。不再赌它的懒激活：起 NM 前先把 supplicant 拉活。
+    systemctl reset-failed wpa_supplicant.service 2>/dev/null
+    systemctl start wpa_supplicant.service 2>/dev/null
+    # 09-24 10:10 轮再实锤：supplicant 先起、bus 名已持有，NM 依旧整场不 attach
+    # （journal 里连一条 supplicant 行都没有）→ 预拉活只是必要不充分。开 SUPPLICANT/
+    # DEVICE 域 DEBUG 抓 attach 失败的第一现场（--log-level 是上限，未点名的域仍 INFO）。
+    nohup NetworkManager --config /run/nm-drm.conf --no-daemon \
+        --log-level=DEBUG --log-domains=SUPPLICANT:DEBUG,DEVICE:DEBUG,WIFI:DEBUG,WIFI_SCAN:DEBUG,RFKILL:DEBUG \
+        > $LOGD/nm-drm.log 2>&1 &
     for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
     nmcli radio wifi on 2>/dev/null   # 清掉可能的软阻塞（上一轮残留状态）
     # 首轮引导：NM 刚起扫描缓存是空的，先 rescan 再带重试连接；
@@ -277,8 +287,11 @@ EOF
         ) &
     fi
     OK=0
+    # 旧检查 `nmcli device status wlan0` 是非法语法（status 不接受设备名参数），
+    # 永远返回空 → 每轮都误报 NET-FAILED（09-23 晚其实已连上并拿到 DHCP，lease 为证）。
+    # LC_ALL=C 钉死英文，防中文 locale 把 "connected" 翻成 "已连接" 再次错过匹配。
     for i in $(seq 1 60); do
-        [ "$(nmcli -t -f DEVICE,STATE device status wlan0 2>/dev/null | cut -d: -f2)" = "connected" ] && { OK=1; break; }
+        [ "$(LC_ALL=C nmcli -t -f DEVICE,STATE devices 2>/dev/null | grep '^wlan0:' | cut -d: -f2)" = "connected" ] && { OK=1; break; }
         sleep 1
     done
     if [ "$OK" = 1 ]; then
@@ -297,8 +310,10 @@ EOF
         fi
     else
         echo "--- NM diagnosis ---"
-        nmcli device status 2>&1 | head -5
-        tail -n 20 $LOGD/nm-drm.log
+        # REASON 列直接给出 unavailable 的第一因（supplicant 相关 vs rfkill vs 驱动）
+        LC_ALL=C nmcli -t -f DEVICE,TYPE,STATE,REASON devices 2>&1 | grep -vE '^(lo|dummy|p2p)' | head -8
+        nmcli -t -f DEVICE,STATE devices 2>&1 | head -5
+        tail -n 60 $LOGD/nm-drm.log
         echo "NET-FAILED (NM) $(date +%T): desktop kept, NO network"
     fi
 else
