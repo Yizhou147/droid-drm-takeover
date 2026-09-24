@@ -32,7 +32,15 @@ GW=172.16.30.1
 
 DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
 [ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
-run() { adb -s "$DEV" shell "su -c '$1'"; }
+run() {
+    # 同 desk-stop：安卓侧 adb 调用一律限时，卡死=黑屏（09-24 16:52 轮实测 wake_unlock
+    # 那一次 adb 调用永久阻塞，把回还流程钉死在半路）。超时必须进日志。
+    local out rc
+    out=$(timeout 12 adb -s "$DEV" shell "su -c '$1'" 2>&1); rc=$?
+    [ $rc -eq 124 ] && echo "RUN-TIMEOUT(12s): $1"
+    printf '%s\n' "$out"
+    return $rc
+}
 kill_linux_stack() {
     # v2: 补全实际 cmdline 模式(v1 的 kwinwrap/socket 模式杀不掉真 kwin)，见 desk-stop.sh 头注
     pkill -9 -f "kwinwrap --out" 2>/dev/null

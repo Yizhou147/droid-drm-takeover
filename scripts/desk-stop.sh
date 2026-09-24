@@ -25,9 +25,45 @@ set +e
 set -x
 echo "=== DESK-STOP START $(date +%F_%T) id=$DESKSTOP_ID ==="
 
-DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
 [ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
-run() { adb -s "$DEV" shell "su -c '$1'"; }
+run() {
+    # timeout 只是保命；124 必须打进日志，否则下次又只剩"某行之后没输出"这种糊账
+    local out rc
+    out=$(timeout 12 adb -s "$DEV" shell "su -c '$1'" 2>&1); rc=$?
+    [ $rc -eq 124 ] && echo "RUN-TIMEOUT(12s): $1"
+    printf '%s\n' "$out"
+    return $rc
+}
+
+# ---- 0) 保命看门狗：主流程任意一步卡死/被杀，50s 后无条件把安卓拉起来 ----
+# 09-24 16:52 轮实锤：desk-stop 卡死在它第一个 adb 调用上（run 原本没有 timeout，adb
+# server 抽风就永久阻塞），日志到 wake_unlock 那行就断，`start` 从未执行 → 桌面已被杀完
+# + 框架没起 = 纯黑屏，只能长按电源强启（和 v1 "脚本没脱钩→start 没执行" 同一类后果）。
+# 主流程 start 前 touch /run/deskstop-started，看门狗见标即退 → 正常轮次零影响。
+STARTED_FLAG=/run/deskstop-started
+rm -f $STARTED_FLAG
+(
+    sleep 50
+    [ -f $STARTED_FLAG ] && exit 0
+    echo "=== WATCHDOG FIRED $(date +%T)：主流程没走到 start，强制交还安卓 ==="
+    pkill -9 -f "kwinwrap --out"; pkill -9 -f "socket=taketest"
+    pkill -9 -f "kwin_wayland --"; pkill -9 -f "plasmashell"
+    WDEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
+    if [ -z "$WDEV" ]; then
+        echo "WATCHDOG: adb 通道也没了，只能硬重启（这一步救不了）"
+    else
+        timeout 12 adb -s "$WDEV" shell "su -c 'echo qoderdbg > /sys/power/wake_unlock'"
+        timeout 15 adb -s "$WDEV" shell "su -c 'setprop ctl.start vendor.qti.hardware.display.composer; setprop ctl.start system_suspend; start'"
+        sleep 15
+        timeout 12 adb -s "$WDEV" shell "su -c 'setprop ctl.stop bootanim; sleep 2; setprop ctl.stop bootanim'"
+        timeout 12 adb -s "$WDEV" shell "input keyevent 224"
+        echo "=== WATCHDOG DONE: SF=$(timeout 12 adb -s "$WDEV" shell getprop init.svc.surfaceflinger | tr -d '\r') ==="
+    fi
+    sync
+) >> "$LOG" 2>&1 &
+WATCHDOG_PID=$!
+echo "WATCHDOG_PID=$WATCHDOG_PID (50s 后若无 start 标即自救)"
 
 # ---- 1) 杀 Linux 桌面栈：两套 kwin(接管 taketest / 系统 wayland-0)全模式覆盖 ----
 kill_desktop() {
@@ -101,12 +137,21 @@ if [ -n "$MIS" ] && ! ip -o link show wlan0 >/dev/null 2>&1; then
     fi
 fi
 run "echo qoderdbg > /sys/power/wake_unlock"
-run "setprop ctl.start system_suspend; setprop ctl.start vendor.qti.hardware.display.composer; start"
+# 交还安卓=本脚本的命根子：单发 adb 调用一旦卡住，start 永不执行就是黑屏（09-24 16:52 轮）。
+# 所以重试到亲眼确认 zygote running 为止；确认前不打 STARTED 标，让看门狗仍然可自救。
+for t in 1 2 3 4 5; do
+    run "setprop ctl.start system_suspend; setprop ctl.start vendor.qti.hardware.display.composer; start"
+    sleep 8
+    Z=$(run "getprop init.svc.zygote" 2>/dev/null | tr -d '\r')
+    echo "START try$t zygote=$Z"
+    if [ "$Z" = "running" ]; then touch $STARTED_FLAG; sync; break; fi
+    sleep 3
+done
 
 # ---- 3) 轮询 surfaceflinger；没起来多半是 master 还被占 → 补刀再 start ----
 SF=""
 for i in $(seq 1 24); do
-    SF=$(adb -s "$DEV" shell getprop init.svc.surfaceflinger 2>/dev/null | tr -d '\r')
+    SF=$(timeout 12 adb -s "$DEV" shell getprop init.svc.surfaceflinger 2>/dev/null | tr -d '\r')
     [ "$SF" = "running" ] && break
     if [ $((i % 6)) -eq 0 ]; then
         echo "poll$i SF=$SF -> kill_desktop again + start"
@@ -118,11 +163,11 @@ done
 echo "SURFACEFLINGER=$SF after poll"
 
 # ---- 4) 亮屏解锁（system_server 死机期间的 PMS 状态需要键事件推一把）----
-adb -s "$DEV" shell input keyevent 224 >/dev/null 2>&1
+timeout 12 adb -s "$DEV" shell input keyevent 224 >/dev/null 2>&1
 sleep 2
-adb -s "$DEV" shell input keyevent 224 >/dev/null 2>&1
+timeout 12 adb -s "$DEV" shell input keyevent 224 >/dev/null 2>&1
 run "setprop ctl.stop bootanim; sleep 2; setprop ctl.stop bootanim"
-adb -s "$DEV" shell "su -c 'wm dismiss-keyguard'" >/dev/null 2>&1
+timeout 12 adb -s "$DEV" shell "su -c 'wm dismiss-keyguard'" >/dev/null 2>&1
 $DIR/bin/setbright 2048 >/dev/null 2>&1
 rm -f $DIR/takeover.ok
 
