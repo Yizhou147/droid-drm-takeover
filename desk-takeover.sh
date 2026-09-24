@@ -249,8 +249,12 @@ plugins=keyfile
 [connectivity]
 uri=
 [keyfile]
-# 只管真 WiFi 网卡；p2p0 也报 wifi 型，托管它=列表每个热点出现两遍且 p2p0 份永远连不上（09-23 实测）
-unmanaged-devices=except:type=wifi;interface-name:p2p0
+# 回归根因（09-24 11:13 轮实锤）：c27b36f 写的 except:type=wifi;interface-name:p2p0
+# ——except 组内 ';' 是 AND，语义变成"只托管 wifi且名为 p2p0 的设备"=wlan0 被 config
+# 判 unmanaged，此后每一轮 NET-FAILED（09-23 11:58 后无一成功，所谓 00:36 lease 实为
+# 09-22 dhcpcd 遗留文件）。先回到 09-23 上午实测可连的白名单行；p2p0 重复项问题
+# 另用正确语法解决（interface-name 支持 '!' 取反），不再动 wlan0 的托管。
+unmanaged-devices=except:type:wifi
 [logging]
 # 09-24 10:39 轮实锤：命令行 --log-level=DEBUG 在这套容器 journal 后端上完全无效
 # （journal 里 debug 行数=0，NM 也没打 "Logging:" 自述行）→ 走官方 conf 路径。
