@@ -131,6 +131,10 @@ fi
 # ---- 2) 悬停保护 + 放倒安卓框架（网会掉 ~10-40s，属预期） ----
 run "setprop ctl.stop system_suspend"
 run "echo qoderdbg > /sys/power/wake_lock"
+# 蓝牙：趁 framework 还活着先把 BT 打开——上电/固件补丁/IBS 全由安卓自己的 vendor HAL
+# 完成（我们绝不手碰 btpower ioctl），芯片通电状态不随 system_server 死亡而丢，
+# DRM 期容器侧的 bthci-bridge 只需接管 HCI 数据通道。
+run "svc bluetooth enable; sleep 4"
 run "stop"
 # stop 不动 class hal！composer HAL 活着就还持有 DRM master（SET_MASTER EBUSY），
 # kwin 拿不到屏 → 黑屏（09-21 的坑，drm-takeover 同款处理）

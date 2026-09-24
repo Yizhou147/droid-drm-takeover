@@ -49,6 +49,7 @@ rm -f $STARTED_FLAG
     echo "=== WATCHDOG FIRED $(date +%T)：主流程没走到 start，强制交还安卓 ==="
     pkill -9 -f "kwinwrap --out"; pkill -9 -f "socket=taketest"
     pkill -9 -f "kwin_wayland --"; pkill -9 -f "plasmashell"
+    pkill -9 -x bthci-bridge   # 放掉容器侧 HCI 接管（进程退→tty 关→内核自动注销 hci0）
     WDEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
     if [ -z "$WDEV" ]; then
         echo "WATCHDOG: adb 通道也没了，只能硬重启（这一步救不了）"
@@ -112,6 +113,9 @@ if [ -n "$ALIVE" ]; then
 fi
 
 # ---- 2) 释放 wlan0 + 还原接管期动过的路由 + 拉起安卓全家 ----
+# 蓝牙接管桥必须先死：它活着 = 容器占着 pty/hci0，安卓重启后自己的 BT 栈抢不到通道。
+# 桥退出即关 tty → 内核自动注销 hci0，安卓侧无需任何还原（安卓开机本来就会自开 BT）。
+pkill -x bthci-bridge 2>/dev/null
 pkill -x NetworkManager 2>/dev/null
 # NM 经 D-Bus 激活的 wpa_supplicant 会赖在总线上；只停容器 systemd 的实例（安卓那侧不受影响）
 systemctl stop wpa_supplicant.service 2>/dev/null
