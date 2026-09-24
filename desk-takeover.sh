@@ -50,7 +50,8 @@ kill_linux_stack() {
     pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
     pkill -f "nm-drm.conf" 2>/dev/null
     pkill -x NetworkManager 2>/dev/null
-    systemctl stop wpa_supplicant.service 2>/dev/null   # 清掉上一轮 NM 遗留的 supplicant（仅容器实例）
+    systemctl stop wpa_supplicant.service 2>/dev/null   # 清掉 systemd 侧的 supplicant
+    pkill -x wpa_supplicant 2>/dev/null   # 09-24 起 supplicant 改为自拉 nohup 版，systemctl stop 管不到它
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
     sleep 1
@@ -206,7 +207,10 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
-systemctl try-restart polkit 2>/dev/null
+# 09-24 假设：同轮两处 try-restart polkit 恰好撞在 NM 启动的 polkit 权限查询窗口上
+# → 10:47 轮 NM 主循环冻结。这里改成唯一一次 restart，并等 polkit 真正 active 再继续。
+systemctl restart polkit 2>/dev/null
+for i in $(seq 1 10); do systemctl is-active polkit >/dev/null 2>&1 && break; sleep 0.5; done
 PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
 [ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE \
     WAYLAND_DISPLAY=taketest \
@@ -266,12 +270,21 @@ polkit.addRule(function(action, subject) {
         return polkit.Result.YES;
 });
 EOF
-    systemctl try-restart polkit 2>/dev/null
+    # （原本这里还有第二处 try-restart polkit，已删——见托盘段的说明）
     # 09-24 实锤：kill 段的 `systemctl stop wpa_supplicant` 之后，NM 1.54 有时整个会话
     # 都不发起 fi.w1.wpa_supplicant1 的 D-Bus 激活（journal 零激活请求，wlan0 永久
     # unavailable，桌面里搜不到任何热点）。不再赌它的懒激活：起 NM 前先把 supplicant 拉活。
-    systemctl reset-failed wpa_supplicant.service 2>/dev/null
-    systemctl start wpa_supplicant.service 2>/dev/null
+    # 10:47 轮教训：systemd 管的 supplicant（Type=dbus + Group=netdev 降权）进程不可
+    # dumpable，strace attach 一律 EPERM，wpa 侧连续两轮 0 字节=盲区。改为自拉 nohup
+    # 版（同 root，可 attach），-t 时间戳日志落文件。
+    systemctl stop wpa_supplicant.service 2>/dev/null
+    pkill -x wpa_supplicant 2>/dev/null
+    sleep 1
+    mkdir -p /run/wpa_supplicant
+    nohup /usr/sbin/wpa_supplicant -u -t -O "DIR=/run/wpa_supplicant GROUP=netdev" \
+        > $LOGD/wpa-drm.log 2>&1 &
+    echo "WPA_PID=$! $(date +%T)"
+    sleep 1
     # 09-24 10:22 轮教训：--log-domains 是白名单；10:39 轮教训：--log-level 命令行无效
     # → 日志级别全部走 /run/nm-drm.conf 的 [logging] 段。
     nohup NetworkManager --config /run/nm-drm.conf --no-daemon \
@@ -330,6 +343,10 @@ EOF
         busctl get-property org.freedesktop.NetworkManager "$WP" org.freedesktop.NetworkManager.Device StateReason 2>&1
         busctl introspect org.freedesktop.NetworkManager "$WP" 2>/dev/null | grep -cE "Wireless|Supplicant" 
         gdbus call --system --dest fi.w1.wpa_supplicant1 --object-path /fi/w1/wpa_supplicant1 --method org.freedesktop.DBus.Properties.Get fi.w1.wpa_supplicant1 Interfaces 2>&1 | head -c 300; echo " <-supplicant Interfaces"
+        echo "--- polkit health (重启等待是否生效、NM 权限查询通不通) ---"
+        systemctl is-active polkit 2>&1
+        timeout 5 nmcli general permissions 2>&1 | head -6
+        tail -n 20 $LOGD/wpa-drm.log 2>/dev/null
         tail -n 60 $LOGD/nm-drm.log
         echo "NET-FAILED (NM) $(date +%T): desktop kept, NO network"
     fi
