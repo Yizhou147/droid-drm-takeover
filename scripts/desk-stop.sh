@@ -82,6 +82,9 @@ kill_desktop() {
     pkill -x onboard
     pkill -9 -f "xdg-desktop-portal"
     pkill -9 -f "dmesg-harvester.sh"
+    # Xwayland 由 kwin --xwayland 拉起（09-24 接入），是 kwin 的子进程；kwin 被 -9 时
+    # 它未必跟着退，残留会占住 display 号与 /tmp/.X11-unix/X<n> 死套接字
+    pkill -9 -x Xwayland
     # 容器与安卓共享 netns → wlan0 只能有一个主人。09-24 起 supplicant 是自拉 nohup 版
     # （cmdline `wpa_supplicant -u -t -O ...`，不含 desk-wifi），旧模式永远杀不到它，
     # 残留进程攥着 nl80211/D-Bus 控制权 → 回安卓后 WiFi 开关点了没反应，只能重启（09-24 两次实测）。
@@ -181,6 +184,17 @@ if [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-k
     runuser -u xieyizhou -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
         && echo "anland session relaunched"
 fi
+
+# ---- 4b2) 蓝牙交还确认：桥必须已经死干净（它活着=容器还占着 hci0 的 tty，
+#          安卓自己的蓝牙栈起不来；实测安卓开机/重启服务时会自己重新 enable）----
+BTLEFT=$(pgrep -x bthci-bridge | tr '\n' ' ')
+if [ -n "$BTLEFT" ]; then
+    pkill -9 -x bthci-bridge; sleep 1
+    echo "BT-LEAK: 桥没死干净($BTLEFT) → 已强杀（hci0 随 tty 关闭自动注销）"
+else
+    echo "BT-HANDOVER OK $(date +%T): 容器侧无残留桥"
+fi
+[ -e /sys/class/bluetooth/hci0 ] && echo "BT-WARN: /sys/class/bluetooth/hci0 还在（注销慢一拍或另有持有者）"
 
 # ---- 4c) WiFi 交还取证（容器与安卓共享 netns，wlan0 只能有一个主人；
 #          安卓侧要等 wifi 状态机自己跑完才有结论，故 sleep 后再抓） ----

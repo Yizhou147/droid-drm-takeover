@@ -47,6 +47,12 @@ kill_linux_stack() {
     pkill -9 -f "socket=taketest" 2>/dev/null
     pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null
     pkill -9 -f "kwin_wayland --" 2>/dev/null
+    # Xwayland 是 kwin 的子进程，kwin 被 -9 时不一定跟退；残留会占住 display 号，
+    # 让下一轮 kwin --xwayland 挑到别的号或起不来（09-24 接入 XWayland 时同步加）
+    pkill -9 -x Xwayland 2>/dev/null
+    # Xwayland 是 kwin 的子进程；kwin 被 -9 时它不一定跟着退，残留会占着 /tmp/.X11-unix
+    # 的 display 号，让下一轮 kwin --xwayland 挑到别的号或直接失败
+    pkill -9 -x Xwayland 2>/dev/null
     pkill -9 -f "startplasma-wayland" 2>/dev/null
     pkill -9 -f "plasmashell" 2>/dev/null
     pkill -9 -f "kactivitymanagerd" 2>/dev/null
@@ -165,7 +171,7 @@ env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
         XDG_SESSION_ID=bogus \
         XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        kwin_wayland --socket=taketest \
+        kwin_wayland --socket=taketest --xwayland \
     > $LOGD/kwin.log 2>&1 &
 KPID=$!
 sleep 6
@@ -175,6 +181,36 @@ runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
     QT_QPA_PLATFORM=wayland \
     timeout 5 wayland-info > $LOGD/wayland-info.log 2>&1
 [ $? = 0 ] || rollback "wayland-info self-check failed"
+# ---- 3a) XWayland 落地（09-24：DRM 桌面缺这个，所有 X11-only 应用全打不开——
+#      星火商店/ZCode 是 Electron 默认 x11 ozone，报 "Missing X server or $DISPLAY"；
+#      usb-manager 的 PyQt5 源码里硬把 QT_QPA_PLATFORM=wayland 改写成 xcb，
+#      所以它连"绕成 wayland"的退路都没有）。display 号和 xauth 路径由 kwin 自己挑，
+#      只能事后从 Xwayland 的 cmdline 读回来，再注入 plasmashell 的 env（桌面里启动的
+#      应用全部继承 plasmashell 环境，这是唯一的注入点）。
+XWARGS=(-u DISPLAY)
+XWOK=0
+XWPID=""
+for i in $(seq 1 10); do
+    XWPID=$(pgrep -x Xwayland | head -1)
+    [ -n "$XWPID" ] && break
+    sleep 1
+done
+if [ -n "$XWPID" ]; then
+    XC=$(tr '\0' '\n' < /proc/$XWPID/cmdline 2>/dev/null)
+    XD=$(printf '%s\n' "$XC" | grep -E '^:[0-9]+$' | head -1)
+    # KWin 6 在这里的实测是**不带 -auth** 起 Xwayland（XAUTHORITY 为空），所以 xauth
+    # 只在上游真给了的时候才注入，别把它当成"XWayland 没起来"的判据。
+    XA=$(printf '%s\n' "$XC" | awk '/^-auth$/{getline; print; exit}')
+    if [ -n "$XD" ]; then
+        XWARGS=("DISPLAY=$XD")
+        [ -n "$XA" ] && XWARGS+=("XAUTHORITY=$XA")
+        XWOK=1
+        echo "XWAYLAND-UP display=$XD xauth=[${XA:-none}] pid=$XWPID"
+    else
+        echo "WARN: Xwayland pid=$XWPID but no display in cmdline"
+    fi
+fi
+[ "$XWOK" = 1 ] || echo "WARN: NO-XWAYLAND → X11-only apps will fail (see kwin.log)"
 # ---- 3b) 上屏取证 + 强制点亮：stop 时 system_server 死前会走关机流程把屏灭掉，
 #      kwin 新 commit 不一定把 connector DPMS 拉回 On → 黑屏。主动写 dpms=0。 ----
 $DIR/bin/crtcstate > $LOGD/crtcstate-desk.log 2>&1
@@ -203,7 +239,7 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u xieyizhou -- env "${XWARGS[@]}" -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
@@ -500,6 +536,24 @@ fi
 else
     echo "NET-SKIPPED $(date +%T): 无可用 wifi 配置(安卓 SSID/PSK 没读到)，只起桌面"
 fi
+fi
+
+# ---- 5c) 蓝牙：容器侧 BlueZ 直接吃安卓的蓝牙 HAL（见 droid-bluetooth-bridge 仓库）----
+# 09-24 实测打通的链路：stop 前 `svc bluetooth enable` 让安卓自己把芯片上电/下固件 →
+# 桥 initialize(oneway,码2) → HAL 开 ttyHS0/glink → 桥用 pty+N_HCI 在共享内核里注册真 hci0
+# 并双向搬运 HCI（不带 H4 类型字节的裸包）→ 容器 bluetoothctl 看到 Controller
+# （UP RUNNING、真 BD_ADDR、能扫到周围设备），桌面侧走原生 BlueZ 栈。
+# 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
+BTBIN=/data/local/tmp/bthci-bridge
+# 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
+systemctl start bluetooth 2>/dev/null
+run "test -x $BTBIN || echo BT-NO-BIN; pgrep -x bthci-bridge || nohup $BTBIN --keep 0 >>/data/local/tmp/bt-bridge.log 2>&1 &"
+sleep 8
+run "tail -n 2 /data/local/tmp/bt-bridge.log 2>/dev/null"
+if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then
+    echo "BT-NATIVE OK $(date +%T): $(bluetoothctl list | head -1)"
+else
+    echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
