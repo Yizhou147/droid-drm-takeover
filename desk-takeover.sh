@@ -76,6 +76,9 @@ rollback() {
 #         /root/desk-wifi.conf 仅作兜底；都没有也放行——网络尽力而为，桌面优先 ----
 WIFI_GEN=/run/desk-wifi-dyn.conf
 CUR_SSID=$(adb -s "$DEV" shell "cmd wifi status" 2>/dev/null | sed -n 's/.*connected to "\(.*\)".*/\1/p' | tr -d '\r')
+# xtrace 会把 CUR_PSK 的赋值行和后面 nmcli connect 展开后的命令行原样写进
+# logs/desk-takeover.log（09-24 12:21 轮实锤：password 明文在档）→ PSK 读写段静音
+set +x
 CUR_PSK=$(adb -s "$DEV" shell "su -c 'grep -A2 \"&quot;$CUR_SSID&quot;<\" /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml'" 2>/dev/null | sed -n 's/.*<string name="PreSharedKey">&quot;\(.*\)&quot;<.*/\1/p' | tr -d '\r' | head -1)
 if [ -n "$CUR_SSID" ] && [ -n "$CUR_PSK" ]; then
     printf 'ctrl_interface=/run/wpa-takeover\nupdate_config=0\nap_scan=1\npmf=1\nsae_pwe=2\n' > "$WIFI_GEN"
@@ -87,6 +90,7 @@ else
     [ -f "$WIFI_CONF" ] && echo "WIFI-GEN miss(ssid=[$CUR_SSID]), fallback to static conf" \
         || echo "WIFI-GEN miss and no static conf: desktop will run WITHOUT network"
 fi
+set -x
 
 # ---- 1) DRM 节点 + udev 合成记录（与 drm-takeover.sh 同源） ----
 mkdir -p /dev/dri /dev/input
@@ -230,45 +234,56 @@ touch $DIR/takeover.ok
 $DIR/bin/setbright 2048 > /dev/null 2>&1
 echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
 
-# ---- 5) 容器接管 WiFi：NetworkManager 模式（DRM 桌面设置里可直接点热点、密码持久化） ----
-# 备份安卓策略路由后再动 rule——netd 已死没人管；desk-stop 会原样还原再 start。
-ip rule save > /run/desk-ip-rules.bak 2>/dev/null
-pkill -9 -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
-pkill -x dhcpcd 2>/dev/null
-if command -v NetworkManager >/dev/null 2>&1; then
-    ip link set wlan0 down; sleep 1; ip link set wlan0 up
-    # 安卓把 main 表摘了、全塞 fwmark→1015，NM 的 DHCP 不吃这套 → 恢复内核标准三表
-    ip rule flush
-    ip rule add pref 0 table local        2>/dev/null
-    ip rule add pref 100 table main       2>/dev/null
-    ip rule add pref 32766 table default  2>/dev/null
-    # 09-24 实锤：ip rule 曾堆到 24600 条（pref0 local 重复 24576 次），NM 启动的
-    # 同步 link/rule dump 一次要 13s+。flush 在内核不真删的场景下每轮会净增，
-    # 这里查重并把多出来的 pref0 一次性删到只剩一条。
-    DUP0=$(( $(ip -o rule show | grep -c '^0:') - 1 ))
-    if [ "$DUP0" -gt 0 ]; then
-        seq 1 $DUP0 | sed 's/^/rule del pref 0 table local/' | ip -force -batch - 2>/dev/null
-        echo "IPRULE-DEDUP removed=$DUP0 $(date +%T)"
-    fi
-    ip -4 addr flush dev wlan0 2>/dev/null
+    # ---- 5) 容器接管 WiFi：NetworkManager 模式（DRM 桌面设置里可直接点热点、密码持久化） ----
+    # 备份安卓策略路由后再动 rule——netd 已死没人管；desk-stop 会原样还原再 start。
+    # 09-24 下午两连实锤：①`ip rule save` 是 iproute2 二进制格式，desk-stop 的
+    # `ip rule restore` 原样回放 → save 时若带脏 pref0，每轮都被 bak 带病重启；
+    # ②12:20 轮 dedup 到 1 后，轮内又漂回 2 条 pref0（无任何脚本再碰 rule）→
+    # 备份前先收敛到只剩一条，从源头保证 bak 干净。
+    while [ "$(ip -o rule show | grep -c '^0:')" -gt 1 ]; do
+        ip rule del pref 0 table local 2>/dev/null || break
+    done
+    ip rule save > /run/desk-ip-rules.bak 2>/dev/null
+    pkill -9 -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
+    pkill -x dhcpcd 2>/dev/null
+    if command -v NetworkManager >/dev/null 2>&1; then
+        ip link set wlan0 down; sleep 1; ip link set wlan0 up
+        # 安卓把 main 表摘了、全塞 fwmark→1015，NM 的 DHCP 不吃这套 → 恢复内核标准三表
+        ip rule flush
+        ip rule add pref 0 table local        2>/dev/null
+        ip rule add pref 100 table main       2>/dev/null
+        ip rule add pref 32766 table default  2>/dev/null
+        # 09-24 实锤：ip rule 曾堆到 24600 条（pref0 local 重复 24576 次），NM 启动的
+        # 同步 link/rule dump 一次要 13s+。flush 在本内核不保证删净 pref0（实测会
+        # 残留），逐条删到只剩一条（batch 版删除实测有效，这里单条循环更直白）。
+        N0=$(ip -o rule show | grep -c '^0:')
+        if [ "$N0" -gt 1 ]; then
+            for d in $(seq 2 $N0); do ip rule del pref 0 table local 2>/dev/null || break; done
+            echo "IPRULE-DEDUP removed=$(( N0 - $(ip -o rule show | grep -c '^0:') )) $(date +%T)"
+        fi
+        N0=$(ip -o rule show | grep -c '^0:')
+        [ "$N0" -ne 1 ] && echo "IPRULE-ANOMALY pref0=$N0 $(date +%T)"
+        # 09-24 12:4x：轮内出现"dedup 后无人操作却多回一条 pref0"的漂移，加一个只读
+        # netlink 监听抓 re-adder 的现行（不碰 wlan0 流量）。只保留最近一轮的监听。
+        pkill -f 'ip monitor rule' 2>/dev/null
+        nohup ip monitor rule > $LOGD/ip-rule-monitor.log 2>&1 &
+        ip -4 addr flush dev wlan0 2>/dev/null
     cat > /run/nm-drm.conf <<'EOF'
 [main]
 plugins=keyfile
 [connectivity]
 uri=
 [keyfile]
-# 回归根因（09-24 11:13 轮实锤）：c27b36f 写的 except:type=wifi;interface-name:p2p0
-# ——except 组内 ';' 是 AND，语义变成"只托管 wifi且名为 p2p0 的设备"=wlan0 被 config
-# 判 unmanaged，此后每一轮 NET-FAILED（09-23 11:58 后无一成功，所谓 00:36 lease 实为
-# 09-22 dhcpcd 遗留文件）。先回到 09-23 上午实测可连的白名单行；p2p0 重复项问题
-# 另用正确语法解决（interface-name 支持 '!' 取反），不再动 wlan0 的托管。
+# 回归根因补充实锤（09-24 下午读源码）：c27b36f 写的是 except:type=wifi;... ——
+# 标签必须是 'type:'，'type=' 不是合法标签，该 except 谓词对任何设备都恒不命中，
+# "除了 wifi 都 unmanaged" 的语义整个失效 → wlan0 每轮被判 unmanaged（回归轮的
+# nmcli STATE=unmanaged 为证）。这里回到 09-23 上午实测可连的写法。
 unmanaged-devices=except:type:wifi
-# 09-24 更正：源码里 interface-name 并不支持 '!' 取反（精确串 + '~' glob），except 组
-# 也写不出"wifi 且非 p2p0"→ p2p0 自动连接循环改用每设备段排除（源码键名
-# DEVICE_RUN_STATE_KEYFILE_KEY_DEVICE_MANAGED="managed"，12:1x 已实测生效）。
-[device-desk-p2p]
-match-device=interface-name:p2p0
-managed=0
+# p2p0 排除为什么不能写进本行（nm-core-utils.c nm_match_spec_split/nm_match_spec_device）：
+# ',' 与 ';' 完全同权、一律 OR；任一 except 命中即 NEG_MATCH（托管优先）——这套
+# 语法根本表达不了"wifi 里再排除 p2p0"的 AND 取反。[device-*] 段也没有 managed 键
+# （只存在于 /run/NetworkManager/devices/<ifindex> run-state，817eb6f 加的段实测零生效）。
+# → p2p0 改走运行时 `nmcli dev set p2p0 managed no`（见 NM 启动等待段）。
 [logging]
 # 09-24 10:39 轮实锤：命令行 --log-level=DEBUG 在这套容器 journal 后端上完全无效
 # （journal 里 debug 行数=0，NM 也没打 "Logging:" 自述行）→ 走官方 conf 路径。
@@ -332,12 +347,26 @@ EOF
         -o $LOGD/nm-strace.txt >/dev/null 2>&1 &
     for i in $(seq 1 15); do nmcli status >/dev/null 2>&1 && break; sleep 1; done
     nmcli radio wifi on 2>/dev/null   # 清掉可能的软阻塞（上一轮残留状态）
+    # p2p0（Wi-Fi Direct 虚拟口）配置语法排除不了（见 /run/nm-drm.conf 注释）→
+    # 走 run-state。它由 supplicant P2P 初始化时慢建，NM 重启也会重置该标记，
+    # 所以后台带重试收敛，不阻塞主流程。
+    (
+        for i in $(seq 1 20); do
+            sleep 3
+            nmcli dev set p2p0 managed no 2>/dev/null && break
+        done
+    ) &
     # 首轮引导：NM 刚起扫描缓存是空的，先 rescan 再带重试连接；
     # 成功即自动落 keyfile(0600)，以后自连、plasma-nm 面板可改
     if [ -n "$CUR_SSID" ] && [ -n "$CUR_PSK" ]; then
         (
+            # 子 shell 继承 xtrace，nmcli connect 展开后的 password 会进日志（09-24 泄漏实锤）
+            set +x
             for t in 1 2 3 4 5; do
                 sleep 3
+                # 09-24 12:21 轮：连上后循环仍又跑了几次（profile 名匹配不总是及时）→
+                # 直接以 wlan0 状态收口，防重入 rescan/connect 抖动已建好的链路
+                LC_ALL=C nmcli -t -f DEVICE,STATE device 2>/dev/null | grep -q '^wlan0:connected' && break
                 nmcli -g NAME connection list 2>/dev/null | grep -qxF "$CUR_SSID" && break
                 nmcli device wifi rescan 2>/dev/null
                 nmcli device wifi connect "$CUR_SSID" password "$CUR_PSK" >> $LOGD/nm-drm.log 2>&1 && break
@@ -451,6 +480,8 @@ fi
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
+# pref0 终态计数：轮内再漂移的话，$LOGD/ip-rule-monitor.log 里会留着 re-adder 现场
+echo "IPRULE-FINAL pref0=$(ip -o rule show | grep -c '^0:') total=$(ip -o rule show | wc -l) $(date +%T)"
 DEV=$DEV nohup bash $DIR/scripts/dmesg-harvester.sh > /dev/null 2>&1 &
 adb -s "$DEV" shell "su -c 'free -m | head -2'"
 echo "=== DESK-TAKEOVER DONE $(date +%T): kwin pid $KPID, plasma up, net via container wpa+dhcpcd ==="
