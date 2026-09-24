@@ -55,6 +55,9 @@ kill_desktop() {
     pkill -9 -f 'strace.*-strace.txt'      # 接管期的 wpa/NM strace 尾巴
     pkill -9 -f "nm-drm.conf"
     pkill -x NetworkManager
+    # udevd 活着就会在安卓重建 wlan0 的 uevent 上二次改名（wlp1s0，09-24 事故主角）；
+    # 接管期它只是 NM 的工具，交还后必须闭嘴。下一轮 desk-takeover 会重新拉起。
+    pkill -9 -x systemd-udevd
     pkill -9 -x dhcpcd
 }
 for i in 1 2 3; do
@@ -86,6 +89,17 @@ ip link set wlan0 down 2>/dev/null
 # NM/supplicant 误报成泄漏）：容器里还有 wpa_supplicant 活着 = wlan0 主人没换干净
 LEFT=$(pgrep -f 'wpa_supplicant' | tr '\n' ' ')
 [ -n "$LEFT" ] && echo "WIFI-HANDOVER LEAK: 容器侧仍有 $(pgrep -fa wpa_supplicant | tr '\n' ';')"
+# 改名自愈：wlan0 若已被容器 udevd 改成 wlpXXX，安卓找不到自己的网卡 → WiFi 永久废掉。
+# 趁安卓 framework 还没 start、网卡无人使用时改回来（09-24 现场实测：这一步就能免掉重启）。
+MIS=$(ip -o link 2>/dev/null | grep -oE "wlp[a-z0-9]+" | head -1)
+if [ -n "$MIS" ] && ! ip -o link show wlan0 >/dev/null 2>&1; then
+    ip link set "$MIS" down 2>/dev/null
+    if ip link set "$MIS" name wlan0 2>/dev/null; then
+        echo "WIFI-RENAME-FIX: $MIS -> wlan0 OK"
+    else
+        echo "WIFI-RENAME-FIX: $MIS -> wlan0 FAILED（接口被占/EBUSY，安卓 WiFi 大概率要重启才恢复）"
+    fi
+fi
 run "echo qoderdbg > /sys/power/wake_unlock"
 run "setprop ctl.start system_suspend; setprop ctl.start vendor.qti.hardware.display.composer; start"
 
@@ -132,6 +146,13 @@ sleep 20
     echo "=== logcat wifi"; run "logcat -d 2>/dev/null | grep -iE \"wifiservice|activemode|wifinative|wificond|HalDevMgmt|StaIface\" | tail -30"
 } > "$WF" 2>&1
 echo "WIFI-FORENSIC -> $WF"
+# 没连上就用安卓官方路径推一次状态机（等价于设置里关开一次），结果追加进同一份取证
+if ! run "iw dev wlan0 link 2>/dev/null | head -1" 2>/dev/null | grep -q "Connected to"; then
+    echo "WIFI-NUDGE: wlan0 未关联 → svc wifi disable/enable"
+    run "svc wifi disable"; sleep 3
+    run "svc wifi enable"; sleep 12
+    run "iw dev wlan0 link 2>/dev/null | head -4; settings get global wifi_on" >> "$WF" 2>&1
+fi
 
 # ---- 5) 结果取证 ----
 sleep 10

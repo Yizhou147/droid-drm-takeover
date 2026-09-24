@@ -309,6 +309,16 @@ EOF
     # NM platform 以 "use udev" 建 link 缓存：拿不到 udev 设备对象 → 所有 link 永远
     # not-init → startup complete 卡在 'lo (link-init)' → 全设备 unmanaged（WiFi 永远转圈）。
     # 起 NM 前保证 udevd 活着并做 net 冷插拔；systemd 拉不动就直接手动起。
+    # 09-24 16:25 实锤（回安卓后 WiFi 永久失效、只能整机重启，两次）：udevd + 下面那行
+    # `udevadm trigger --action=add --subsystem-match=net` 会用 80-net-setup-link 的
+    # 可预测命名把共享 netns 里的 wlan0 改名成 wlp1s0
+    # （安卓 dmesg: "cnss_pci 0000:01:00.0 wlp1s0: renamed from wlan0 (while UP)"），
+    # 而安卓 WiFi 状态机硬编码只认 wlan0 → logcat "WifiActiveModeWarden: One of the
+    # native daemons died. Triggering recovery" + "MiuiWifiService: This interface
+    # cannot be used" 无限循环，设置里开关点了没反应。容器改名对安卓是永久的（安卓不会
+    # 自己改回来），所以只有重启才好。处置：把命名规则掩掉（只动容器 rootfs 的 /etc，
+    # 不碰安卓），udevd 照常活着供 NM 用。
+    ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
     systemctl reset-failed systemd-udevd.service 2>/dev/null
     systemctl start systemd-udevd.service 2>/dev/null
     if ! pgrep -x systemd-udevd >/dev/null; then
