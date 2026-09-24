@@ -242,6 +242,14 @@ if command -v NetworkManager >/dev/null 2>&1; then
     ip rule add pref 0 table local        2>/dev/null
     ip rule add pref 100 table main       2>/dev/null
     ip rule add pref 32766 table default  2>/dev/null
+    # 09-24 实锤：ip rule 曾堆到 24600 条（pref0 local 重复 24576 次），NM 启动的
+    # 同步 link/rule dump 一次要 13s+。flush 在内核不真删的场景下每轮会净增，
+    # 这里查重并把多出来的 pref0 一次性删到只剩一条。
+    DUP0=$(( $(ip -o rule show | grep -c '^0:') - 1 ))
+    if [ "$DUP0" -gt 0 ]; then
+        seq 1 $DUP0 | sed 's/^/rule del pref 0 table local/' | ip -force -batch - 2>/dev/null
+        echo "IPRULE-DEDUP removed=$DUP0 $(date +%T)"
+    fi
     ip -4 addr flush dev wlan0 2>/dev/null
     cat > /run/nm-drm.conf <<'EOF'
 [main]
@@ -255,6 +263,12 @@ uri=
 # 09-22 dhcpcd 遗留文件）。先回到 09-23 上午实测可连的白名单行；p2p0 重复项问题
 # 另用正确语法解决（interface-name 支持 '!' 取反），不再动 wlan0 的托管。
 unmanaged-devices=except:type:wifi
+# 09-24 更正：源码里 interface-name 并不支持 '!' 取反（精确串 + '~' glob），except 组
+# 也写不出"wifi 且非 p2p0"→ p2p0 自动连接循环改用每设备段排除（源码键名
+# DEVICE_RUN_STATE_KEYFILE_KEY_DEVICE_MANAGED="managed"，12:1x 已实测生效）。
+[device-desk-p2p]
+match-device=interface-name:p2p0
+managed=0
 [logging]
 # 09-24 10:39 轮实锤：命令行 --log-level=DEBUG 在这套容器 journal 后端上完全无效
 # （journal 里 debug 行数=0，NM 也没打 "Logging:" 自述行）→ 走官方 conf 路径。
@@ -275,6 +289,20 @@ polkit.addRule(function(action, subject) {
 });
 EOF
     # （原本这里还有第二处 try-restart polkit，已删——见托盘段的说明）
+    # 09-24 断网根因：昨晚 35a8bff 给 udevd 加的 ExecCondition(enable_hw_access) drop-in
+    # 在今天 09:41 重启后条件不满足（container.config 里=0）→ udevd 永久 skipped。
+    # NM platform 以 "use udev" 建 link 缓存：拿不到 udev 设备对象 → 所有 link 永远
+    # not-init → startup complete 卡在 'lo (link-init)' → 全设备 unmanaged（WiFi 永远转圈）。
+    # 起 NM 前保证 udevd 活着并做 net 冷插拔；systemd 拉不动就直接手动起。
+    systemctl reset-failed systemd-udevd.service 2>/dev/null
+    systemctl start systemd-udevd.service 2>/dev/null
+    if ! pgrep -x systemd-udevd >/dev/null; then
+        nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 &
+        sleep 1
+    fi
+    udevadm trigger --action=add --subsystem-match=net 2>/dev/null
+    udevadm settle --timeout=5 2>/dev/null
+    echo "UDEVD_PID=$(pgrep -x systemd-udevd | head -1) NETRULES=$(ls /run/udev/data 2>/dev/null | grep -c '^n') $(date +%T)"
     # 09-24 实锤：kill 段的 `systemctl stop wpa_supplicant` 之后，NM 1.54 有时整个会话
     # 都不发起 fi.w1.wpa_supplicant1 的 D-Bus 激活（journal 零激活请求，wlan0 永久
     # unavailable，桌面里搜不到任何热点）。不再赌它的懒激活：起 NM 前先把 supplicant 拉活。
