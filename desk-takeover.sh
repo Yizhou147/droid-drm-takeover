@@ -53,6 +53,11 @@ kill_linux_stack() {
     # Xwayland 是 kwin 的子进程；kwin 被 -9 时它不一定跟着退，残留会占着 /tmp/.X11-unix
     # 的 display 号，让下一轮 kwin --xwayland 挑到别的号或直接失败
     pkill -9 -x Xwayland 2>/dev/null
+    # 会话里注入的是写死的 DISPLAY=:0，所以必须保证 :0 真的空出来：anland 遗留的
+    # /tmp/.X11-unix/X0 是**没人 listen 的死 socket**，Xwayland bind 它会 EADDRINUSE
+    # 而退到 :1，那样注入的 :0 就成了错的。上面已经 Xwayland 全杀，这里的 socket 文件
+    # 一律是垃圾（整个容器里只有 anland/DRM 两套 kwin 会造 X socket）。
+    rm -f /tmp/.X11-unix/X* /tmp/.X11-lock /tmp/.X*-lock 2>/dev/null
     pkill -9 -f "startplasma-wayland" 2>/dev/null
     pkill -9 -f "plasmashell" 2>/dev/null
     pkill -9 -f "kactivitymanagerd" 2>/dev/null
@@ -137,10 +142,12 @@ fi
 # ---- 2) 悬停保护 + 放倒安卓框架（网会掉 ~10-40s，属预期） ----
 run "setprop ctl.stop system_suspend"
 run "echo qoderdbg > /sys/power/wake_lock"
-# 蓝牙：趁 framework 还活着先把 BT 打开——上电/固件补丁/IBS 全由安卓自己的 vendor HAL
-# 完成（我们绝不手碰 btpower ioctl），芯片通电状态不随 system_server 死亡而丢，
-# DRM 期容器侧的 bthci-bridge 只需接管 HCI 数据通道。
-run "svc bluetooth enable; sleep 4"
+# 这里**不放** `svc bluetooth enable`（09-24 加了又撤）：实测两台次都在"enable→几秒后 stop"
+# 之后 2–3 分钟内整机挂死、console 静默 ~86s 后看门狗复位（mtdoops reason=7），
+# 机制上讲得通：enable 会拉起 com.android.bluetooth + btpower/cnss 的上电序列，
+# 序列没走完就把 framework `stop` 掉 = 把协调者打断在半程（正是红线那类 combo 芯片事故）。
+# 而且根本不需要它：本机开机安卓自己就把蓝牙开着（用户实测"重启后自动开，我无法控制"），
+# 桥在冷 HAL 上（fd=0）自己 initialize 就能把传输开起来（09-24 23:05 实测）。
 run "stop"
 # stop 不动 class hal！composer HAL 活着就还持有 DRM master（SET_MASTER EBUSY），
 # kwin 拿不到屏 → 黑屏（09-21 的坑，drm-takeover 同款处理）
@@ -181,36 +188,15 @@ runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
     QT_QPA_PLATFORM=wayland \
     timeout 5 wayland-info > $LOGD/wayland-info.log 2>&1
 [ $? = 0 ] || rollback "wayland-info self-check failed"
-# ---- 3a) XWayland 落地（09-24：DRM 桌面缺这个，所有 X11-only 应用全打不开——
-#      星火商店/ZCode 是 Electron 默认 x11 ozone，报 "Missing X server or $DISPLAY"；
-#      usb-manager 的 PyQt5 源码里硬把 QT_QPA_PLATFORM=wayland 改写成 xcb，
-#      所以它连"绕成 wayland"的退路都没有）。display 号和 xauth 路径由 kwin 自己挑，
-#      只能事后从 Xwayland 的 cmdline 读回来，再注入 plasmashell 的 env（桌面里启动的
-#      应用全部继承 plasmashell 环境，这是唯一的注入点）。
-XWARGS=(-u DISPLAY)
-XWOK=0
-XWPID=""
-for i in $(seq 1 10); do
-    XWPID=$(pgrep -x Xwayland | head -1)
-    [ -n "$XWPID" ] && break
-    sleep 1
-done
-if [ -n "$XWPID" ]; then
-    XC=$(tr '\0' '\n' < /proc/$XWPID/cmdline 2>/dev/null)
-    XD=$(printf '%s\n' "$XC" | grep -E '^:[0-9]+$' | head -1)
-    # KWin 6 在这里的实测是**不带 -auth** 起 Xwayland（XAUTHORITY 为空），所以 xauth
-    # 只在上游真给了的时候才注入，别把它当成"XWayland 没起来"的判据。
-    XA=$(printf '%s\n' "$XC" | awk '/^-auth$/{getline; print; exit}')
-    if [ -n "$XD" ]; then
-        XWARGS=("DISPLAY=$XD")
-        [ -n "$XA" ] && XWARGS+=("XAUTHORITY=$XA")
-        XWOK=1
-        echo "XWAYLAND-UP display=$XD xauth=[${XA:-none}] pid=$XWPID"
-    else
-        echo "WARN: Xwayland pid=$XWPID but no display in cmdline"
-    fi
-fi
-[ "$XWOK" = 1 ] || echo "WARN: NO-XWAYLAND → X11-only apps will fail (see kwin.log)"
+# ---- 3a) XWayland（09-24：DRM 桌面缺它，X11-only 应用全打不开——星火商店/ZCode 是
+#      Electron 默认 x11 ozone，报 "Missing X server or $DISPLAY"；usb-manager 的 PyQt5
+#      源码里硬把 QT_QPA_PLATFORM=wayland 改写成 xcb，连退路都没有）。
+#      这里**不 poll 等 Xwayland 出现**：实测 KWin 6 起 Xwayland 的时机晚于 plasmashell
+#      （23:17:42 plasmashell → 23:17:44 Xwayland），起完 kwin 等 10s 只拿得到空，
+#      注入永远是缺省的。改成直接把 :0 写进会话环境（kill_linux_stack 已清掉遗留死
+#      socket，:0 可预期），真实结果由 DESKTOP-UP 之后的 XWAYLAND-OK/MISMATCH 后台核对。
+#      XAUTHORITY 不注入：kwin 起 Xwayland 不带 -auth，实测本地连接不需要 cookie。
+XWARGS=("DISPLAY=:0")
 # ---- 3b) 上屏取证 + 强制点亮：stop 时 system_server 死前会走关机流程把屏灭掉，
 #      kwin 新 commit 不一定把 connector DPMS 拉回 On → 黑屏。主动写 dpms=0。 ----
 $DIR/bin/crtcstate > $LOGD/crtcstate-desk.log 2>&1
@@ -239,13 +225,27 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env "${XWARGS[@]}" -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
+nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
+    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS "${XWARGS[@]}" \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/bin/plasmashell --replace > $LOGD/plasma.log 2>&1 &
+# plasmashell 起没起必须亲眼看到（09-24 黑屏事故的直接教训：`env` 参数顺序写错
+# → plasmashell 压根没启动，而收尾那行照旧写 "plasma up"，连着三轮黑屏白猜）。
+PSHELL=""
+for i in 1 2 3 4 5 6 7 8; do
+    PSHELL=$(pgrep -x plasmashell | head -1)
+    [ -n "$PSHELL" ] && break
+    sleep 1
+done
+if [ -n "$PSHELL" ]; then
+    echo "PLASMA-UP pid=$PSHELL $(date +%T)"
+else
+    echo "PLASMA-FAIL $(date +%T): plasmashell 没起来 = 无壳黑屏，plasma.log 尾部："
+    tail -n 5 $LOGD/plasma.log 2>&1
+fi
 # ---- 托盘亮度/电池（09-24 三根因定修）----
 # 1) 容器 /sys 挂成 ro → backlighthelper 写亮度 EROFS；remount rw 解决
 # 2) 无 logind active session → polkit 默认拒 org.kde.powerdevil.backlighthelper.*
@@ -281,6 +281,26 @@ nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
 touch $DIR/takeover.ok
 $DIR/bin/setbright 2048 > /dev/null 2>&1
 echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
+# ---- 4a) XWayland 事后核对（异步，不阻塞桌面）：确认 kwin 真把 Xwayland 起在 :0，
+#      也就是会话里注入的 DISPLAY 是对的。它比 plasmashell 晚 ~2s，但 kwin 起不来的
+#      情况也得报出来，所以给 90s 窗口。
+(
+    for i in $(seq 1 90); do
+        XP=$(pgrep -x Xwayland | head -1)
+        [ -n "$XP" ] && break
+        sleep 1
+    done
+    if [ -z "$XP" ]; then
+        echo "XWAYLAND-ABSENT $(date +%T): kwin 没起 Xwayland，X11-only 应用仍打不开（看 kwin.log）"
+    else
+        XD=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -E '^:[0-9]+$' | head -1)
+        if [ "$XD" = ":0" ]; then
+            echo "XWAYLAND-OK display=$XD pid=$XP $(date +%T)"
+        else
+            echo "XWAYLAND-MISMATCH display=$XD 但会话注入的是 :0 → 应用连不上，检查 /tmp/.X11-unix 残留"
+        fi
+    fi
+) >> $LOGD/desk-takeover.log 2>&1 &
 
     # ---- 5) 容器接管 WiFi：NetworkManager 模式（DRM 桌面设置里可直接点热点、密码持久化） ----
     # 备份安卓策略路由后再动 rule——netd 已死没人管；desk-stop 会原样还原再 start。
@@ -539,11 +559,13 @@ fi
 fi
 
 # ---- 5c) 蓝牙：容器侧 BlueZ 直接吃安卓的蓝牙 HAL（见 droid-bluetooth-bridge 仓库）----
-# 09-24 实测打通的链路：stop 前 `svc bluetooth enable` 让安卓自己把芯片上电/下固件 →
-# 桥 initialize(oneway,码2) → HAL 开 ttyHS0/glink → 桥用 pty+N_HCI 在共享内核里注册真 hci0
-# 并双向搬运 HCI（不带 H4 类型字节的裸包）→ 容器 bluetoothctl 看到 Controller
-# （UP RUNNING、真 BD_ADDR、能扫到周围设备），桌面侧走原生 BlueZ 栈。
+# 链路 09-24 实测通了：桥 initialize(oneway,码2) → HAL 自己开 ttyHS0/glink →
+# 桥用 pty+N_HCI 在共享内核里注册真 hci0 并双向搬运 HCI（裸包，不带 H4 类型字节）→
+# 容器 bluetoothctl 看到 Controller（UP RUNNING、真 BD_ADDR、扫到周围设备）。
+# 但**默认关闭**（BT_BRIDGE=1 才开）：带桥跑的那两轮之后设备各出现一次
+# "console 静默 ~86s → 看门狗复位"（mtdoops reason=7），在 A/B 排除之前不让它上默认路径。
 # 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
+if [ "${BT_BRIDGE:-0}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
@@ -555,10 +577,17 @@ if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then
 else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
 fi
+else
+    echo "BT-BRIDGE SKIPPED $(date +%T)（默认关，要验蓝牙跑 BT_BRIDGE=1 的那轮）"
+fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
 # pref0 终态计数：轮内再漂移的话，$LOGD/ip-rule-monitor.log 里会留着 re-adder 现场
 echo "IPRULE-FINAL pref0=$(ip -o rule show | grep -c '^0:') total=$(ip -o rule show | wc -l) $(date +%T)"
 DEV=$DEV nohup bash $DIR/scripts/dmesg-harvester.sh > /dev/null 2>&1 &
 adb -s "$DEV" shell "su -c 'free -m | head -2'"
-echo "=== DESK-TAKEOVER DONE $(date +%T): kwin pid $KPID, plasma up, net via container wpa+dhcpcd ==="
+if [ -z "$PSHELL" ]; then
+    echo "=== DESK-TAKEOVER DONE $(date +%T): kwin pid $KPID, **PLASMA 没起来=黑屏**（见上面 PLASMA-FAIL） ==="
+else
+    echo "=== DESK-TAKEOVER DONE $(date +%T): kwin pid $KPID, plasmashell pid $PSHELL ==="
+fi

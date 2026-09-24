@@ -147,7 +147,25 @@ static void dump_commit(pid_t t, unsigned long long uptr) {
 }
 
 struct phase { pid_t t; int p; int sub; unsigned long long nr;
-               long long hret; long long e_ns; char path[96]; };
+               long long hret; long long e_ns; char path[96]; int foreign; };
+
+/* PTRACE_O_TRACEFORK auto-attaches every forked child (Xwayland, plasma-keyboard,
+ * ... started by kwin) to this tracer, and the inherited seccomp filter keeps
+ * reporting their openat/ioctl to us. Only the compositor itself may have its
+ * card/render opens rewritten — for anyone else just resume and don't touch. */
+static pid_t CHILD;
+static pid_t tgid_of(pid_t t) {
+    char p[64];
+    FILE *f;
+    char line[256];
+    pid_t tg = -1;
+    snprintf(p, sizeof p, "/proc/%d/status", t);
+    if (!(f = fopen(p, "r"))) return -1;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "Tgid: %d", &tg) == 1) break;
+    fclose(f);
+    return tg;
+}
 
 static int setregs(pid_t t, struct ptregs *r) {
     struct iovec io = { .iov_base = r, .iov_len = sizeof *r };
@@ -991,6 +1009,14 @@ static void filter_getres(pid_t t, unsigned long long uptr) {
  * seccomp-event stop. */
 static void handle_entry(pid_t t, struct phase *ph) {
     struct ptregs r;
+    /* tri-state: 0 unknown, -1 the compositor itself, 1 a forked outsider */
+    if (ph->foreign == 0)
+        ph->foreign = (tgid_of(t) == CHILD) ? -1 : 1;
+    if (ph->foreign == 1) {
+        ph->nr = 0;
+        ph->sub = 0;
+        return;
+    }
     if (getregs(t, &r)) return;
     ph->nr = r.regs[8];
     ph->sub = 0;
@@ -1304,6 +1330,7 @@ int main(int argc, char **argv) {
     }
 
     int status;
+    CHILD = child;
     waitpid(child, &status, 0);
     ptrace(PTRACE_SETOPTIONS, child, NULL,
            (void *)(long)(PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACECLONE |
@@ -1500,11 +1527,22 @@ int main(int argc, char **argv) {
          * exit-stop pending if the signal interrupted a trapped syscall */
         {
             struct phase *ph2 = NULL;
+            int fresh = 0;
             for (int i = 0; i < nphase; i++)
                 if (phases[i].t == t) { ph2 = &phases[i]; break; }
+            if (!ph2 && nphase < 512) {
+                phases[nphase++] = (struct phase){ t, 0, 0 };
+                ph2 = &phases[nphase - 1];
+                fresh = 1;
+            }
+            int sig = WSTOPSIG(status);
+            /* PTRACE_O_TRACEFORK auto-attaches a forked child (Xwayland) with a
+             * pending SIGSTOP group-stop; re-injecting it would pin the child
+             * stopped forever (stop -> forward SIGSTOP -> stop ...), so the
+             * first stop we ever see for a tid swallows it. */
+            if (fresh && sig == SIGSTOP) sig = 0;
             int arm = !SECCMODE || (ph2 && ph2->p == 1);
-            ptrace(arm ? PTRACE_SYSCALL : PTRACE_CONT, t, NULL,
-                   (void *)(long)WSTOPSIG(status));
+            ptrace(arm ? PTRACE_SYSCALL : PTRACE_CONT, t, NULL, (void *)(long)sig);
         }
     }
     return 0;

@@ -16,6 +16,7 @@ grep -iE 'drm|sde|atomic|propert|commit' $LOGD/dmesg-raw.log | tail -n 400 > $LO
 
 pkill -9 -f "kwinwrap --out" 2>/dev/null
 pkill -9 -f "socket=taketest" 2>/dev/null
+pkill -9 -x Xwayland 2>/dev/null   # desk-takeover 起的 kwin 带 --xwayland，它是 kwin 的子进程
 pkill -9 -f "keepbright.sh" 2>/dev/null
 pkill -9 -f "dmesg-harvester.sh" 2>/dev/null
 sleep 1
