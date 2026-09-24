@@ -573,7 +573,11 @@ run "test -x $BTBIN || echo BT-NO-BIN; pgrep -x bthci-bridge || nohup $BTBIN --k
 sleep 8
 run "tail -n 2 /data/local/tmp/bt-bridge.log 2>/dev/null"
 if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then
+    # 名字：E:Name 来自芯片自己的 Read_Local_Name（这台是主机名 Ubuntu），列表里像陌生机器；
+    # BlueZ 对外广播/展示用 Alias，这里钉成稳定可认的名字（改不动 Name）。
+    bluetoothctl system-alias "Piano BT" >/dev/null 2>&1
     echo "BT-NATIVE OK $(date +%T): $(bluetoothctl list | head -1)"
+    echo "  配对要先让对方发现你：bluetoothctl discoverable on（默认 180s 超时，不默认开）"
 else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
 fi
