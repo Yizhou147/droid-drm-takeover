@@ -688,16 +688,22 @@ EOF
     # "wlan0 DOWN ... <NO-CARRIER,BROADCAST,MULTICAST,UP>"，operstate 列是 DOWN 但 IFF_UP
     # 在 flags 里；`grep ' UP'` 要求空格前缀永远不命中 ⇒ 把 admin-UP 误判成 DOWN，
     # 白跳过整段 WiFi。探针错一次，结论全反——先自证探针会命中再信它的否定）。
-    LFLAGS=$(ip -o link show wlan0 2>/dev/null | head -1 | sed -n 's/.*<\([A-Z_,]*\)>.*/,\1,/p')
-    case "$LFLAGS" in
-        *,UP,*)
-            echo "WIFI-ADMIN UP（不 flap，只做 L3 清理） $(date +%T)"
-            ;;
-        *)
-            echo "WIFI-SKIP(admin-down) $(date +%T)：wlan0 flags=$LFLAGS 无 UP，禁 flap 红线生效，本轮跳过 WiFi 段"
-            WIFI_SKIP=1
-            ;;
-    esac
+    LRAW=$(ip -o link show wlan0 2>/dev/null | head -1)
+    LFLAGS=$(echo "$LRAW" | sed -n 's/.*<\([^>]*\)>.*/,\1,/p')
+    if [ -z "$LFLAGS" ]; then
+        echo "WIFI-SKIP(admin-probe-fail) $(date +%T)：flags 提取失败，raw=[$LRAW]——按非 UP 处理并点名探针"
+        WIFI_SKIP=1
+    else
+        case "$LFLAGS" in
+            *,UP,*)
+                echo "WIFI-ADMIN UP（不 flap，只做 L3 清理） $(date +%T) flags=${LFLAGS//,/ }"
+                ;;
+            *)
+                echo "WIFI-SKIP(admin-down) $(date +%T)：wlan0 flags=$LFLAGS 无 UP，禁 flap 红线生效，本轮跳过 WiFi 段"
+                WIFI_SKIP=1
+                ;;
+        esac
+    fi
     if [ "$WIFI_SKIP" = 1 ]; then
         :
     else
