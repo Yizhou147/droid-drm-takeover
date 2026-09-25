@@ -135,8 +135,33 @@ chmod 666 /dev/dri/card0 2>/dev/null
 # 却完全没有指针（09-25 实测）。
 [ -c /dev/uhid ] || mknod /dev/uhid c 10 239
 chmod 666 /dev/uhid 2>/dev/null
-# 输入设备节点常驻同步器（头注里写了为什么必须存在）：**必须在 kwin 之前**起，
-# 因为 libinput 只在启动时枚举一次 /dev/input，之后只能靠 uevent。
+# ---- 1b) udevd 必须按"单元"活着，否则整轮没有输入热插拔 ----
+# 根因（09-25 实测）：Droid Spaces 的 /etc/systemd/system/systemd-udevd.service.d/
+# 99-hwaccess-limit.conf 用 ExecCondition(enable_hw_access=1) 把 udevd 挡成 skipped，
+# 原来 desk-takeover 退化成 `nohup /usr/lib/systemd/systemd-udevd` 兜底 —— 那种裸实例会写
+# /run/udev/data（标签是对的）但**不建 /run/udev/control**，而 libinput 的热插拔监听用的是
+# libudev 的 "udev" 作用域（要连那个 socket）⇒ kwin 从启动起就没有任何热插拔，
+# 表现就是"蓝牙鼠标连上了但没指针"。
+# 注意 drop-in 文件名必须排在 99-hwaccess-limit.conf **之后**（用 zz-*）：同名 99-* 里
+# "99-drm" 排在 "99-hwaccess" 前面，空赋值会被后面的 ExecCondition= 覆盖掉（实测踩过）。
+# 先屏蔽网络改名规则再起 udevd：wlan0→wlp1s0 那次把安卓 WiFi 永久搞废（见 5.23）。
+ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
+mkdir -p /etc/systemd/system/systemd-udevd.service.d
+printf '[Service]\nExecCondition=\n' > /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf
+systemctl daemon-reload
+systemctl reset-failed systemd-udevd.service 2>/dev/null
+systemctl restart systemd-udevd.service 2>/dev/null
+if [ ! -S /run/udev/control ]; then
+    pgrep -x systemd-udevd >/dev/null || nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 &
+    sleep 2
+fi
+if [ -S /run/udev/control ]; then
+    echo "UDEV-HOTPLUG OK $(date +%T)"
+else
+    echo "UDEV-HOTPLUG DEAD $(date +%T): /run/udev/control 不在 ⇒ 本轮输入设备只能靠 input-node-sync 补节点（新设备要重启 kwin 才生效）"
+fi
+# 输入设备节点常驻同步器（详见 scripts/input-node-sync.sh 头注）：**必须在 kwin 之前**起，
+# 因为 libinput 只在启动时枚举一次 /dev/input。
 # 用 setsid+nohup：绝不能挂在我的调用链上（09-25 黑屏事故的直接教训）。
 nohup setsid bash $DIR/scripts/input-node-sync.sh > $LOGD/input-node-sync.log 2>&1 &
 chmod 666 /dev/input/event11 2>/dev/null
