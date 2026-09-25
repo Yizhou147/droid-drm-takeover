@@ -130,6 +130,11 @@ pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /t
 [ -f /usr/local/bin/power-state-sync.py ] && { pgrep -f "power-state-sync" >/dev/null || nohup python3 /usr/local/bin/power-state-sync.py > /tmp/power-sync.log 2>&1 & }
 chmod 666 /dev/dri/card0 2>/dev/null
 [ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
+# BLE 外设（鼠标/键盘/手柄）走 BlueZ HOGP→内核 uhid 才会长出 /dev/input/eventN；
+# 安卓侧有 /dev/uhid(10:239, CONFIG_UHID=y)，但容器这份 /dev 没有节点 ⇒ 设置里"连上了"
+# 却完全没有指针（09-25 实测）。
+[ -c /dev/uhid ] || mknod /dev/uhid c 10 239
+chmod 666 /dev/uhid 2>/dev/null
 chmod 666 /dev/input/event11 2>/dev/null
 if [ ! -f /run/udev/data/c226:0 ] || ! grep -q DRIVER /run/udev/data/c226:0; then
     mkdir -p /run/udev/data
