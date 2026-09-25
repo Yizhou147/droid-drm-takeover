@@ -27,6 +27,9 @@ echo "=== DESK-TAKEOVER START $(date +%F_%T) ==="
 WIFI_CONF=/root/desk-wifi.conf
 # 仅兜底；正常路径 dhcpcd 拿租约后动态探测 GW/网段（换网不用改这里）
 IP=172.16.30.104
+# 每轮的实验开关放这儿（/run 是 tmpfs，重启即回默认，不会偷偷留着上轮的实验设定）。
+# 里面可以写 UDEV_FORCE=1 / BT_BRIDGE=1，这样从桌面快捷方式进轮也能带上开关。
+[ -f /run/drm-round.conf ] && . /run/drm-round.conf
 PREFIX=22
 GW=172.16.30.1
 
