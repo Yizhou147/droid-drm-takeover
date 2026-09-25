@@ -167,7 +167,7 @@ if [ ! -S /run/udev/control ]; then
     pgrep -x systemd-udevd >/dev/null || { nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 & sleep 3; }
 fi
 if [ -S /run/udev/control ]; then
-    echo "UDEV-HOTPLUG OK $(date +%T)（裸实例，未碰单元；net 已 last_rule 冻结）"
+    echo "UDEV-HOTPLUG OK $(date +%T)（裸 udevd 在跑，未碰单元；改名规则已屏蔽）"
 else
     echo "UDEV-HOTPLUG OFF $(date +%T)：裸 udevd 没建出 /run/udev/control ⇒ 本轮新插设备要重启 kwin 才认（触屏不受影响）"
 fi
