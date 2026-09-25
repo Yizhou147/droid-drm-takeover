@@ -98,6 +98,7 @@ kill_desktop() {
     # udevd 活着就会在安卓重建 wlan0 的 uevent 上二次改名（wlp1s0，09-24 事故主角）；
     # 接管期它只是 NM 的工具，交还后必须闭嘴。下一轮 desk-takeover 会重新拉起。
     pkill -9 -x systemd-udevd
+    pkill -9 -f "input-node-sync.sh"   # /dev/input 节点同步器（setsid 起的，模式杀不到自己）
     pkill -9 -x dhcpcd
 }
 for i in 1 2 3; do

@@ -135,6 +135,10 @@ chmod 666 /dev/dri/card0 2>/dev/null
 # 却完全没有指针（09-25 实测）。
 [ -c /dev/uhid ] || mknod /dev/uhid c 10 239
 chmod 666 /dev/uhid 2>/dev/null
+# 输入设备节点常驻同步器（头注里写了为什么必须存在）：**必须在 kwin 之前**起，
+# 因为 libinput 只在启动时枚举一次 /dev/input，之后只能靠 uevent。
+# 用 setsid+nohup：绝不能挂在我的调用链上（09-25 黑屏事故的直接教训）。
+nohup setsid bash $DIR/scripts/input-node-sync.sh > $LOGD/input-node-sync.log 2>&1 &
 chmod 666 /dev/input/event11 2>/dev/null
 if [ ! -f /run/udev/data/c226:0 ] || ! grep -q DRIVER /run/udev/data/c226:0; then
     mkdir -p /run/udev/data
