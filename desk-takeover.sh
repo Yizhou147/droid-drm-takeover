@@ -307,6 +307,21 @@ run "stop"
 run "setprop ctl.stop vendor.qti.hardware.display.composer"
 sleep 5
 
+# ---- 2b) 音频桥开关（AUDIO_BRIDGE=1 才生效；不设 = 上面这套 stop 链原样，行为零变化）----
+# 背景：容器声音改道走 AAudio（droid-audio-bridge《直连音频HAL方案》§10：anland 态已真出声确认），
+# 而 AAudio 要有活的 audioserver。`stop` 把 class core 全停 = audioserver 也死，所以这里在停完之后
+# 把它单独放回来。两个已知坑一起处理：
+#   · AGM/audioserver 初始化硬依赖 ISystemSuspend（§38：卡在那儿等，agmplay 的 rc=0 是假成功），
+#     而上面为"悬停保护"ctl.stop 了 system_suspend ⇒ 先起它；wake_lock 仍在手上，不会真进悬停。
+#   · §38 另有一条旧结论"轮内冷启动 audioserver 卡在等 activity(system_server)"——**待本轮实测判定**，
+#     判据 = /data/local/tmp/aaudio-probe 能否 openStream rc=0。若确实卡死，再上"不整体 stop、
+#     逐个 ctl.stop 放过 audioserver"的激进方案（备份见 desk-takeover.sh.bak-0926-audio）。
+if [ "${AUDIO_BRIDGE:-0}" = 1 ]; then
+    run "setprop ctl.start system_suspend; sleep 2; setprop ctl.start audioserver"
+    sleep 6
+    echo "AUDIO-BRIDGE 拉起后状态: $(run "getprop init.svc.system_suspend; getprop init.svc.audioserver" 2>/dev/null | tr '\n' ' ')"
+fi
+
 # ---- IM：plasma-keyboard 本体路线（09-23 定案）----
 # Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
 # 所以本会话剥离 QT_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
