@@ -616,8 +616,15 @@ fi
 # 链路 09-24 实测通了：桥 initialize(oneway,码2) → HAL 自己开 ttyHS0/glink →
 # 桥用 pty+N_HCI 在共享内核里注册真 hci0 并双向搬运 HCI（裸包，不带 H4 类型字节）→
 # 容器 bluetoothctl 看到 Controller（UP RUNNING、真 BD_ADDR、扫到周围设备）。
-# **默认开**（用户 09-25 要求，方便测试；`BT_BRIDGE=0` 可关）。注意 09-25 那轮 WiFi 炸时桥是关着的
-# ⇒ 桥与 WiFi 故障无关；另外它只走 BT 的 glink/ttyHS，绝不下固件、绝不碰 btpower ioctl。
+# **默认开**（`BT_BRIDGE=0` 可关）。09-25 实测：裸 udevd + 桥同轮跑，WiFi 全程正常
+# （ping 通、dmesg 里 `is_driver_recovering` 计数 0），蓝牙鼠标连上可用；
+# 之前"默认开就炸 WiFi"是错的归因，真凶是**同轮里 restart 服务化 udevd**（见 5.31）。
+# 桥本身只走 BT 的 glink/ttyHS，绝不下固件、绝不碰 btpower ioctl。
+# 三道护栏（都是被实测逼出来的，缺一不可）：
+#   ① 桥自熔断：每 10s 查 init.svc.surfaceflinger，一旦 running 就自退
+#      （曾抓到 surfaceflinger=running 时桥还活着 = 安卓蓝牙栈与我们同时持有 HAL 客户端位）；
+#   ② desk-stop 的 kill_desktop 与 50s 看门狗都 pkill -x bthci-bridge；
+#   ③ desk-takeover 的 rollback 分支也 pkill（KDE 重启/回滚都不走 desk-stop）。
 # 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
 if [ "${BT_BRIDGE:-1}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
