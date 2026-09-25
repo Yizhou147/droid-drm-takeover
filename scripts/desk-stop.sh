@@ -164,6 +164,15 @@ pkill -x NetworkManager 2>/dev/null
 # NM 经 D-Bus 激活的 wpa_supplicant 会赖在总线上；只停容器 systemd 的实例（安卓那侧不受影响）
 systemctl stop wpa_supplicant.service 2>/dev/null
 ip -4 addr flush dev wlan0 2>/dev/null
+# 【09-25 缺陷②修复】交还要连"射频状态"一起清：轮内 plasma-nm 关 WiFi = 容器 NM 把
+# rfkill(wlan) soft-block，NM 死后没人解 → 回 anland 安卓"WiFi 打不开"（17:1x 实测
+# rfkill1 soft=1 而驱动完好）。**只碰 type=wlan，绝不碰 bt_power**（蓝牙电源红线）。
+for r in /sys/class/rfkill/rfkill*; do
+    [ "$(cat $r/type 2>/dev/null)" = wlan ] || continue
+    if [ "$(cat $r/soft 2>/dev/null)" = 1 ]; then
+        echo 0 > "$r/soft" 2>/dev/null && echo "RFKILL-UNBLOCK $(basename $r) $(date +%T)" || echo "RFKILL-UNBLOCK-FAIL $(basename $r) $(date +%T)"
+    fi
+done
 if [ -f /run/desk-ip-rules.bak ]; then
     # desk-takeover 的 NM 段 flush 过 rule；原样还原，netd 回来会补建自己的规则
     ip rule flush; ip rule restore < /run/desk-ip-rules.bak && echo "ip-rule restored from bak"

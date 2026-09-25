@@ -616,6 +616,16 @@ EOF
     mkdir -p /etc/polkit-1/rules.d
     cat > /etc/polkit-1/rules.d/60-nm-drm.rules <<'EOF'
 polkit.addRule(function(action, subject) {
+    // 09-25 缺陷③：轮内"WiFi 总开关"对普通用户直接拒绝——实测关掉后 soft-block +
+    // supplicant WoWLAN 半连接态，再开大概率失败还把 plasma UI 卡住（NM 重试风暴）。
+    // 单条网络的连接/断开不受影响；root（本脚本的 nmcli radio wifi on 引导）不受影响。
+    if (subject.user === "xieyizhou" &&
+        (action.id === "org.freedesktop.NetworkManager.enable-disable-wifi" ||
+         action.id === "org.freedesktop.NetworkManager.enable-disable-network" ||
+         action.id === "org.freedesktop.NetworkManager.sleep-wifi"))
+        return polkit.Result.NO;
+});
+polkit.addRule(function(action, subject) {
     if (action.id.indexOf("org.freedesktop.NetworkManager") === 0 && subject.user === "xieyizhou")
         return polkit.Result.YES;
 });
