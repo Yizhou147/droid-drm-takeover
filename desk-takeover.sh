@@ -156,9 +156,12 @@ ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
 # **绝不在接管轮里 restart 真 udevd 单元**（09-25 隔离实验的结论）：
 #   UDEV_FORCE=0 的那轮 → WIFI-ASSOC OK / NET-TAKEOVER OK，触屏与鼠标启动前设备都在；
 #   UDEV_FORCE=1 的那轮 → WiFi 炸 + 「返回安卓」卡死（只能强启）。
-# 而 anland 平时 `/run/udev/control` 一直存在且 WiFi 无恙 ⇒ 凶手不是 udevd 本身，
-# 是"接管轮里把它 restart 掉 + 清掉 Droid Spaces 的 ExecCondition"这一套动作
-# （机制未查明，但经验规则先立住：接管链里不 restart 服务化 udevd）。
+# 注意（用户 09-25 纠正，别再拿 anland 当对照）：**anland 走的是安卓的网络**（容器里是转发口，
+# wlan0 归安卓 netd），而接管轮里是**容器的 NM 直接持有 wlan0（共享 netns）**——两场景不可比，
+# 所以"anland 也有活 udevd 却没事"证明不了 udevd 无罪。
+# 目前只能说：**"接管轮 + 服务化 udevd（含 restart、含清 ExecCondition）"这个组合会打死 WiFi**，
+# 机制未查明（候选：udevd 对 wlan0 的 add/change uevent 加工 + NM 接管，与安卓侧 wifi 状态机抢同一块网卡）。
+# 经验规则：接管链里不 restart 服务化 udevd。
 # 这里只做一件无害的事：socket 真不在时，用和 WiFi 段同样的兜底方式起一个裸实例。
 if [ ! -S /run/udev/control ]; then
     pgrep -x systemd-udevd >/dev/null || { nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 & sleep 2; }
