@@ -106,7 +106,9 @@ kill_desktop() {
     # 安卓 WiFi 永久报废的组合（09-25 这轮 WiFi 炸掉时也怀疑到它）。
     # 所以只在接管轮内有效：交还时删掉 drop-in 并停单元，下一轮 desk-takeover 再写一次。
     rm -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf 2>/dev/null
-    systemctl stop systemd-udevd.service 2>/dev/null
+    # 交还链里**不允许有能卡住的同步调用**（09-25："点返回安卓只弹黑框"的候选元凶就是它），
+    # 所以停单元用 timeout 包住；停不掉也不拦后面的 start。
+    timeout 8 systemctl stop systemd-udevd.service 2>/dev/null
     pkill -9 -x dhcpcd
 }
 for i in 1 2 3; do

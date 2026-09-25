@@ -80,6 +80,10 @@ kill_linux_stack() {
 rollback() {
     echo "ROLLBACK: $* ($(date +%T))"
     kill_linux_stack
+    # 交还安卓前必须放掉蓝牙桥：桥活着 = 我们和安卓的蓝牙栈同时持有 HAL 客户端位，
+    # 抢同一颗 combo 芯片的电源协调（09-25 两轮把 WiFi 打进 recovery 死循环的直接嫌疑）。
+    # rollback 不走 desk-stop，所以这里也得自己杀（见工作总结 5.30）。
+    run "pkill -x bthci-bridge"
     # system_suspend 被 ctl.stop 后 `start` 拉不起它，新 system_server 会在
     # PowerManagerService.<init> waitForService(android.system.suspend) 卡死
     # → MIUIScout FW_SCOUT_HANG → 自动重启。必须先显式 ctl.start。
@@ -608,7 +612,7 @@ fi
 # **默认开**（用户 09-25 要求，方便测试；`BT_BRIDGE=0` 可关）。注意 09-25 那轮 WiFi 炸时桥是关着的
 # ⇒ 桥与 WiFi 故障无关；另外它只走 BT 的 glink/ttyHS，绝不下固件、绝不碰 btpower ioctl。
 # 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
-if [ "${BT_BRIDGE:-1}" = 1 ]; then
+if [ "${BT_BRIDGE:-0}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
@@ -625,7 +629,7 @@ else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
 fi
 else
-    echo "BT-BRIDGE SKIPPED $(date +%T)（本轮 BT_BRIDGE=0 显式关掉了）"
+    echo "BT-BRIDGE SKIPPED $(date +%T)（默认关；要测蓝牙用 BT_BRIDGE=1 起这一轮）"
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
