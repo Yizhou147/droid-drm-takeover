@@ -619,7 +619,7 @@ fi
 # **默认开**（用户 09-25 要求，方便测试；`BT_BRIDGE=0` 可关）。注意 09-25 那轮 WiFi 炸时桥是关着的
 # ⇒ 桥与 WiFi 故障无关；另外它只走 BT 的 glink/ttyHS，绝不下固件、绝不碰 btpower ioctl。
 # 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
-if [ "${BT_BRIDGE:-0}" = 1 ]; then
+if [ "${BT_BRIDGE:-1}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
@@ -636,7 +636,7 @@ else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
 fi
 else
-    echo "BT-BRIDGE SKIPPED $(date +%T)（默认关；要测蓝牙用 BT_BRIDGE=1 起这一轮）"
+    echo "BT-BRIDGE SKIPPED $(date +%T)（本轮 /run/drm-round.conf 或环境变量里显式 BT_BRIDGE=0）"
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
