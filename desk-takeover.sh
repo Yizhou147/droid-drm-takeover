@@ -684,12 +684,20 @@ EOF
     # 【09-25 傍晚】原来的 PRECLEAR down;sleep 1;up 就是 5.36 定案的致命动作本身（探针不能拿
     # 命换信息）⇒ 改只读。此刻若已 DOWN，up 的路径归射频状态机（安卓 toggle / supplicant
     # 自带 up），我们不替它做 ⇒ 置 WIFI_SKIP 走"无网桌面"分支（desk-stop 照常交还）。
-    if ip -o -br link show wlan0 2>/dev/null | grep -q ' UP'; then
-        echo "WIFI-ADMIN UP（不 flap，L3 清理已完成） $(date +%T)"
-    else
-        echo "WIFI-SKIP(admin-down) $(date +%T)：wlan0 非 UP，禁 flap 红线生效，本轮跳过 WiFi 段"
-        WIFI_SKIP=1
-    fi
+    # ⚠ UP 判定必须解析 flags 尖括号（16:29 轮实锤的自身 bug：`ip -o -br link` 输出
+    # "wlan0 DOWN ... <NO-CARRIER,BROADCAST,MULTICAST,UP>"，operstate 列是 DOWN 但 IFF_UP
+    # 在 flags 里；`grep ' UP'` 要求空格前缀永远不命中 ⇒ 把 admin-UP 误判成 DOWN，
+    # 白跳过整段 WiFi。探针错一次，结论全反——先自证探针会命中再信它的否定）。
+    LFLAGS=$(ip -o link show wlan0 2>/dev/null | head -1 | sed -n 's/.*<\([A-Z_,]*\)>.*/,\1,/p')
+    case "$LFLAGS" in
+        *,UP,*)
+            echo "WIFI-ADMIN UP（不 flap，只做 L3 清理） $(date +%T)"
+            ;;
+        *)
+            echo "WIFI-SKIP(admin-down) $(date +%T)：wlan0 flags=$LFLAGS 无 UP，禁 flap 红线生效，本轮跳过 WiFi 段"
+            WIFI_SKIP=1
+            ;;
+    esac
     if [ "$WIFI_SKIP" = 1 ]; then
         :
     else

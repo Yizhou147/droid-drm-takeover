@@ -168,7 +168,15 @@ if [ -f /run/desk-ip-rules.bak ]; then
     # desk-takeover 的 NM 段 flush 过 rule；原样还原，netd 回来会补建自己的规则
     ip rule flush; ip rule restore < /run/desk-ip-rules.bak && echo "ip-rule restored from bak"
 fi
-ip link set wlan0 down 2>/dev/null
+# 【09-25 傍晚 第二次同类死亡实锤，见工作总结 5.36】这里原有的 `ip link set wlan0 down`
+# 与 desk-takeover 的 up 是同一把枪的**交接方向**那一击：16:30:39 我们 down（peach 当时
+# 已在 idle 半初始化态，deinit 报 "was not initialized"×2）→ 16:30:41 start →
+# ~40s 后安卓自己 wifi-on 上电 → `cnss: Failed to start MHI err=-110` →
+# `Recovery is already in progress → ASSERT 2436` → netlink/uevent 全塞，
+# adbd 陪葬（iw 超时、svc rc=255）、system_server 起不全 = 黑屏，只能强启。
+# 判据已升级成红线：**idle 态 peach 上，down 之后的任何一次 up（不分主人、间隔 40s 也炸）**
+# 都会进这个洞 ⇒ 交还也不做 admin 变更：接口保持 UP 原样还给安卓，L3 已清、rule 已还原。
+ip -o link show wlan0 2>/dev/null | sed -n 's/.*<\([^>]*\)>.*/WLAN-ADMIN-AT-HANDOVER flags=\1/p'
 # 交还前的残留检查（必须在 4b 重启 anland 会话之前取，否则会把 anland 自己正常拉起的
 # NM/supplicant 误报成泄漏）：容器里还有 wpa_supplicant 活着 = wlan0 主人没换干净
 LEFT=$(pgrep -x wpa_supplicant | tr '\n' ' ')
