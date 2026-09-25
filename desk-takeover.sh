@@ -158,9 +158,14 @@ mk_dri_node() {  # $1=sysfs 类下的相对路径  $2=落地的 /dev 路径
     [ -e "$d/dev" ] || return 1
     IFS=: read -r mj mn < "$d/dev"
     [ -n "$mj" ] && [ -n "$mn" ] || return 1
-    [ -c "$2" ] || mknod "$2" c "$mj" "$mn" 2>/dev/null
-    chmod 666 "$2" 2>/dev/null
-    echo "GPU-NODE $2 = $mj:$mn"
+    if [ -c "$2" ]; then echo "GPU-NODE 已有 $2 = $mj:$mn"; return 0; fi
+    mknod "$2" c "$mj" "$mn" 2>/dev/null || { echo "GPU-NODE mknod 失败 $2"; return 1; }
+    # **只补节点，不放宽权限**：kwin 现在能从 kwinwrap 的 initgroups 拿到
+    # droidspaces-gpu(786) 组身份，所以按 0660 + 该组就够；chmod 666 等于把 GPU
+    # 开给容器里所有进程（09-25 我一度写成 666，已收窄）。
+    chgrp droidspaces-gpu "$2" 2>/dev/null || chmod 666 "$2" 2>/dev/null
+    chmod 660 "$2" 2>/dev/null
+    echo "GPU-NODE 新建 $2 = $mj:$mn"
 }
 # renderD128 在 drm 类下（可能不止一个），kgsl-3d0 在 kgsl 类下
 for r in /sys/class/drm/renderD*; do
@@ -313,16 +318,24 @@ grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/nul
     && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
 
 # ---- 3) kwin 接管显示（SF 已随 stop 死亡，master 天然空闲）→ 先出桌面 ----
-# 桌面进程的环境补丁：**接管轮是 runuser+env 起的，不过 PAM**，所以 pam_env 会给常态桌面
-# （anland）的两份配置它一条都拿不到：
-#   · /etc/default/locale 的 LANG/LC_ALL=zh_CN.UTF-8  ⇒ 缺了 = kwin.log 报
-#     "Detected locale C … 不是 UTF-8"，**整个界面变英文**
-#   · /etc/environment 的 MESA_LOADER_DRIVER_OVERRIDE / TU_DEBUG ⇒ 缺了 = kwin 认不到 GPU 驱动，
-#     "EGL setup failed, disabling glamor → falling back to sw"，**软件渲染 = 设置界面花屏、无动效**
-#     （09-25 用户实报"GPU 驱动炸了、好多东西变英文"就是这两条，与 GPU 本身无关）
-# 值一律从文件现读，不在脚本里抄一遍（抄了就会和系统配置漂移）。
-# 白名单只收语言/图形相关；`DISPLAY/WAYLAND_DISPLAY/QT_IM_MODULE/XMODIFIERS` 这些**故意不收**——
-# 轮里要的是 plasma-keyboard 路线（见上面 IM 段），后面各条命令的 -u 也仍会照摘。
+# 桌面进程的环境补丁：**接管轮是 runuser+env 起的，不过 PAM**，所以 pam_env 给常态桌面的
+# 配置里，只有语言这一类是真的缺（09-25 用户实报"好多东西变英文"）：
+#   /etc/default/locale 的 LANG/LC_ALL=zh_CN.UTF-8 ⇒ 缺了 kwin/plasma 就报
+#   "Detected locale C … 不是 UTF-8"，界面退英文。值从文件现读，不在脚本里抄（抄了必漂移）。
+#
+# **血泪边界：MESA_* / TU_DEBUG 一律不注入。** 09-25 我照 kwin.log 里
+# `EGL setup failed, disabling glamor → falling back to sw` 判定"接管轮一直软渲染"，
+# 于是把 `/etc/environment` 的 `MESA_LOADER_DRIVER_OVERRIDE=kgsl` 喂进 kwin —— 结果 kwin 换到
+# kgsl winsys，`kgsl_bo_new_dmabuf: Failed to allocate dma-buf` 刷 544 次、一帧都送不出去，
+# **从"花屏"直接变成"纯黑且不回滚"**，用户只能强制重启。而这条噪音该怎么解读，
+# 工作总结里已经写过两次：见 5.14/5.23 更正（"不是软件回退，Mesa 栈完整、vkmark 1w+ 分"）
+# 与 5.34④ 旁边那条"同一噪音第三次误用"。**接管不需要动这套 Mesa**（见 §Mesa 结论：
+# kgsl 缓冲只进不出，bo 导不出 dmabuf，KMS 直显方向相反）。
+# 要判 GPU 到底用没用上，用下面的 GPU-WHICH 实测探针，不看日志措辞。
+# 另外 `DISPLAY/WAYLAND_DISPLAY/QT_IM_MODULE/XMODIFIERS` 也**故意不收**：轮里走
+# plasma-keyboard 路线（见上面 IM 段）；后面各条命令的 -u 仍会照摘。
+# **env 的选项必须排在第一个 KEY=VALUE 之前**（5.28 的老坑，我今天又踩一次：写反 ⇒
+# `env: '-u': No such file or directory` ⇒ kwin 没起 ⇒ 黑屏回滚）。
 DESK_ENV=()
 for f in /etc/default/locale /etc/environment; do
     [ -r "$f" ] || continue
@@ -330,7 +343,7 @@ for f in /etc/default/locale /etc/environment; do
         case "$line" in ''|\#*) continue ;; esac
         case "$line" in *=*) ;; *) continue ;; esac
         case "$line" in
-            LANG=*|LC_*=*|MESA_*=*|TU_DEBUG=*|XCURSOR_SIZE=*|QT_QPA_PLATFORMTHEME=*)
+            LANG=*|LC_*=*|XCURSOR_SIZE=*|QT_QPA_PLATFORMTHEME=*)
                 DESK_ENV+=("$line") ;;
         esac
     done < "$f"
@@ -419,7 +432,9 @@ fi
 # ---- 4b) kded5：接管轮里**从来没人起它** ⇒ 所有 kded 模块不加载。
 # 直接现象就是用户 09-25 报的"右下角看不到蓝牙"：bluedevil 的托盘图标与配对接缝（agent）
 # 都是 kded 模块（§26.5 当时只记了"要 plasmashell 重启一次才加载"，其实根本没人拉起 kded）。
-KDED=$(ls /usr/libexec/kded5 /usr/lib/*/kded5 /usr/libexec/kded 2>/dev/null | head -1)
+# 本机是 KF6：二进制叫 /usr/bin/kded6（常态会话里 pid 1563 就是它，由 startplasma-wayland 带起）。
+# 之前我 glob 了 kded5/libexec 两处，全落空 ⇒ 13:03 轮报 KDED-SKIP，等于这条修复压根没生效。
+KDED=$(ls /usr/bin/kded6 /usr/bin/kded5 /usr/libexec/kded5 /usr/lib/*/kded5 2>/dev/null | head -1)
 KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
 if [ -n "$KDED" ]; then
     nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
@@ -478,6 +493,24 @@ nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
 touch $DIR/takeover.ok
 $DIR/bin/setbright 2048 > /dev/null 2>&1
 echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
+# ---- 4a-2) GPU 实测（后台，不阻塞）：**判有没有硬渲染只认这个，不认 kwin.log 的措辞** ----
+# 09-25 教训：kwin.log 里 "disabling glamor / falling back to sw" 是 Xwayland 开不到
+# renderD128 时 Xwayland 自己的输出，历史上已三次被误读成"整个桌面软渲染"（vkmark 1w+ 早就
+# 证否过一次）。这里直接问渲染器名字：
+#   Adreno …        = kgsl DRI 硬渲染
+#   zink Vulkan …   = 默认路径（turnip 过 Vulkan），同样是硬渲染 —— 接管轮 21 轮一直是这条
+#   llvmpipe        = 真软渲染，才算问题
+# 探针不成立时打 NO-PROBE（glxinfo 没输出/连不上 :0），绝不说成"没有 GPU"。
+(
+    sleep 12
+    R=$(runuser -u xieyizhou -- env DISPLAY=:0 timeout 12 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1)
+    case "$R" in
+        *llvmpipe*) echo "GPU-WHICH $(date +%T): $R ⇒ **软渲染**，Xwayland 打不开 render 节点（查补充组/GPU-NODE）" ;;
+        "")         echo "GPU-WHICH $(date +%T): NO-PROBE（glxinfo 无输出/连不上 :0）⇒ 这条没测到，别当作没有 GPU" ;;
+        *)          echo "GPU-WHICH $(date +%T): $R ⇒ 硬渲染可用" ;;
+    esac
+) &
+
 # ---- 4a) XWayland 事后核对（异步，不阻塞桌面）：确认 kwin 真把 Xwayland 起在 :0，
 #      也就是会话里注入的 DISPLAY 是对的。它比 plasmashell 晚 ~2s，但 kwin 起不来的
 #      情况也得报出来，所以给 90s 窗口。
