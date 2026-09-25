@@ -46,11 +46,10 @@ run() {
 }
 # supplicant 收尾先优雅退出、超时才 -9（机制上站得住：cfg80211 的 scheduled-scan `Match`
 # 只有它自己退出时才注销，被 SIGKILL 就没人清）。
-# **但别把它当"第二轮 WiFi 炸"的解药** —— 翻 logs/desk-takeover.log 全量统计（98 轮）：
-#   `Match already configured` 只在 **1 轮**出现过（09-25 09:41，那轮确实 WIFI-ASSOC NO）；
-#   09-25 10:20 那轮 `flags (UP): Invalid argument` 但**没有** Match；
-#   10:52（UDEV_FORCE=1 那轮）两种签名都没有，是第三种失败。
-# ⇒ 这是"少一个已知错误来源"的卫生修复，主因还没定（见工作总结 5.33 的更正）。
+# **但别把它当"第二轮 WiFi 炸"的解药** —— 历史日志里可比的是"自拉 supplicant + WIFI-ASSOC 探针
+# 都存在"之后的 23 轮（16 OK / 7 失败）：7 个失败轮里 **4 个 Match 和 flags(UP) 两种签名都没有**，
+# Match 只覆盖 2 轮（09-24 15:20、09-25 09:41），flags(UP) 覆盖 2 轮（09:41、10:20）。
+# ⇒ 这是"少一个已知错误来源"的卫生修复，主因还没定（明细表见工作总结 5.33）。
 stop_supplicant() {
     # 没进程就立刻返回：本机 `systemctl stop wpa_supplicant.service`（unit 不存在也一样）
     # 实测要 7.2s，而 kill_linux_stack / rollback 一条路径上可能进来好几次。
