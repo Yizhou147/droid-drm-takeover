@@ -165,6 +165,15 @@ fi
 # 用 setsid+nohup：绝不能挂在我的调用链上（09-25 黑屏事故的直接教训）。
 nohup setsid bash $DIR/scripts/input-node-sync.sh > $LOGD/input-node-sync.log 2>&1 &
 chmod 666 /dev/input/event11 2>/dev/null
+# 自证探针（09-25 教训：整轮都是"权限不对但没人报错"）：以**桌面用户身份**试读触摸屏。
+# 读不到就等于触摸屏 + 一切鼠标全失效，必须当场喊出来，而不是等用户报"用不了"。
+if runuser -u xieyizhou -- test -r /dev/input/event11 2>/dev/null; then
+    echo "INPUT-PERM OK $(date +%T)：uid 1000 可读 /dev/input/event11"
+else
+    echo "INPUT-PERM FAIL $(date +%T)：uid 1000 读不了 /dev/input/event11 ⇒ 触摸屏与所有鼠标都会失效"
+    echo "   多半是 udev 把节点规范成 root:input 0660 而容器无 logind ⇒ 没人下发 uaccess ACL；"
+    echo "   解法＝scripts/input-node-sync.sh 里那条 MODE=\"0666\" 规则（已随同步器安装）"
+fi
 if [ ! -f /run/udev/data/c226:0 ] || ! grep -q DRIVER /run/udev/data/c226:0; then
     mkdir -p /run/udev/data
     printf 'Q:100\nE:DEVPATH=/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/card0\nE:MAJOR=226\nE:MINOR=0\nE:SUBSYSTEM=drm\nE:DEVTYPE=drm_minor\nE:DEVNAME=dri/card0\nE:DRIVER=vmwgfx\nH:uaccess\nH:seat\n' > /run/udev/data/c226:0
