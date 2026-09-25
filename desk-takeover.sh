@@ -150,19 +150,23 @@ chmod 666 /dev/uhid 2>/dev/null
 # "99-drm" 排在 "99-hwaccess" 前面，空赋值会被后面的 ExecCondition= 覆盖掉（实测踩过）。
 # 先屏蔽网络改名规则再起 udevd：wlan0→wlp1s0 那次把安卓 WiFi 永久搞废（见 5.23）。
 ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
-mkdir -p /etc/systemd/system/systemd-udevd.service.d
-printf '[Service]\nExecCondition=\n' > /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf
-systemctl daemon-reload
-systemctl reset-failed systemd-udevd.service 2>/dev/null
-systemctl restart systemd-udevd.service 2>/dev/null
-if [ ! -S /run/udev/control ]; then
-    pgrep -x systemd-udevd >/dev/null || nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 &
-    sleep 2
+# **默认不动 udevd**（UDEV_FORCE=1 才拉真单元）：09-25 连续两轮 WiFi 出事，1b) 是新变量之一，
+# 在"到底是 udevd 还是蓝牙桥"分清之前，默认保持 09-24 23:41 那轮（WIFI-ASSOC OK）的形状。
+if [ "${UDEV_FORCE:-0}" = 1 ]; then
+    mkdir -p /etc/systemd/system/systemd-udevd.service.d
+    printf '[Service]\nExecCondition=\n' > /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf
+    systemctl daemon-reload
+    systemctl reset-failed systemd-udevd.service 2>/dev/null
+    systemctl restart systemd-udevd.service 2>/dev/null
+    if [ ! -S /run/udev/control ]; then
+        pgrep -x systemd-udevd >/dev/null || nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 &
+        sleep 2
+    fi
 fi
 if [ -S /run/udev/control ]; then
     echo "UDEV-HOTPLUG OK $(date +%T)"
 else
-    echo "UDEV-HOTPLUG DEAD $(date +%T): /run/udev/control 不在 ⇒ 本轮输入设备只能靠 input-node-sync 补节点（新设备要重启 kwin 才生效）"
+    echo "UDEV-HOTPLUG OFF $(date +%T)（默认：UDEV_FORCE=0 ⇒ 不动 udevd；本轮输入设备靠 input-node-sync 补节点，新设备要重启 kwin 才生效）"
 fi
 # 输入设备节点常驻同步器（详见 scripts/input-node-sync.sh 头注）：**必须在 kwin 之前**起，
 # 因为 libinput 只在启动时枚举一次 /dev/input。
