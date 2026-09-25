@@ -147,13 +147,11 @@ set -x
 # ---- 1) DRM 节点 + udev 合成记录（与 drm-takeover.sh 同源） ----
 mkdir -p /dev/dri /dev/input
 [ -c /dev/dri/card0 ] || mknod /dev/dri/card0 c 226 0
-# GPU 的**计算节点**要单独补（09-25 实锤：kwin 全程软件渲染 ⇒ 设置界面花屏、动效全无）：
-#   failed to open /dev/dri/renderD128: Permission denied
-#   MESA-EGL: warning: failed to open /dev/dri/renderD128 / /dev/kgsl-3d0: Permission denied
-#   EGL setup failed, disabling glamor → Failed to initialize glamor, falling back to sw
-# 容器的 /dev 是合成的，原来只补 card0（显示用），renderD128(226:128)/kgsl-3d0(456:0)
-# 要么不存在、要么是安卓 ueventd 的 0660 root:system ⇒ turnip/Mesa 打不开就退 llvmpipe。
-# 号段一律现查 sysfs，别硬编码（安卓侧 drm 号可能漂）。
+# GPU 计算节点的兜底（**真因不在这儿**，见 5.34①：kwinwrap 切 uid 时丢了补充组，
+# 已经用 initgroups 修掉；节点本来就存在，是 `crw-rw---- root:droidspaces-gpu(786)`）。
+# 这里仍保留"缺则建 + chmod"，因为它兜的是另一类情况：容器重启后 /dev 是合成的，
+# 节点可能压根没被 udev 建出来（card0/renderD128 都出现过这种轮）。
+# chmod 是放宽，不是主修；主修在 src/kwinwrap.c 的 initgroups。
 mk_dri_node() {  # $1=sysfs 类下的相对路径  $2=落地的 /dev 路径
     local d mj mn
     d="/sys/class/$1"
@@ -265,7 +263,7 @@ for n in /dev/dri/renderD128 /dev/kgsl-3d0; do
         GPU_OK=0
     fi
 done
-[ "$GPU_OK" = 1 ] || echo "   解法＝上面 mk_dri_node（现查 sysfs 号段 + chmod 666）；若仍 FAIL，查安卓 ueventd 的 /dev 权限覆盖"
+[ "$GPU_OK" = 1 ] || echo "   解法＝src/kwinwrap.c 的 initgroups（补充组才是真因，见工作总结 5.34①），其次才是上面 mk_dri_node 的兜底"
 mkdir -p /run/udev/data
 # 原来这三份合成记录**共用一个条件**（c226:0 存在就整块跳过）⇒ 同一开机的第二轮里
 # card0 记录还在、触摸屏那份却没重写，而触摸屏节点号这时已经被活的 udevd 冷插成别的
