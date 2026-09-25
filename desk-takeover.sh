@@ -142,16 +142,18 @@ chmod 666 /dev/dri/card0 2>/dev/null
 # 却完全没有指针（09-25 实测）。
 [ -c /dev/uhid ] || mknod /dev/uhid c 10 239
 chmod 666 /dev/uhid 2>/dev/null
-# ---- 1b) udevd 必须按"单元"活着，否则整轮没有输入热插拔 ----
-# 根因（09-25 实测）：Droid Spaces 的 /etc/systemd/system/systemd-udevd.service.d/
-# 99-hwaccess-limit.conf 用 ExecCondition(enable_hw_access=1) 把 udevd 挡成 skipped，
-# 原来 desk-takeover 退化成 `nohup /usr/lib/systemd/systemd-udevd` 兜底 —— 那种裸实例会写
-# /run/udev/data（标签是对的）但**不建 /run/udev/control**，而 libinput 的热插拔监听用的是
-# libudev 的 "udev" 作用域（要连那个 socket）⇒ kwin 从启动起就没有任何热插拔，
-# 表现就是"蓝牙鼠标连上了但没指针"。
-# 注意 drop-in 文件名必须排在 99-hwaccess-limit.conf **之后**（用 zz-*）：同名 99-* 里
-# "99-drm" 排在 "99-hwaccess" 前面，空赋值会被后面的 ExecCondition= 覆盖掉（实测踩过）。
-# 先屏蔽网络改名规则再起 udevd：wlan0→wlp1s0 那次把安卓 WiFi 永久搞废（见 5.23）。
+# ---- 1b) 输入热插拔：起裸 udevd（不碰单元）+ 把 net 规则冻死 ----
+# 症状与已证事实（09-25）：libinput 的热插拔监听走 libudev 的 "udev" 作用域，要连
+# `/run/udev/control`；那个 socket 不在 ⇒ kwin 整轮没有输入热插拔（"蓝牙鼠标连上但没指针"、
+# 新插的 2.4G 鼠标也不动，而触摸屏可用因为它在 kwin 之前就有节点）。
+# 实测（09-25 11:0x，anland 里）：`nohup /usr/lib/systemd/systemd-udevd` 这种裸实例**会**建
+# /run/udev/control（之前我说"裸实例不建 socket"是错的，那次是单元 skipped 且没等够时间）。
+# 所以热插拔不需要动单元。改名风险另有屏蔽：/etc/udev/rules.d/80-net-setup-link.rules → /dev/null，
+# 其余带 NAME= 的 net 规则只匹配 idrac/ibmimm 那种 USB 网卡，碰不到 wlan0。
+# （试过 `OPTIONS+="last_rule"` 冻结 net，本机 udev 直接报 Invalid value 忽略 ⇒ 无效配置，删掉。）
+# 教训保留（别再犯）：用 zz-* 命名的 drop-in 清 Droid Spaces 的 ExecCondition 再
+# `systemctl restart systemd-udevd` —— 那一轮 WiFi 炸 + 返回链卡死（见 5.31；
+# 顺带记着 99-drm-* 会排在 99-hwaccess-* 前面、空赋值会被覆盖）。
 ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
 # **绝不在接管轮里 restart 真 udevd 单元**（09-25 隔离实验的结论）：
 #   UDEV_FORCE=0 的那轮 → WIFI-ASSOC OK / NET-TAKEOVER OK，触屏与鼠标启动前设备都在；
@@ -159,17 +161,15 @@ ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
 # 注意（用户 09-25 纠正，别再拿 anland 当对照）：**anland 走的是安卓的网络**（容器里是转发口，
 # wlan0 归安卓 netd），而接管轮里是**容器的 NM 直接持有 wlan0（共享 netns）**——两场景不可比，
 # 所以"anland 也有活 udevd 却没事"证明不了 udevd 无罪。
-# 目前只能说：**"接管轮 + 服务化 udevd（含 restart、含清 ExecCondition）"这个组合会打死 WiFi**，
-# 机制未查明（候选：udevd 对 wlan0 的 add/change uevent 加工 + NM 接管，与安卓侧 wifi 状态机抢同一块网卡）。
-# 经验规则：接管链里不 restart 服务化 udevd。
-# 这里只做一件无害的事：socket 真不在时，用和 WiFi 段同样的兜底方式起一个裸实例。
+# 但 09-24 那些 WiFi 正常的好轮**本来就在跑裸 udevd**（WiFi 段的兜底），所以本轮沿用同一方式：
+# socket 不存在时只起裸实例，不碰单元、不碰 ExecCondition。
 if [ ! -S /run/udev/control ]; then
-    pgrep -x systemd-udevd >/dev/null || { nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 & sleep 2; }
+    pgrep -x systemd-udevd >/dev/null || { nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 & sleep 3; }
 fi
 if [ -S /run/udev/control ]; then
-    echo "UDEV-HOTPLUG OK $(date +%T)（沿用在跑的 udevd，未 restart）"
+    echo "UDEV-HOTPLUG OK $(date +%T)（裸实例，未碰单元；net 已 last_rule 冻结）"
 else
-    echo "UDEV-HOTPLUG OFF $(date +%T)：无 udevd 监听 ⇒ 本轮新插的设备要重启 kwin 才认（触屏不受影响，它在 kwin 之前就在）"
+    echo "UDEV-HOTPLUG OFF $(date +%T)：裸 udevd 没建出 /run/udev/control ⇒ 本轮新插设备要重启 kwin 才认（触屏不受影响）"
 fi
 # 输入设备节点常驻同步器（详见 scripts/input-node-sync.sh 头注）：**必须在 kwin 之前**起，
 # 因为 libinput 只在启动时枚举一次 /dev/input。
