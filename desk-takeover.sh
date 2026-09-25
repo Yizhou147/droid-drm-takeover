@@ -147,6 +147,29 @@ set -x
 # ---- 1) DRM 节点 + udev 合成记录（与 drm-takeover.sh 同源） ----
 mkdir -p /dev/dri /dev/input
 [ -c /dev/dri/card0 ] || mknod /dev/dri/card0 c 226 0
+# GPU 的**计算节点**要单独补（09-25 实锤：kwin 全程软件渲染 ⇒ 设置界面花屏、动效全无）：
+#   failed to open /dev/dri/renderD128: Permission denied
+#   MESA-EGL: warning: failed to open /dev/dri/renderD128 / /dev/kgsl-3d0: Permission denied
+#   EGL setup failed, disabling glamor → Failed to initialize glamor, falling back to sw
+# 容器的 /dev 是合成的，原来只补 card0（显示用），renderD128(226:128)/kgsl-3d0(456:0)
+# 要么不存在、要么是安卓 ueventd 的 0660 root:system ⇒ turnip/Mesa 打不开就退 llvmpipe。
+# 号段一律现查 sysfs，别硬编码（安卓侧 drm 号可能漂）。
+mk_dri_node() {  # $1=sysfs 类下的相对路径  $2=落地的 /dev 路径
+    local d mj mn
+    d="/sys/class/$1"
+    [ -e "$d/dev" ] || return 1
+    IFS=: read -r mj mn < "$d/dev"
+    [ -n "$mj" ] && [ -n "$mn" ] || return 1
+    [ -c "$2" ] || mknod "$2" c "$mj" "$mn" 2>/dev/null
+    chmod 666 "$2" 2>/dev/null
+    echo "GPU-NODE $2 = $mj:$mn"
+}
+# renderD128 在 drm 类下（可能不止一个），kgsl-3d0 在 kgsl 类下
+for r in /sys/class/drm/renderD*; do
+    [ -e "$r/dev" ] || continue
+    mk_dri_node "drm/$(basename "$r")" "/dev/dri/$(basename "$r")"
+done
+mk_dri_node "kgsl/kgsl-3d0" "/dev/kgsl-3d0"
 # NM 靠 rfkill netlink 控制 WiFi 射频；容器重启后 /dev 重建，缺这节点=扫不到任何热点（09-23 实锤）
 [ -c /dev/rfkill ] || mknod /dev/rfkill c 10 242
 chmod 666 /dev/rfkill 2>/dev/null
@@ -231,6 +254,18 @@ else
     echo "   多半是 udev 把节点规范成 root:input 0660 而容器无 logind ⇒ 没人下发 uaccess ACL；"
     echo "   解法＝scripts/input-node-sync.sh 里那条 MODE=\"0666\" 规则（已随同步器安装）"
 fi
+# GPU 同一条纪律：kwin 是 uid 1000 起的，打不开 render 节点就**静默退回软件渲染**
+# （llvmpipe），画面照样出，只是花屏/掉帧，最容易被骗成"GPU 驱动炸了"。当场以桌面用户身份验。
+GPU_OK=1
+for n in /dev/dri/renderD128 /dev/kgsl-3d0; do
+    if runuser -u xieyizhou -- test -r "$n" -a -w "$n" 2>/dev/null; then
+        echo "GPU-PERM OK $(date +%T)：uid 1000 可读写 $n"
+    else
+        echo "GPU-PERM FAIL $(date +%T)：uid 1000 读写不了 $n ⇒ kwin 会退软件渲染（花屏/无动效）"
+        GPU_OK=0
+    fi
+done
+[ "$GPU_OK" = 1 ] || echo "   解法＝上面 mk_dri_node（现查 sysfs 号段 + chmod 666）；若仍 FAIL，查安卓 ueventd 的 /dev 权限覆盖"
 mkdir -p /run/udev/data
 # 原来这三份合成记录**共用一个条件**（c226:0 存在就整块跳过）⇒ 同一开机的第二轮里
 # card0 记录还在、触摸屏那份却没重写，而触摸屏节点号这时已经被活的 udevd 冷插成别的
@@ -280,12 +315,35 @@ grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/nul
     && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
 
 # ---- 3) kwin 接管显示（SF 已随 stop 死亡，master 天然空闲）→ 先出桌面 ----
+# 桌面进程的环境补丁：**接管轮是 runuser+env 起的，不过 PAM**，所以 pam_env 会给常态桌面
+# （anland）的两份配置它一条都拿不到：
+#   · /etc/default/locale 的 LANG/LC_ALL=zh_CN.UTF-8  ⇒ 缺了 = kwin.log 报
+#     "Detected locale C … 不是 UTF-8"，**整个界面变英文**
+#   · /etc/environment 的 MESA_LOADER_DRIVER_OVERRIDE / TU_DEBUG ⇒ 缺了 = kwin 认不到 GPU 驱动，
+#     "EGL setup failed, disabling glamor → falling back to sw"，**软件渲染 = 设置界面花屏、无动效**
+#     （09-25 用户实报"GPU 驱动炸了、好多东西变英文"就是这两条，与 GPU 本身无关）
+# 值一律从文件现读，不在脚本里抄一遍（抄了就会和系统配置漂移）。
+# 白名单只收语言/图形相关；`DISPLAY/WAYLAND_DISPLAY/QT_IM_MODULE/XMODIFIERS` 这些**故意不收**——
+# 轮里要的是 plasma-keyboard 路线（见上面 IM 段），后面各条命令的 -u 也仍会照摘。
+DESK_ENV=()
+for f in /etc/default/locale /etc/environment; do
+    [ -r "$f" ] || continue
+    while IFS= read -r line; do
+        case "$line" in ''|\#*) continue ;; esac
+        case "$line" in *=*) ;; *) continue ;; esac
+        case "$line" in
+            LANG=*|LC_*=*|MESA_*=*|TU_DEBUG=*|XCURSOR_SIZE=*|QT_QPA_PLATFORMTHEME=*)
+                DESK_ENV+=("$line") ;;
+        esac
+    done < "$f"
+done
+echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"
 kill_linux_stack
 rm -f $DIR/takeover.ok
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     KWINWRAP_UID=1000 KWINWRAP_GID=1000 KWINWRAP_BRIGHTNESS=2048 \
     $DIR/bin/kwinwrap --out $LOGD/kwinatomic.log -- \
-    env -u DISPLAY -u WAYLAND_DISPLAY HOME=/home/xieyizhou \
+    env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u WAYLAND_DISPLAY HOME=/home/xieyizhou \
         KWIN_DRM_DEVICES=/dev/dri/card0 \
         FD_MESA_DEBUG=noubwc \
         KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
@@ -324,7 +382,7 @@ $DIR/bin/crtcstate > $LOGD/crtcstate-desk2.log 2>&1
 # 09-23 黑屏根因：plasmashell 硬依赖 kactivitymanagerd，总线自动激活今天直接超时
 # （"Aborting shell load: The activity manager daemon is not running" → 无壳黑屏）。
 # 不再赌 dbus 激活：显式拉起并等名字出现。
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
+nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
     QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -339,7 +397,7 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS "${XWARGS[@]}" \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
@@ -360,6 +418,33 @@ else
     echo "PLASMA-FAIL $(date +%T): plasmashell 没起来 = 无壳黑屏，plasma.log 尾部："
     tail -n 5 $LOGD/plasma.log 2>&1
 fi
+# ---- 4b) kded5：接管轮里**从来没人起它** ⇒ 所有 kded 模块不加载。
+# 直接现象就是用户 09-25 报的"右下角看不到蓝牙"：bluedevil 的托盘图标与配对接缝（agent）
+# 都是 kded 模块（§26.5 当时只记了"要 plasmashell 重启一次才加载"，其实根本没人拉起 kded）。
+KDED=$(ls /usr/libexec/kded5 /usr/lib/*/kded5 /usr/libexec/kded 2>/dev/null | head -1)
+KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
+if [ -n "$KDED" ]; then
+    nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+        -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
+        WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
+        HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        QT_QPA_PLATFORM=wayland "$KDED" > $LOGD/kded.log 2>&1 &
+    KDPID=""
+    for i in 1 2 3 4 5; do
+        KDPID=$(pgrep -x "$KDNAME" | head -1)
+        [ -n "$KDPID" ] && break
+        sleep 1
+    done
+    if [ -n "$KDPID" ]; then
+        echo "KDED-UP pid=$KDPID $(date +%T)（bluedevil 托盘图标/配对接缝的宿主）"
+    else
+        echo "KDED-FAIL $(date +%T): $KDED 没起来 ⇒ 蓝牙图标一类 kded 件仍然缺席，kded.log 尾部："
+        tail -n 5 $LOGD/kded.log 2>&1
+    fi
+else
+    echo "KDED-SKIP 容器里找不到 kded5（装 kde-cli-tools/plasma-workspace 哪个包带的？）"
+fi
 # ---- 托盘亮度/电池（09-24 三根因定修）----
 # 1) 容器 /sys 挂成 ro → backlighthelper 写亮度 EROFS；remount rw 解决
 # 2) 无 logind active session → polkit 默认拒 org.kde.powerdevil.backlighthelper.*
@@ -378,14 +463,14 @@ EOF
 systemctl restart polkit 2>/dev/null
 for i in $(seq 1 10); do systemctl is-active polkit >/dev/null 2>&1 && break; sleep 0.5; done
 PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
-[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE \
+[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
     WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
