@@ -526,24 +526,32 @@ EOF
     {
         echo "WIFI-PRESTATE $(date +%T) uptime=$(cut -d. -f1 /proc/uptime)s"
         # 容器 /dev 里没有 /dev/rfkill（同 /dev/uhid 那类缺件，见 5.29②），所以走 sysfs；
-        # 读不到就明着打 FAIL —— 权限盲区比"没有阻塞"更危险，不能让它伪装成后者。
+        # 读不到就明着打 READ-FAIL —— 权限盲区比"没有阻塞"更危险，不能让它伪装成后者。
+        # **判阻塞以 soft/hard 为准，别信 state**：本机实测 wlan 那份 `soft=0 hard=0` 却
+        # `state=1`（安卓侧 WiFi 正在连接中，显然没被阻塞）—— 与 power-state-sync 那条
+        # "小米 BSP 的 current_now 符号反了"同族的口径坑。
         for r in /sys/class/rfkill/rfkill*; do
-            [ -e "$r/state" ] || continue
-            s=$(cat "$r/state" 2>/dev/null) || s="READ-FAIL"
-            echo "  $(basename $r) type=$(cat $r/type 2>/dev/null) name=$(cat $r/name 2>/dev/null) state=$s"
+            [ -e "$r/soft" ] || continue
+            so=$(cat "$r/soft" 2>/dev/null) || so=READ-FAIL
+            ha=$(cat "$r/hard" 2>/dev/null) || ha=READ-FAIL
+            st=$(cat "$r/state" 2>/dev/null) || st=READ-FAIL
+            echo "  $(basename $r) type=$(cat $r/type 2>/dev/null) name=$(cat $r/name 2>/dev/null) soft=$so hard=$ha (state=$st，仅参考)"
         done
         echo "  --- wdev 一览（看有没有上一任留下的残骸 iface）---"
         iw dev 2>&1 | grep -E "phy|Interface|ifindex|wdev|type" | head -30
         ip -o -br link show wlan0 2>&1
-        dmesg 2>/dev/null | grep -iE "cnss|driver_recovering|wlan: .*(restart|recovery|fatal)|subsys" | tail -10
+        # 驱动 recovery 状态**必须走安卓侧 dmesg**：容器的 dmesg 里 cnss/wlan 一条都没有
+        # （实测 15590 行里 0 命中），安卓侧 root 读才有（同刻实测 4 命中，含 cnss-daemon 行）。
+        run "dmesg | grep -icE \"cnss|is_driver_recovering|subsys.*(restart|crash|fatal)\""
+        run "dmesg | grep -iE \"cnss|is_driver_recovering|wlan0\" | tail -8"
     } 2>&1 | tee $LOGD/wifi-prestate.txt
     iw dev wlan0 scan abort >/dev/null 2>&1
     ip link set wlan0 down 2>/dev/null; sleep 1
     if ip link set wlan0 up 2>/dev/null; then
         echo "WIFI-PRECLEAR OK $(date +%T)  $(ip -o -br link show wlan0 2>/dev/null)"
     else
-        echo "WIFI-PRECLEAR FAIL $(date +%T)：内核仍拒绝 UP ⇒ 看上面 wifi-prestate.txt + 下面这条 dmesg 尾巴"
-        dmesg 2>/dev/null | tail -12
+        echo "WIFI-PRECLEAR FAIL $(date +%T)：内核仍拒绝 UP ⇒ 看上面 wifi-prestate.txt + 下面这条安卓侧 dmesg"
+        run "dmesg | tail -12"
     fi
     mkdir -p /run/wpa_supplicant
     nohup /usr/sbin/wpa_supplicant -u -t -O "DIR=/run/wpa_supplicant GROUP=netdev" \
