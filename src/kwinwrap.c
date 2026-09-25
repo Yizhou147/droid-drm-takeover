@@ -1350,6 +1350,9 @@ int main(int argc, char **argv) {
             if (setgid(ng)) perror("kwinwrap: setgid");
             if (setuid(nu)) perror("kwinwrap: setuid");
         }
+        /* 必须 flush：execvp 换掉进程映像，child 这边 fprintf(LOG,...) 的缓冲会整块丢掉。
+         * 09-25 实测过一次——KWINWRAP-GROUPS 那行写了却永远看不到，等于假探针（见 5.27 纪律）。 */
+        if (LOG) fflush(LOG);
         execvp(argv[di], argv + di);
         perror("execvp");
         _exit(3);

@@ -341,7 +341,7 @@ rm -f $DIR/takeover.ok
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     KWINWRAP_UID=1000 KWINWRAP_GID=1000 KWINWRAP_BRIGHTNESS=2048 \
     $DIR/bin/kwinwrap --out $LOGD/kwinatomic.log -- \
-    env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u WAYLAND_DISPLAY HOME=/home/xieyizhou \
+    env -u DISPLAY -u WAYLAND_DISPLAY ${DESK_ENV[@]+"${DESK_ENV[@]}"} HOME=/home/xieyizhou \
         KWIN_DRM_DEVICES=/dev/dri/card0 \
         FD_MESA_DEBUG=noubwc \
         KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
@@ -380,8 +380,8 @@ $DIR/bin/crtcstate > $LOGD/crtcstate-desk2.log 2>&1
 # 09-23 黑屏根因：plasmashell 硬依赖 kactivitymanagerd，总线自动激活今天直接超时
 # （"Aborting shell load: The activity manager daemon is not running" → 无壳黑屏）。
 # 不再赌 dbus 激活：显式拉起并等名字出现。
-nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
-    QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=taketest \
+nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
+    ${DESK_ENV[@]+"${DESK_ENV[@]}"} QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     /usr/lib/aarch64-linux-gnu/libexec/kactivitymanagerd > $LOGD/kactivitymanagerd.log 2>&1 &
@@ -395,8 +395,8 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS "${XWARGS[@]}" \
+nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
+    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -422,9 +422,9 @@ fi
 KDED=$(ls /usr/libexec/kded5 /usr/lib/*/kded5 /usr/libexec/kded 2>/dev/null | head -1)
 KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
 if [ -n "$KDED" ]; then
-    nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+    nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
         -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
-        WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
+        ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
         HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
         QT_QPA_PLATFORM=wayland "$KDED" > $LOGD/kded.log 2>&1 &
@@ -461,16 +461,16 @@ EOF
 systemctl restart polkit 2>/dev/null
 for i in $(seq 1 10); do systemctl is-active polkit >/dev/null 2>&1 && break; sleep 0.5; done
 PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
-[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE \
-    WAYLAND_DISPLAY=taketest \
+[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE \
+    ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env ${DESK_ENV[@]+"${DESK_ENV[@]}"} -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
-    WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
+    ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
