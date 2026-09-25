@@ -44,11 +44,13 @@ run() {
     printf '%s\n' "$out"
     return $rc
 }
-# supplicant 必须**先优雅退出**再考虑 -9：cfg80211 的 scheduled-scan `Match` 是它注册进驱动的，
-# 被 SIGKILL 就没人清 ⇒ 下一任 supplicant 报 `Match already configured` +
-# `Could not set interface wlan0 flags (UP): Invalid argument`，整轮 WiFi 直接起不来。
-# 这是"同一开机第二轮必炸"的**头号嫌疑**（desk-stop 一直用 pkill -9 -f 杀它），
-# 但还没在真机第二轮上证实过 —— 判据见下面 WIFI-PRECLEAR 那段与工作总结 5.33。
+# supplicant 收尾先优雅退出、超时才 -9（机制上站得住：cfg80211 的 scheduled-scan `Match`
+# 只有它自己退出时才注销，被 SIGKILL 就没人清）。
+# **但别把它当"第二轮 WiFi 炸"的解药** —— 翻 logs/desk-takeover.log 全量统计（98 轮）：
+#   `Match already configured` 只在 **1 轮**出现过（09-25 09:41，那轮确实 WIFI-ASSOC NO）；
+#   09-25 10:20 那轮 `flags (UP): Invalid argument` 但**没有** Match；
+#   10:52（UDEV_FORCE=1 那轮）两种签名都没有，是第三种失败。
+# ⇒ 这是"少一个已知错误来源"的卫生修复，主因还没定（见工作总结 5.33 的更正）。
 stop_supplicant() {
     # 没进程就立刻返回：本机 `systemctl stop wpa_supplicant.service`（unit 不存在也一样）
     # 实测要 7.2s，而 kill_linux_stack / rollback 一条路径上可能进来好几次。
@@ -515,17 +517,35 @@ EOF
     # 10:47 轮教训：systemd 管的 supplicant（Type=dbus + Group=netdev 降权）进程不可
     # dumpable，strace attach 一律 EPERM，wpa 侧连续两轮 0 字节=盲区。改为自拉 nohup
     # 版（同 root，可 attach），-t 时间戳日志落文件。
-    stop_supplicant                       # 上一轮的残留：先 TERM 等它自己注销 cfg80211 请求
-    # 上一轮 supplicant 若最终是被 -9 掉的（desk-stop 超时兜底），驱动里可能还留着它的
-    # scheduled-scan `Match` ⇒ 这一任一起来就报 `Match already configured` +
-    # `Could not set interface wlan0 flags (UP): Invalid argument`，整轮 WiFi 起不来。
-    # 把接口 down/up 一次：cfg80211 会随 wdev 停用丢掉挂在上面的残留请求。
-    # 必须在**起新 supplicant 之前**做（放 NM 之后再 down/up 等于自己把刚建好的链路踹了）。
+    stop_supplicant                       # 上一轮残留：先 TERM 等它自己注销 cfg80211 请求
+    # 失败轮的**真签名**（09-25 09:41 / 10:20 两轮）是 supplicant 每 10s 重试都报
+    #   Could not set interface wlan0 flags (UP): Invalid argument
+    #   WEXT: Could not set interface 'wlan0' UP → wlan0: Failed to initialize driver interface
+    # 也就是**内核拒绝把 wlan0 拉 UP**；而"是谁拒的"当时没采到 ⇒ 起 supplicant 前一次采全：
+    # rfkill 软/硬阻塞、全部 wdev（看有没有上一任的残骸）、接口 flags、驱动是否在做 recovery。
+    # 只采状态、不下判断（避免"OK"打在没验证的对象上，见工作总结的探针自证纪律）。
+    {
+        echo "WIFI-PRESTATE $(date +%T) uptime=$(cut -d. -f1 /proc/uptime)s"
+        # 容器 /dev 里没有 /dev/rfkill（同 /dev/uhid 那类缺件，见 5.29②），所以走 sysfs；
+        # 读不到就明着打 FAIL —— 权限盲区比"没有阻塞"更危险，不能让它伪装成后者。
+        for r in /sys/class/rfkill/rfkill*; do
+            [ -e "$r/state" ] || continue
+            s=$(cat "$r/state" 2>/dev/null) || s="READ-FAIL"
+            echo "  $(basename $r) type=$(cat $r/type 2>/dev/null) name=$(cat $r/name 2>/dev/null) state=$s"
+        done
+        echo "  --- wdev 一览（看有没有上一任留下的残骸 iface）---"
+        iw dev 2>&1 | grep -E "phy|Interface|ifindex|wdev|type" | head -30
+        ip -o -br link show wlan0 2>&1
+        dmesg 2>/dev/null | grep -iE "cnss|driver_recovering|wlan: .*(restart|recovery|fatal)|subsys" | tail -10
+    } 2>&1 | tee $LOGD/wifi-prestate.txt
     iw dev wlan0 scan abort >/dev/null 2>&1
     ip link set wlan0 down 2>/dev/null; sleep 1
-    ip link set wlan0 up 2>/dev/null \
-        && echo "WIFI-PRECLEAR OK $(date +%T)" \
-        || echo "WIFI-PRECLEAR FAIL $(date +%T)：接口拉不起来 ⇒ 基本只能重启救（见 5.23④/5.31）"
+    if ip link set wlan0 up 2>/dev/null; then
+        echo "WIFI-PRECLEAR OK $(date +%T)  $(ip -o -br link show wlan0 2>/dev/null)"
+    else
+        echo "WIFI-PRECLEAR FAIL $(date +%T)：内核仍拒绝 UP ⇒ 看上面 wifi-prestate.txt + 下面这条 dmesg 尾巴"
+        dmesg 2>/dev/null | tail -12
+    fi
     mkdir -p /run/wpa_supplicant
     nohup /usr/sbin/wpa_supplicant -u -t -O "DIR=/run/wpa_supplicant GROUP=netdev" \
         > $LOGD/wpa-drm.log 2>&1 &
