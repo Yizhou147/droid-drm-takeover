@@ -543,10 +543,24 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         ip rule del pref 0 table local 2>/dev/null || break
     done
     ip rule save > /run/desk-ip-rules.bak 2>/dev/null
-    pkill -9 -x wpa_supplicant 2>/dev/null
+    # 精确化（09-25）：容器有独立 PID ns，`-x` 在这里看不到安卓的 supplicant，本来就不致命中；
+    # 但按 desk-wpa.pid + `-u` 特征杀仍然更正确——它同时清掉"NM 经 D-Bus 激活的容器 systemd 版"，
+    # 并且若将来这段被挪到安卓 ns 里执行（run()），不会变成 5.30 那种无差别杀。LEAK 只点名不动手。
+    if [ -f /run/desk-wpa.pid ]; then
+        kill "$(cat /run/desk-wpa.pid)" 2>/dev/null
+        rm -f /run/desk-wpa.pid
+    fi
+    pkill -9 -f 'wpa_supplicant -u' 2>/dev/null
+    pgrep -fa wpa_supplicant | grep -v ' -u' >/dev/null 2>&1 && \
+        echo "WPA-KEEP(安卓侧实例，容器 ns 本不可见，仅记录) $(date +%T)"
     pkill -x dhcpcd 2>/dev/null
     if command -v NetworkManager >/dev/null 2>&1; then
-        ip link set wlan0 down; sleep 1; ip link set wlan0 up
+        # 【09-25 傍晚 根因实锤，见工作总结 5.36】这里原有的 down;sleep 1;up **永不进可信路径**：
+        # STA 已连接 + 芯片 idle ~36min 时，down 硬拆链路（SYS MC STOP）后 1s 的 up 撞进 cnss 的
+        # MHI 上电流程（POWER_ON -110 超时 → recovery ASSERT），`ip` 永久 D 在 cnss_idle_restart
+        # 并持有 rtnl_lock —— 此后连只读 `ip link show` 都进 D，安卓 netd 一并冻结，只能强启。
+        # 接管只需要 L3（地址/路由清理），supplicant/NM 在已 UP 的口上工作是常态路径；
+        # "此刻是否 UP"的检查统一放到 WIFI-PRESTATE 之后（那里只读探测并置 WIFI_SKIP）。
         # 安卓把 main 表摘了、全塞 fwmark→1015，NM 的 DHCP 不吃这套 → 恢复内核标准三表
         ip rule flush
         ip rule add pref 0 table local        2>/dev/null
@@ -567,6 +581,10 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         pkill -f 'ip monitor rule' 2>/dev/null
         nohup ip monitor rule > $LOGD/ip-rule-monitor.log 2>&1 &
         ip -4 addr flush dev wlan0 2>/dev/null
+        # 【5.36 方案 A】原来这三样靠 down/up 顺带清，现在禁 flap ⇒ 显式做（全是 L3，零 admin 动作）
+        ip route flush dev wlan0 2>/dev/null
+        ip -6 route flush dev wlan0 2>/dev/null
+        ip neigh flush dev wlan0 2>/dev/null
     cat > /run/nm-drm.conf <<'EOF'
 [main]
 plugins=keyfile
@@ -663,13 +681,18 @@ EOF
         run "dmesg | grep -iE \"cnss|is_driver_recovering|wlan0\" | tail -8"
     } 2>&1 | tee $LOGD/wifi-prestate.txt
     iw dev wlan0 scan abort >/dev/null 2>&1
-    ip link set wlan0 down 2>/dev/null; sleep 1
-    if ip link set wlan0 up 2>/dev/null; then
-        echo "WIFI-PRECLEAR OK $(date +%T)  $(ip -o -br link show wlan0 2>/dev/null)"
+    # 【09-25 傍晚】原来的 PRECLEAR down;sleep 1;up 就是 5.36 定案的致命动作本身（探针不能拿
+    # 命换信息）⇒ 改只读。此刻若已 DOWN，up 的路径归射频状态机（安卓 toggle / supplicant
+    # 自带 up），我们不替它做 ⇒ 置 WIFI_SKIP 走"无网桌面"分支（desk-stop 照常交还）。
+    if ip -o -br link show wlan0 2>/dev/null | grep -q ' UP'; then
+        echo "WIFI-ADMIN UP（不 flap，L3 清理已完成） $(date +%T)"
     else
-        echo "WIFI-PRECLEAR FAIL $(date +%T)：内核仍拒绝 UP ⇒ 看上面 wifi-prestate.txt + 下面这条安卓侧 dmesg"
-        run "dmesg | tail -12"
+        echo "WIFI-SKIP(admin-down) $(date +%T)：wlan0 非 UP，禁 flap 红线生效，本轮跳过 WiFi 段"
+        WIFI_SKIP=1
     fi
+    if [ "$WIFI_SKIP" = 1 ]; then
+        :
+    else
     mkdir -p /run/wpa_supplicant
     nohup /usr/sbin/wpa_supplicant -u -t -O "DIR=/run/wpa_supplicant GROUP=netdev" \
         > $LOGD/wpa-drm.log 2>&1 &
@@ -755,14 +778,17 @@ EOF
         tail -n 60 $LOGD/nm-drm.log
         echo "NET-FAILED (NM) $(date +%T): desktop kept, NO network"
     fi
+    fi   # WIFI_SKIP 分流收尾（起 supplicant/NM 的 else 支路到此为止）
 else
 # ---- 5L) legacy 手管段（NM 未安装时的 fallback，原 wpa+dhcpcd+表1015 方案） ----
 if [ -f "$WIFI_GEN" ] || [ -f "$WIFI_CONF" ]; then
 [ -f "$WIFI_GEN" ] && WIFI_CONF="$WIFI_GEN"
-pkill -TERM -x wpa_supplicant 2>/dev/null
+pkill -TERM -x wpa_supplicant 2>/dev/null   # legacy 段本就只在容器内跑；-x 命中容器实例
 pkill -x dhcpcd 2>/dev/null
 sleep 1
-ip link set wlan0 down; sleep 1; ip link set wlan0 up
+# 5.36 禁 flap 红线同样适用于本 fallback 段（只读确认，不 down/up；非 UP 就让 wpa 自己失败
+# 走 NET-FAILED 支路，桌面照留，交还不冻结 rtnl）
+ip -o -br link show wlan0 2>/dev/null
 mkdir -p /run/wpa-takeover
 /usr/sbin/wpa_supplicant -i wlan0 -c "$WIFI_CONF" -P /run/wpa-takeover.pid > /run/wpa-takeover.log 2>&1 &
 OK=0
