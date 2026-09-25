@@ -882,9 +882,16 @@ BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
 run "test -x $BTBIN || echo BT-NO-BIN; pgrep -x bthci-bridge || nohup $BTBIN --keep 0 >>/data/local/tmp/bt-bridge.log 2>&1 &"
-sleep 8
+# 判据要重试：桥的 initialize→initializationComplete→内核 init 60 命令→bluetoothd 认领
+# 整串要在 WiFi 关联同窗口排队，+8s 单发经常赶不上（16:59 轮实测：报 FAIL 时桥其实活着，
+# bt-bridge.log 里 hciEventReceived 一直有——FAIL 是判据太早，不是功能坏）。
+BTCUP=0
+for i in 1 2 3; do
+    sleep 8
+    if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then BTCUP=1; break; fi
+done
 run "tail -n 2 /data/local/tmp/bt-bridge.log 2>/dev/null"
-if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then
+if [ "$BTCUP" = 1 ]; then
     # 名字：E:Name 来自芯片自己的 Read_Local_Name（这台是主机名 Ubuntu），列表里像陌生机器；
     # BlueZ 对外广播/展示用 Alias，这里钉成稳定可认的名字（改不动 Name）。
     bluetoothctl system-alias "Piano BT" >/dev/null 2>&1
