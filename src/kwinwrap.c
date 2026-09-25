@@ -10,6 +10,8 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <grp.h>
+#include <pwd.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <signal.h>
@@ -1323,7 +1325,31 @@ int main(int argc, char **argv) {
         }
         char *u = getenv("KWINWRAP_UID");
         char *g = getenv("KWINWRAP_GID");
-        if (u && g) { setgid(atoi(g)); setuid(atoi(u)); }
+        if (u && g) {
+            uid_t nu = (uid_t)atoi(u);
+            gid_t ng = (gid_t)atoi(g);
+            /* 补上补充组 —— 原来这里只有 setgid+setuid，exec 出去就是裸的 uid/gid，
+             * 一个补充组都不带。/dev/dri/renderD128 与 /dev/kgsl-3d0 都是
+             * crw-rw---- root:droidspaces-gpu(786)，桌面用户明明在该组里（id 输出含 786），
+             * 组身份一丢就 EACCES ⇒ kwin 里 "MESA-EGL: failed to open renderD128/kgsl-3d0"
+             * → "EGL setup failed, disabling glamor" → **falling back to sw**（llvmpipe），
+             * 表现就是 09-25 用户实报的"GPU 驱动炸了、设置界面花屏、动效全无"。
+             * card0 之所以没暴露这个洞，是因为轮里一直有 `chmod 666 /dev/dri/card0` 兜着。
+             * 治法选补组而不是把 render 节点 chmod 666：后者等于给安卓侧所有进程开 GPU。
+             * 顺带把 video(44)/input(996) 这些本就该属于桌面用户的权限一起对齐。
+             * 失败退回 setgroups(0)，绝不静默。 */
+            struct passwd *pw = getpwuid(nu);
+            if (pw && initgroups(pw->pw_name, ng) == 0) {
+                fprintf(LOG, "KWINWRAP-GROUPS: initgroups(%s,%d) ok ngroups=%d\n",
+                        pw->pw_name, (int)ng, getgroups(0, NULL));
+            } else {
+                fprintf(LOG, "KWINWRAP-GROUPS: initgroups 失败(%s)，退回只清组\n",
+                        strerror(errno));
+                setgroups(0, NULL);
+            }
+            if (setgid(ng)) perror("kwinwrap: setgid");
+            if (setuid(nu)) perror("kwinwrap: setuid");
+        }
         execvp(argv[di], argv + di);
         perror("execvp");
         _exit(3);
