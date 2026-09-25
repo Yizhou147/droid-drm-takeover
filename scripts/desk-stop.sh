@@ -71,7 +71,8 @@ echo "WATCHDOG_PID=$WATCHDOG_PID (50s 后若无 start 标即自救)"
 # cfg80211 的 scheduled-scan `Match` 是它注册进驱动的，只有它自己退出时才会注销。
 # 直接 -9 ⇒ 内核里那份 Match 没人清 ⇒ **同一开机的下一轮**新 supplicant 报
 # `Match already configured` + `Could not set interface wlan0 flags (UP): Invalid argument`，
-# 整轮 WiFi 起不来（09-25 连续几轮"第二轮必炸"就是这个，一度被误记到 udevd / 蓝牙桥头上）。
+# 整轮 WiFi 起不来（09-25 连续几轮"同一开机第二轮必炸"的头号嫌疑就是这条 -9；
+# 真机第二轮尚未证实，判据见工作总结 5.33）。
 # 只按**进程名**取（不用 `pgrep -f 'wpa_supplicant -u'`）：-f 匹配的是整条命令行，
 # 会把"命令行里正好提到过这串字"的调用方 shell 一起算进来 —— 09-25 实测这么干把自己
 # 所在的会话打成了 SIGTERM（rc=143）。容器 pidns 里看不到安卓那份（实测无 zygote/

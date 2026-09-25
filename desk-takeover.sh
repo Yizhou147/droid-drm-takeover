@@ -46,8 +46,9 @@ run() {
 }
 # supplicant 必须**先优雅退出**再考虑 -9：cfg80211 的 scheduled-scan `Match` 是它注册进驱动的，
 # 被 SIGKILL 就没人清 ⇒ 下一任 supplicant 报 `Match already configured` +
-# `Could not set interface wlan0 flags (UP): Invalid argument`，整轮 WiFi 直接起不来
-# （09-25 连续几轮"同一开机的第二轮必炸"就是这个，不是 udevd、也不是蓝牙桥）。
+# `Could not set interface wlan0 flags (UP): Invalid argument`，整轮 WiFi 直接起不来。
+# 这是"同一开机第二轮必炸"的**头号嫌疑**（desk-stop 一直用 pkill -9 -f 杀它），
+# 但还没在真机第二轮上证实过 —— 判据见下面 WIFI-PRECLEAR 那段与工作总结 5.33。
 stop_supplicant() {
     # 没进程就立刻返回：本机 `systemctl stop wpa_supplicant.service`（unit 不存在也一样）
     # 实测要 7.2s，而 kill_linux_stack / rollback 一条路径上可能进来好几次。
