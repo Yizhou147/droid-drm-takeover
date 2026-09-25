@@ -605,10 +605,10 @@ fi
 # 链路 09-24 实测通了：桥 initialize(oneway,码2) → HAL 自己开 ttyHS0/glink →
 # 桥用 pty+N_HCI 在共享内核里注册真 hci0 并双向搬运 HCI（裸包，不带 H4 类型字节）→
 # 容器 bluetoothctl 看到 Controller（UP RUNNING、真 BD_ADDR、扫到周围设备）。
-# 但**默认关闭**（BT_BRIDGE=1 才开）：带桥跑的那两轮之后设备各出现一次
-# "console 静默 ~86s → 看门狗复位"（mtdoops reason=7），在 A/B 排除之前不让它上默认路径。
+# **默认开**（用户 09-25 要求，方便测试；`BT_BRIDGE=0` 可关）。注意 09-25 那轮 WiFi 炸时桥是关着的
+# ⇒ 桥与 WiFi 故障无关；另外它只走 BT 的 glink/ttyHS，绝不下固件、绝不碰 btpower ioctl。
 # 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
-if [ "${BT_BRIDGE:-0}" = 1 ]; then
+if [ "${BT_BRIDGE:-1}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
@@ -625,7 +625,7 @@ else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
 fi
 else
-    echo "BT-BRIDGE SKIPPED $(date +%T)（默认关，要验蓝牙跑 BT_BRIDGE=1 的那轮）"
+    echo "BT-BRIDGE SKIPPED $(date +%T)（本轮 BT_BRIDGE=0 显式关掉了）"
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
