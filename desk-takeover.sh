@@ -160,11 +160,12 @@ mk_dri_node() {  # $1=sysfs 类下的相对路径  $2=落地的 /dev 路径
     [ -n "$mj" ] && [ -n "$mn" ] || return 1
     if [ -c "$2" ]; then echo "GPU-NODE 已有 $2 = $mj:$mn"; return 0; fi
     mknod "$2" c "$mj" "$mn" 2>/dev/null || { echo "GPU-NODE mknod 失败 $2"; return 1; }
-    # **只补节点，不放宽权限**：kwin 现在能从 kwinwrap 的 initgroups 拿到
-    # droidspaces-gpu(786) 组身份，所以按 0660 + 该组就够；chmod 666 等于把 GPU
-    # 开给容器里所有进程（09-25 我一度写成 666，已收窄）。
-    chgrp droidspaces-gpu "$2" 2>/dev/null || chmod 666 "$2" 2>/dev/null
-    chmod 660 "$2" 2>/dev/null
+    # 只对**这里新建出来的**节点生效：mknod 出来是 0600 root:root，桌面用户（uid 1000）
+    # 根本用不了 ⇒ 必须放宽，做法与 card0 那行 `chmod 666 /dev/dri/card0` 一致。
+    # 注意：**已存在的节点一个字节都不碰**（上面 return 0）—— udev/ueventd 建的
+    # renderD128 是 `crw-rw---- root:droidspaces-gpu(786)`，那是系统的策略，不该由轮来改。
+    # 09-25 我曾给已存在的节点也 chmod 666，那是多余动作且白开权限，已去掉。
+    chgrp droidspaces-gpu "$2" 2>/dev/null; chmod 660 "$2" 2>/dev/null
     echo "GPU-NODE 新建 $2 = $mj:$mn"
 }
 # renderD128 在 drm 类下（可能不止一个），kgsl-3d0 在 kgsl 类下
