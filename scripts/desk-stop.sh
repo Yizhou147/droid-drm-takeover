@@ -99,16 +99,8 @@ kill_desktop() {
     # 接管期它只是 NM 的工具，交还后必须闭嘴。下一轮 desk-takeover 会重新拉起。
     pkill -9 -x systemd-udevd
     pkill -9 -f "input-node-sync.sh"   # /dev/input 节点同步器（setsid 起的，模式杀不到自己）
-    # 交还后**不留常驻 udevd**：desk-takeover 1b) 为了让 libinput 有热插拔，写了
-    # zz-drm-force-udevd.conf 清掉 Droid Spaces 的 enable_hw_access 条件并把 udevd 拉成单元；
-    # 条件是持久的（/run 里的 container.config 每次开机一样）→ 容器 udevd 从此开机常驻，
-    # 而"常驻 udevd + 安卓重置 wlan 驱动"正是 5.23② 那次把 wlan0 改名成 wlp1s0、
-    # 安卓 WiFi 永久报废的组合（09-25 这轮 WiFi 炸掉时也怀疑到它）。
-    # 所以只在接管轮内有效：交还时删掉 drop-in 并停单元，下一轮 desk-takeover 再写一次。
-    rm -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf 2>/dev/null
-    # 交还链里**不允许有能卡住的同步调用**（09-25："点返回安卓只弹黑框"的候选元凶就是它），
-    # 所以停单元用 timeout 包住；停不掉也不拦后面的 start。
-    timeout 8 systemctl stop systemd-udevd.service 2>/dev/null
+    # （09-25 已撤销"接管轮里把 udevd 拉成真单元"那套：隔离实验显示它一来 WiFi 就炸、
+    #   返回链也会卡死；见 desk-takeover 1b) 的注释。这里只保留原有的 pkill。）
     pkill -9 -x dhcpcd
 }
 for i in 1 2 3; do

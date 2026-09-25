@@ -28,7 +28,7 @@ WIFI_CONF=/root/desk-wifi.conf
 # 仅兜底；正常路径 dhcpcd 拿租约后动态探测 GW/网段（换网不用改这里）
 IP=172.16.30.104
 # 每轮的实验开关放这儿（/run 是 tmpfs，重启即回默认，不会偷偷留着上轮的实验设定）。
-# 里面可以写 UDEV_FORCE=1 / BT_BRIDGE=1，这样从桌面快捷方式进轮也能带上开关。
+# 里面可以写 BT_BRIDGE=1 之类的开关，这样从桌面快捷方式进轮也能带上实验设定。
 [ -f /run/drm-round.conf ] && . /run/drm-round.conf
 PREFIX=22
 GW=172.16.30.1
@@ -153,23 +153,20 @@ chmod 666 /dev/uhid 2>/dev/null
 # "99-drm" 排在 "99-hwaccess" 前面，空赋值会被后面的 ExecCondition= 覆盖掉（实测踩过）。
 # 先屏蔽网络改名规则再起 udevd：wlan0→wlp1s0 那次把安卓 WiFi 永久搞废（见 5.23）。
 ln -sf /dev/null /etc/udev/rules.d/80-net-setup-link.rules
-# **默认不动 udevd**（UDEV_FORCE=1 才拉真单元）：09-25 连续两轮 WiFi 出事，1b) 是新变量之一，
-# 在"到底是 udevd 还是蓝牙桥"分清之前，默认保持 09-24 23:41 那轮（WIFI-ASSOC OK）的形状。
-if [ "${UDEV_FORCE:-0}" = 1 ]; then
-    mkdir -p /etc/systemd/system/systemd-udevd.service.d
-    printf '[Service]\nExecCondition=\n' > /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf
-    systemctl daemon-reload
-    systemctl reset-failed systemd-udevd.service 2>/dev/null
-    systemctl restart systemd-udevd.service 2>/dev/null
-    if [ ! -S /run/udev/control ]; then
-        pgrep -x systemd-udevd >/dev/null || nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 &
-        sleep 2
-    fi
+# **绝不在接管轮里 restart 真 udevd 单元**（09-25 隔离实验的结论）：
+#   UDEV_FORCE=0 的那轮 → WIFI-ASSOC OK / NET-TAKEOVER OK，触屏与鼠标启动前设备都在；
+#   UDEV_FORCE=1 的那轮 → WiFi 炸 + 「返回安卓」卡死（只能强启）。
+# 而 anland 平时 `/run/udev/control` 一直存在且 WiFi 无恙 ⇒ 凶手不是 udevd 本身，
+# 是"接管轮里把它 restart 掉 + 清掉 Droid Spaces 的 ExecCondition"这一套动作
+# （机制未查明，但经验规则先立住：接管链里不 restart 服务化 udevd）。
+# 这里只做一件无害的事：socket 真不在时，用和 WiFi 段同样的兜底方式起一个裸实例。
+if [ ! -S /run/udev/control ]; then
+    pgrep -x systemd-udevd >/dev/null || { nohup /usr/lib/systemd/systemd-udevd >/dev/null 2>&1 & sleep 2; }
 fi
 if [ -S /run/udev/control ]; then
-    echo "UDEV-HOTPLUG OK $(date +%T)"
+    echo "UDEV-HOTPLUG OK $(date +%T)（沿用在跑的 udevd，未 restart）"
 else
-    echo "UDEV-HOTPLUG OFF $(date +%T)（默认：UDEV_FORCE=0 ⇒ 不动 udevd；本轮输入设备靠 input-node-sync 补节点，新设备要重启 kwin 才生效）"
+    echo "UDEV-HOTPLUG OFF $(date +%T)：无 udevd 监听 ⇒ 本轮新插的设备要重启 kwin 才认（触屏不受影响，它在 kwin 之前就在）"
 fi
 # 输入设备节点常驻同步器（详见 scripts/input-node-sync.sh 头注）：**必须在 kwin 之前**起，
 # 因为 libinput 只在启动时枚举一次 /dev/input。
