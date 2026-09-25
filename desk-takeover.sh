@@ -44,6 +44,29 @@ run() {
     printf '%s\n' "$out"
     return $rc
 }
+# supplicant 必须**先优雅退出**再考虑 -9：cfg80211 的 scheduled-scan `Match` 是它注册进驱动的，
+# 被 SIGKILL 就没人清 ⇒ 下一任 supplicant 报 `Match already configured` +
+# `Could not set interface wlan0 flags (UP): Invalid argument`，整轮 WiFi 直接起不来
+# （09-25 连续几轮"同一开机的第二轮必炸"就是这个，不是 udevd、也不是蓝牙桥）。
+stop_supplicant() {
+    # 没进程就立刻返回：本机 `systemctl stop wpa_supplicant.service`（unit 不存在也一样）
+    # 实测要 7.2s，而 kill_linux_stack / rollback 一条路径上可能进来好几次。
+    pgrep -x wpa_supplicant >/dev/null || { rm -f /run/desk-wpa.pid; return 0; }
+    # 自拉 nohup 版和 systemd 实例一起按名字处理；先 TERM，超时才 -9（原因见函数头注）
+    pkill -TERM -x wpa_supplicant 2>/dev/null   # systemd 管的实例同样吃这个 TERM
+    for i in 1 2 3 4 5 6; do
+        pgrep -x wpa_supplicant >/dev/null || break
+        sleep 1
+    done
+    if pgrep -x wpa_supplicant >/dev/null; then
+        echo "WPA-STOP 优雅退出超时，补 -9（下一轮 WiFi 可能残留 Match，需 WIFI-PRECLEAR 兜）"
+        pkill -9 -x wpa_supplicant 2>/dev/null
+        sleep 1
+    fi
+    # 杀完又冒出来 = systemd 按 unit 复活了它，只有这种才付 systemctl 那 7s
+    pgrep -x wpa_supplicant >/dev/null && systemctl stop wpa_supplicant.service 2>/dev/null
+    rm -f /run/desk-wpa.pid
+}
 kill_linux_stack() {
     # v2: 补全实际 cmdline 模式(v1 的 kwinwrap/socket 模式杀不掉真 kwin)，见 desk-stop.sh 头注
     pkill -9 -f "kwinwrap --out" 2>/dev/null
@@ -69,11 +92,12 @@ kill_linux_stack() {
     pkill -x fcitx5 2>/dev/null
     pkill -x onboard 2>/dev/null
     pkill -9 -f "dmesg-harvester.sh" 2>/dev/null
-    pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
     pkill -f "nm-drm.conf" 2>/dev/null
     pkill -x NetworkManager 2>/dev/null
-    systemctl stop wpa_supplicant.service 2>/dev/null   # 清掉 systemd 侧的 supplicant
-    pkill -x wpa_supplicant 2>/dev/null   # 09-24 起 supplicant 改为自拉 nohup 版，systemctl stop 管不到它
+    # 原来这行是 `pkill -f 'wpa_supplicant.*desk-wifi'`：按命令行匹配既杀不到自拉的 -u 版，
+    # 又会把"命令行里提到这串字"的调用方 shell 一起杀（09-25 实测 rc=143）。
+    # supplicant 一律交给下面的 stop_supplicant（按名字、TERM 优先）。
+    stop_supplicant   # systemd 侧 + 自拉 nohup 版都管；TERM 优先、超时才 -9（见函数注释）
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
     sleep 1
@@ -136,7 +160,27 @@ pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /t
 # desk-stop 不杀它，anland 托盘顺带受益）。
 [ -f /usr/local/bin/power-state-sync.py ] && { pgrep -f "power-state-sync" >/dev/null || nohup python3 /usr/local/bin/power-state-sync.py > /tmp/power-sync.log 2>&1 & }
 chmod 666 /dev/dri/card0 2>/dev/null
-[ -c /dev/input/event11 ] || mknod /dev/input/event11 c 13 75
+# 触摸屏的 eventN 在**同一开机的第二轮**会被活的 udevd 冷插成别的号（09-25 实测：第二轮
+# "2.4G 鼠标能用、触屏挂"）⇒ 节点号/major:minor 一律按设备名现查，不再硬编码 event11(13:75)。
+find_touch() {
+    local e
+    for e in /sys/class/input/event*; do
+        [ -e "$e/device/name" ] || continue
+        grep -qi "NVTCapacitiveTouchScreen" "$e/device/name" 2>/dev/null && { printf '%s\n' "$e"; return 0; }
+    done
+    printf '%s\n' /sys/class/input/event11   # 兜底：sysfs 名字没读到时退回老节点
+}
+TS=$(find_touch)
+TSNODE=$(basename "$TS")
+TSMAJ=""; TSMIN=""
+if [ -e "$TS/dev" ]; then
+    TSMAJ=$(cut -d: -f1 "$TS/dev"); TSMIN=$(cut -d: -f2 "$TS/dev")
+    [ -c "/dev/input/$TSNODE" ] || mknod "/dev/input/$TSNODE" c "$TSMAJ" "$TSMIN"
+else
+    # sysfs 里没有它 ⇒ 宁可不建：按老 13:75 硬建一个节点只会造成"假触摸屏"（节点名对、
+    # 号段却是别的设备），libinput 打开后什么都收不到，比明着没有更难查。
+    echo "TOUCH-SYSFS FAIL: $TS 无 dev ⇒ 本轮触摸屏不可用（查 NVT 驱动是否 probe）"
+fi
 # BLE 外设（鼠标/键盘/手柄）走 BlueZ HOGP→内核 uhid 才会长出 /dev/input/eventN；
 # 安卓侧有 /dev/uhid(10:239, CONFIG_UHID=y)，但容器这份 /dev 没有节点 ⇒ 设置里"连上了"
 # 却完全没有指针（09-25 实测）。
@@ -175,23 +219,37 @@ fi
 # 因为 libinput 只在启动时枚举一次 /dev/input。
 # 用 setsid+nohup：绝不能挂在我的调用链上（09-25 黑屏事故的直接教训）。
 nohup setsid bash $DIR/scripts/input-node-sync.sh > $LOGD/input-node-sync.log 2>&1 &
-chmod 666 /dev/input/event11 2>/dev/null
+chmod 666 "/dev/input/$TSNODE" 2>/dev/null
 # 自证探针（09-25 教训：整轮都是"权限不对但没人报错"）：以**桌面用户身份**试读触摸屏。
 # 读不到就等于触摸屏 + 一切鼠标全失效，必须当场喊出来，而不是等用户报"用不了"。
-if runuser -u xieyizhou -- test -r /dev/input/event11 2>/dev/null; then
-    echo "INPUT-PERM OK $(date +%T)：uid 1000 可读 /dev/input/event11"
+if runuser -u xieyizhou -- test -r "/dev/input/$TSNODE" 2>/dev/null; then
+    echo "INPUT-PERM OK $(date +%T)：uid 1000 可读 /dev/input/$TSNODE"
 else
-    echo "INPUT-PERM FAIL $(date +%T)：uid 1000 读不了 /dev/input/event11 ⇒ 触摸屏与所有鼠标都会失效"
+    echo "INPUT-PERM FAIL $(date +%T)：uid 1000 读不了 /dev/input/$TSNODE ⇒ 触摸屏与所有鼠标都会失效"
     echo "   多半是 udev 把节点规范成 root:input 0660 而容器无 logind ⇒ 没人下发 uaccess ACL；"
     echo "   解法＝scripts/input-node-sync.sh 里那条 MODE=\"0666\" 规则（已随同步器安装）"
 fi
-if [ ! -f /run/udev/data/c226:0 ] || ! grep -q DRIVER /run/udev/data/c226:0; then
-    mkdir -p /run/udev/data
+mkdir -p /run/udev/data
+# 原来这三份合成记录**共用一个条件**（c226:0 存在就整块跳过）⇒ 同一开机的第二轮里
+# card0 记录还在、触摸屏那份却没重写，而触摸屏节点号这时已经被活的 udevd 冷插成别的
+# eventN（09-25 实测第二轮"2.4G 鼠标能用、触屏挂"） ⇒ 拆成各自独立判断。
+if ! grep -q DRIVER /run/udev/data/c226:0 2>/dev/null; then
     printf 'Q:100\nE:DEVPATH=/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/card0\nE:MAJOR=226\nE:MINOR=0\nE:SUBSYSTEM=drm\nE:DEVTYPE=drm_minor\nE:DEVNAME=dri/card0\nE:DRIVER=vmwgfx\nH:uaccess\nH:seat\n' > /run/udev/data/c226:0
-    printf 'Q:101\nE:DEVPATH=/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/renderD128\nE:MAJOR=226\nE:MINOR=128\nE:SUBSYSTEM=drm\nE:DEVTYPE=drm_minor\nE:DEVNAME=dri/renderD128\nE:DRIVER=vmwgfx\nH:uaccess\nH:seat\n' > /run/udev/data/c226:128
-    printf 'Q:100\nE:DEVPATH=/devices/virtual/input/input11\nE:MAJOR=13\nE:MINOR=75\nE:SUBSYSTEM=input\nE:DEVNAME=input/event11\nE:ID_INPUT=1\nE:ID_INPUT_TOUCH=1\nE:ID_INPUT_TOUCHSCREEN=1\nE:LIBINPUT_DEVICE_GROUP=11/6/15d9:NVTCapacitiveTouchScreen\nE:LIBINPUT_CALIBRATION_MATRIX=0 1 0 -1 0 1 0 0 1\nH:uaccess\nH:seat\n' > /run/udev/data/c13:75
-    chmod -R a+rX /run/udev
 fi
+if ! grep -q DRIVER /run/udev/data/c226:128 2>/dev/null; then
+    printf 'Q:101\nE:DEVPATH=/devices/platform/soc/ae00000.qcom,mdss_mdp/drm/renderD128\nE:MAJOR=226\nE:MINOR=128\nE:SUBSYSTEM=drm\nE:DEVTYPE=drm_minor\nE:DEVNAME=dri/renderD128\nE:DRIVER=vmwgfx\nH:uaccess\nH:seat\n' > /run/udev/data/c226:128
+fi
+# 触摸屏记录：**按设备名找它现在的 major:minor**，不再硬编码 13:75/event11。
+if [ -n "$TSMAJ" ] && [ -n "$TSMIN" ]; then
+    TSPATH=$(readlink -f "$TS/device"); TSPATH=${TSPATH#/sys}
+    chmod 666 "/dev/input/$TSNODE" 2>/dev/null
+    printf 'Q:100\nE:DEVPATH=%s\nE:MAJOR=%s\nE:MINOR=%s\nE:SUBSYSTEM=input\nE:DEVNAME=input/%s\nE:ID_INPUT=1\nE:ID_INPUT_TOUCH=1\nE:ID_INPUT_TOUCHSCREEN=1\nE:LIBINPUT_DEVICE_GROUP=11/6/15d9:NVTCapacitiveTouchScreen\nE:LIBINPUT_CALIBRATION_MATRIX=0 1 0 -1 0 1 0 0 1\nH:uaccess\nH:seat\n' \
+        "$TSPATH" "$TSMAJ" "$TSMIN" "$TSNODE" > "/run/udev/data/c$TSMAJ:$TSMIN"
+    echo "TOUCH-RECORD $TSNODE ($TSMAJ:$TSMIN) 已按设备名重写"
+else
+    echo "TOUCH-RECORD FAIL: 拿不到触摸屏的 major:minor ⇒ 触摸会失效"
+fi
+chmod -R a+rX /run/udev
 
 # ---- 2) 悬停保护 + 放倒安卓框架（网会掉 ~10-40s，属预期） ----
 run "setprop ctl.stop system_suspend"
@@ -366,7 +424,7 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         ip rule del pref 0 table local 2>/dev/null || break
     done
     ip rule save > /run/desk-ip-rules.bak 2>/dev/null
-    pkill -9 -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
+    pkill -9 -x wpa_supplicant 2>/dev/null
     pkill -x dhcpcd 2>/dev/null
     if command -v NetworkManager >/dev/null 2>&1; then
         ip link set wlan0 down; sleep 1; ip link set wlan0 up
@@ -456,9 +514,17 @@ EOF
     # 10:47 轮教训：systemd 管的 supplicant（Type=dbus + Group=netdev 降权）进程不可
     # dumpable，strace attach 一律 EPERM，wpa 侧连续两轮 0 字节=盲区。改为自拉 nohup
     # 版（同 root，可 attach），-t 时间戳日志落文件。
-    systemctl stop wpa_supplicant.service 2>/dev/null
-    pkill -x wpa_supplicant 2>/dev/null
-    sleep 1
+    stop_supplicant                       # 上一轮的残留：先 TERM 等它自己注销 cfg80211 请求
+    # 上一轮 supplicant 若最终是被 -9 掉的（desk-stop 超时兜底），驱动里可能还留着它的
+    # scheduled-scan `Match` ⇒ 这一任一起来就报 `Match already configured` +
+    # `Could not set interface wlan0 flags (UP): Invalid argument`，整轮 WiFi 起不来。
+    # 把接口 down/up 一次：cfg80211 会随 wdev 停用丢掉挂在上面的残留请求。
+    # 必须在**起新 supplicant 之前**做（放 NM 之后再 down/up 等于自己把刚建好的链路踹了）。
+    iw dev wlan0 scan abort >/dev/null 2>&1
+    ip link set wlan0 down 2>/dev/null; sleep 1
+    ip link set wlan0 up 2>/dev/null \
+        && echo "WIFI-PRECLEAR OK $(date +%T)" \
+        || echo "WIFI-PRECLEAR FAIL $(date +%T)：接口拉不起来 ⇒ 基本只能重启救（见 5.23④/5.31）"
     mkdir -p /run/wpa_supplicant
     nohup /usr/sbin/wpa_supplicant -u -t -O "DIR=/run/wpa_supplicant GROUP=netdev" \
         > $LOGD/wpa-drm.log 2>&1 &
@@ -548,7 +614,7 @@ else
 # ---- 5L) legacy 手管段（NM 未安装时的 fallback，原 wpa+dhcpcd+表1015 方案） ----
 if [ -f "$WIFI_GEN" ] || [ -f "$WIFI_CONF" ]; then
 [ -f "$WIFI_GEN" ] && WIFI_CONF="$WIFI_GEN"
-pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
+pkill -TERM -x wpa_supplicant 2>/dev/null
 pkill -x dhcpcd 2>/dev/null
 sleep 1
 ip link set wlan0 down; sleep 1; ip link set wlan0 up
@@ -564,7 +630,7 @@ if [ "$OK" != 1 ]; then
     wpa_cli -p /run/wpa-takeover -i wlan0 status
     tail -n 25 /run/wpa-takeover.log
     # 网络尽力而为：关联失败不连坐桌面（安卓已 stop，网络要等 desk-stop/回滚才恢复）
-    pkill -f 'wpa_supplicant.*desk-wifi' 2>/dev/null
+    pkill -TERM -x wpa_supplicant 2>/dev/null
     echo "NET-FAILED $(date +%T): desktop kept, NO network (SSID/PSK 没对上？返回安卓再试)"
 fi
 if [ "$OK" = 1 ]; then

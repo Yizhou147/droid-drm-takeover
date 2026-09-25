@@ -67,6 +67,40 @@ WATCHDOG_PID=$!
 echo "WATCHDOG_PID=$WATCHDOG_PID (50s 后若无 start 标即自救)"
 
 # ---- 1) 杀 Linux 桌面栈：两套 kwin(接管 taketest / 系统 wayland-0)全模式覆盖 ----
+# supplicant 的收尾：**先 TERM、等它自己退，超时才 -9**。
+# cfg80211 的 scheduled-scan `Match` 是它注册进驱动的，只有它自己退出时才会注销。
+# 直接 -9 ⇒ 内核里那份 Match 没人清 ⇒ **同一开机的下一轮**新 supplicant 报
+# `Match already configured` + `Could not set interface wlan0 flags (UP): Invalid argument`，
+# 整轮 WiFi 起不来（09-25 连续几轮"第二轮必炸"就是这个，一度被误记到 udevd / 蓝牙桥头上）。
+# 只按**进程名**取（不用 `pgrep -f 'wpa_supplicant -u'`）：-f 匹配的是整条命令行，
+# 会把"命令行里正好提到过这串字"的调用方 shell 一起算进来 —— 09-25 实测这么干把自己
+# 所在的会话打成了 SIGTERM（rc=143）。容器 pidns 里看不到安卓那份（实测无 zygote/
+# surfaceflinger/netd），所以 -x 既杀得准也不会误伤安卓。
+wpa_pids() {
+    local p out=""
+    # pid 文件可能是**上一轮的陈旧值**，那个号现在可能属于别的进程 ⇒ 先验名字再收
+    if [ -f /run/desk-wpa.pid ]; then
+        p=$(cat /run/desk-wpa.pid 2>/dev/null)
+        [ -n "$p" ] && [ "$(cat /proc/$p/comm 2>/dev/null)" = "wpa_supplicant" ] && out="$p "
+    fi
+    for p in $(pgrep -x wpa_supplicant 2>/dev/null); do out="$out$p "; done
+    printf '%s\n' "$out"
+}
+wpa_stop_graceful() {
+    # 先记下"我要杀的是哪些 pid"，等的时候只查这批（判生死不能靠 -f，见上）。
+    local pids p left
+    pids="$(wpa_pids)"
+    [ -n "${pids// /}" ] || return 0          # 本来就没有实例：秒返回，别白付 8s
+    kill -TERM $pids 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8; do
+        left=""
+        for p in $pids; do kill -0 "$p" 2>/dev/null && left="$left $p"; done
+        [ -z "$left" ] && return 0
+        sleep 1
+    done
+    echo "WPA-GRACEFUL 超时未退：$left"
+    return 1
+}
 kill_desktop() {
     pkill -9 -f "kwinwrap --out"
     pkill -9 -f "socket=taketest"
@@ -88,10 +122,12 @@ kill_desktop() {
     # 容器与安卓共享 netns → wlan0 只能有一个主人。09-24 起 supplicant 是自拉 nohup 版
     # （cmdline `wpa_supplicant -u -t -O ...`，不含 desk-wifi），旧模式永远杀不到它，
     # 残留进程攥着 nl80211/D-Bus 控制权 → 回安卓后 WiFi 开关点了没反应，只能重启（09-24 两次实测）。
-    [ -f /run/desk-wpa.pid ] && kill -9 "$(cat /run/desk-wpa.pid)" 2>/dev/null
+    if ! wpa_stop_graceful; then
+        echo "WPA-TERM TIMEOUT 8s -> 补 -9（下一轮靠 desk-takeover 的 WIFI-PRECLEAR 兜残留 Match）"
+        # 按名字补杀，不用 -f：-f 会连"命令行里提到这串字"的调用方一起命中（见 wpa_pids 头注）
+        pkill -9 -x wpa_supplicant 2>/dev/null
+    fi
     rm -f /run/desk-wpa.pid
-    pkill -9 -f 'wpa_supplicant -u'        # 容器自拉版 + NM D-Bus 激活版都算（安卓版是 -O/data/vendor/... 无 -u，杀不到）
-    pkill -9 -f 'wpa_supplicant.*desk-wifi'   # 静态 conf fallback 版
     pkill -9 -f 'strace.*-strace.txt'      # 接管期的 wpa/NM strace 尾巴
     pkill -9 -f "nm-drm.conf"
     pkill -x NetworkManager
@@ -133,8 +169,10 @@ fi
 ip link set wlan0 down 2>/dev/null
 # 交还前的残留检查（必须在 4b 重启 anland 会话之前取，否则会把 anland 自己正常拉起的
 # NM/supplicant 误报成泄漏）：容器里还有 wpa_supplicant 活着 = wlan0 主人没换干净
-LEFT=$(pgrep -f 'wpa_supplicant' | tr '\n' ' ')
-[ -n "$LEFT" ] && echo "WIFI-HANDOVER LEAK: 容器侧仍有 $(pgrep -fa wpa_supplicant | tr '\n' ';')"
+LEFT=$(pgrep -x wpa_supplicant | tr '\n' ' ')
+# 打 cmdline 时也按名字取号（`pgrep -fa wpa_supplicant` 会把"命令行里提到这串字"的
+# 调用方一起列进来，09-25 实测过这个坑）
+[ -n "$LEFT" ] && echo "WIFI-HANDOVER LEAK: 容器侧仍有 pid=$(echo $LEFT) cmdline=$(for p in $LEFT; do tr -d '\0' < /proc/$p/cmdline; done)"
 # 改名自愈：wlan0 若已被容器 udevd 改成 wlpXXX，安卓找不到自己的网卡 → WiFi 永久废掉。
 # 趁安卓 framework 还没 start、网卡无人使用时改回来（09-24 现场实测：这一步就能免掉重启）。
 MIS=$(ip -o link 2>/dev/null | grep -oE "wlp[a-z0-9]+" | head -1)
