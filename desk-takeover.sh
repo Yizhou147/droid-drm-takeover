@@ -334,13 +334,14 @@ if [ "${AUDIO_BRIDGE:-0}" = 1 ]; then
     ASVC=$(run "getprop init.svc.audioserver" 2>/dev/null | tr -d '\r')
     HAL=$(run "getprop init.svc.vendor.audio-hal-aidl" 2>/dev/null | tr -d '\r')
     echo "AUDIO-BRIDGE(A) 前置: audioserver=$ASVC audioHAL=$HAL $(date +%T)"
-    # 安卓侧常驻 sink：文件齐才起，缺就只报不杀（不 rollback）。
-    MISS=$(run 'for f in argsloop halsink.sh mix2.bin dev23.bin patch0.bin; do test -e /data/local/tmp/$f || echo $f; done' 2>/dev/null | tr '\n' ' ')
-    if [ -n "$MISS" ]; then
-      echo "AUDIO-BRIDGE(A) SKIP：/data/local/tmp 缺 $MISS（先 push droid-audio-bridge 产物+模板）"
+    # 直接尝试起安卓侧常驻 sink（halsink.sh 自带缺文件自检并退出 3）；起完用 pgrep 复验。
+    # 不预判文件是否存在：run 对空输出也补换行，老写法 `MISS=$(run … | tr)` 恒得一个空格→恒误判 SKIP。
+    run 'pgrep -x argsloop >/dev/null || (nohup sh /data/local/tmp/halsink.sh 44777 >>/data/local/tmp/hal-sink.log 2>&1 </dev/null &)' >/dev/null 2>&1
+    sleep 2
+    if [ -n "$(run 'pgrep -x argsloop' 2>/dev/null | tr -dc '0-9')" ]; then
+      echo "AUDIO-BRIDGE(A) 安卓 sink 已起（监听 :44777，日志 /data/local/tmp/hal-sink.log）$(date +%T)"
     else
-      run 'pgrep -x argsloop >/dev/null || (nohup sh /data/local/tmp/halsink.sh 44777 >>/data/local/tmp/hal-sink.log 2>&1 </dev/null &)' >/dev/null 2>&1
-      echo "AUDIO-BRIDGE(A) 安卓 sink 已拉起（监听 :44777，日志 /data/local/tmp/hal-sink.log）$(date +%T)"
+      echo "AUDIO-BRIDGE(A) sink 没起来：查 /data/local/tmp/hal-sink.log（多半缺 argsloop/halsink.sh/模板，先 push droid-audio-bridge 产物+模板）"
     fi
   fi
 fi
