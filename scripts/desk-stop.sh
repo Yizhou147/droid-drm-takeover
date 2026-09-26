@@ -50,7 +50,9 @@ rm -f $STARTED_FLAG
     pkill -9 -f "kwinwrap --out"; pkill -9 -f "socket=taketest"
     pkill -9 -f "kwin_wayland --"; pkill -9 -f "plasmashell"
     pkill -9 -x bthci-bridge   # 放掉容器侧 HCI 接管（进程退→tty 关→内核自动注销 hci0）
+    pkill -9 -f "aa-feeder.sh" 2>/dev/null    # A 路音频：容器 feeder + 安卓 argsloop sink
     WDEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
+    [ -n "$WDEV" ] && timeout 12 adb -s "$WDEV" shell "su -c 'pkill -x argsloop'" 2>/dev/null
     if [ -z "$WDEV" ]; then
         echo "WATCHDOG: adb 通道也没了，只能硬重启（这一步救不了）"
     else
@@ -161,6 +163,10 @@ fi
 # 桥退出即关 tty → 内核自动注销 hci0，安卓侧无需任何还原（安卓开机本来就会自开 BT）。
 pkill -x bthci-bridge 2>/dev/null
 pkill -x NetworkManager 2>/dev/null
+# A 路音频：交还安卓前放掉我们的常驻 sink（安卓侧进程名 argsloop，占着 deep_buffer/speaker 端口与 patch）
+# 和容器侧 feeder，否则 audioserver 重启抢不到 HAL 输出流。
+pkill -f "aa-feeder.sh" 2>/dev/null
+timeout 12 adb -s "$DEV" shell "su -c 'pkill -x argsloop'" 2>/dev/null
 # NM 经 D-Bus 激活的 wpa_supplicant 会赖在总线上；只停容器 systemd 的实例（安卓那侧不受影响）
 systemctl stop wpa_supplicant.service 2>/dev/null
 ip -4 addr flush dev wlan0 2>/dev/null

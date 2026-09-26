@@ -102,6 +102,7 @@ kill_linux_stack() {
     stop_supplicant   # systemd 侧 + 自拉 nohup 版都管；TERM 优先、超时才 -9（见函数注释）
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
+    pkill -f "aa-feeder.sh" 2>/dev/null     # A 路容器喂流器（安卓侧 argsloop 由 rollback/desk-stop 各自 run pkill）
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
     rm -f $DIR/takeover.ok
@@ -113,6 +114,10 @@ rollback() {
     # 抢同一颗 combo 芯片的电源协调（09-25 两轮把 WiFi 打进 recovery 死循环的直接嫌疑）。
     # rollback 不走 desk-stop，所以这里也得自己杀（见工作总结 5.30）。
     run "pkill -x bthci-bridge"
+    # A 路音频：安卓侧常驻 sink（进程名 argsloop）与容器侧 feeder 都要放掉，
+    # 否则交还后 audioserver 想接管 HAL 会被我们占着的 stream/patch 挡住（端口 63/deep_buffer 被占）。
+    run "pkill -x argsloop" 2>/dev/null
+    pkill -f "aa-feeder.sh" 2>/dev/null
     # system_suspend 被 ctl.stop 后 `start` 拉不起它，新 system_server 会在
     # PowerManagerService.<init> waitForService(android.system.suspend) 卡死
     # → MIUIScout FW_SCOUT_HANG → 自动重启。必须先显式 ctl.start。
@@ -308,19 +313,38 @@ run "setprop ctl.stop vendor.qti.hardware.display.composer"
 sleep 5
 
 # ---- 2b) 音频桥开关（AUDIO_BRIDGE=1 才生效；不设 = 上面这套 stop 链原样，行为零变化）----
-# 背景：容器声音改道走 AAudio（droid-audio-bridge《直连音频HAL方案》§10：anland 态已真出声确认），
-# 而 AAudio 要有活的 audioserver。`stop` 把 class core 全停 = audioserver 也死，所以这里在停完之后
-# 把它单独放回来。两个已知坑一起处理：
-#   · AGM/audioserver 初始化硬依赖 ISystemSuspend（§38：卡在那儿等，agmplay 的 rc=0 是假成功），
-#     而上面为"悬停保护"ctl.stop 了 system_suspend ⇒ 先起它；wake_lock 仍在手上，不会真进悬停。
-#   · §38 另有一条旧结论"轮内冷启动 audioserver 卡在等 activity(system_server)"——**待本轮实测判定**，
-#     判据 = /data/local/tmp/aaudio-probe 能否 openStream rc=0。若确实卡死，再上"不整体 stop、
-#     逐个 ctl.stop 放过 audioserver"的激进方案（备份见 desk-takeover.sh.bak-0926-audio）。
+# 两条路线，用 AUDIO_ROUTE 选（默认 a）：
+#   · a = **A 路（已跑通并出声，见 droid-audio-bridge《直连音频HAL方案》§31~§34）**：
+#         audioserver 保持停（上面 `stop` 已把 class core 停了），我们的进程直连 vendor AIDL HAL：
+#         自建 deep_buffer/speaker portConfig + setAudioPatch + openOutputStream + FMQ 喂 PCM → 喇叭。
+#         终点 = /data/local/tmp/halsink.sh（常驻 argsloop SINK，监听 127.0.0.1:44777）；
+#         容器侧 aa-feeder.sh（抓 PipeWire monitor 的 s16 PCM）推到那个口，在 §桌面起来后再拉起（见后）。
+#   · b = 旧 B′ 路：把 audioserver 拉回来给 AAudio（aa-bridge 路线；§38 那条"轮内冷启 audioserver
+#         可能卡在等 system_server"未定案，故仅作回退选项保留）。
+# **红线**：音频非关键路径，任何一步失败都只 echo + || true，绝不 rollback（不能因为没声音把桌面搭进去）。
 if [ "${AUDIO_BRIDGE:-0}" = 1 ]; then
+  AUDIO_ROUTE=${AUDIO_ROUTE:-a}
+  if [ "$AUDIO_ROUTE" = b ]; then
     run "setprop ctl.start system_suspend; sleep 2; setprop ctl.start audioserver"
     sleep 6
-    echo "AUDIO-BRIDGE 拉起后状态: $(run "getprop init.svc.system_suspend; getprop init.svc.audioserver" 2>/dev/null | tr '\n' ' ')"
+    echo "AUDIO-BRIDGE(B) 拉起后状态: $(run "getprop init.svc.system_suspend; getprop init.svc.audioserver" 2>/dev/null | tr '\n' ' ')"
+  else
+    # A 路：确认 audioserver 是死的（HAL 才归我们），vendor audio HAL 活着。
+    run "setprop ctl.stop audioserver" >/dev/null 2>&1
+    ASVC=$(run "getprop init.svc.audioserver" 2>/dev/null | tr -d '\r')
+    HAL=$(run "getprop init.svc.vendor.audio-hal-aidl" 2>/dev/null | tr -d '\r')
+    echo "AUDIO-BRIDGE(A) 前置: audioserver=$ASVC audioHAL=$HAL $(date +%T)"
+    # 安卓侧常驻 sink：文件齐才起，缺就只报不杀（不 rollback）。
+    MISS=$(run 'for f in argsloop halsink.sh mix2.bin dev23.bin patch0.bin; do test -e /data/local/tmp/$f || echo $f; done' 2>/dev/null | tr '\n' ' ')
+    if [ -n "$MISS" ]; then
+      echo "AUDIO-BRIDGE(A) SKIP：/data/local/tmp 缺 $MISS（先 push droid-audio-bridge 产物+模板）"
+    else
+      run 'pgrep -x argsloop >/dev/null || (nohup sh /data/local/tmp/halsink.sh 44777 >>/data/local/tmp/hal-sink.log 2>&1 &)' >/dev/null 2>&1
+      echo "AUDIO-BRIDGE(A) 安卓 sink 已拉起（监听 :44777，日志 /data/local/tmp/hal-sink.log）$(date +%T)"
+    fi
+  fi
 fi
+
 
 # ---- IM：plasma-keyboard 本体路线（09-23 定案）----
 # Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
@@ -927,6 +951,27 @@ else
 fi
 else
     echo "BT-BRIDGE SKIPPED $(date +%T)（本轮 /run/drm-round.conf 或环境变量里显式 BT_BRIDGE=0）"
+fi
+
+# ---- 5f) A 路容器侧喂流器（桌面/PipeWire 起来之后才拉，抓默认 sink 的 monitor）----
+# 与 §2b 的安卓侧 halsink 配套：feeder 把 anland PipeWire 的声音 s16/48k 推到 127.0.0.1:44777，
+# 安卓侧 argsloop 转 s32 喂进 HAL。共享 netns ⇒ 环回可达。非关键：缺脚本/起不来只报，不回滚。
+if [ "${AUDIO_BRIDGE:-0}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
+  FEEDER=$DIR/scripts/aa-feeder.sh
+  if [ ! -f "$FEEDER" ]; then
+    echo "AUDIO-FEEDER SKIP $(date +%T)：没有 $FEEDER"
+  else
+    pgrep -f "aa-feeder.sh" >/dev/null 2>&1 || \
+      runuser -u xieyizhou -- env HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        nohup sh "$FEEDER" 127.0.0.1:44777 >>"$LOGD/hal-feeder.log" 2>&1 &
+    sleep 2
+    if pgrep -f "aa-feeder.sh" >/dev/null 2>&1; then
+      echo "AUDIO-FEEDER OK $(date +%T)：容器 monitor → 127.0.0.1:44777（日志 $LOGD/hal-feeder.log）"
+      echo "  安卓侧 sink 判据：adb shell su -c 'grep -a \"SINK t=\" /data/local/tmp/hal-sink.log | tail'"
+    else
+      echo "AUDIO-FEEDER FAIL $(date +%T)：feeder 没起来（查 PipeWire/默认 sink、$LOGD/hal-feeder.log）"
+    fi
+  fi
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----
