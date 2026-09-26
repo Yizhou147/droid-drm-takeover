@@ -312,7 +312,7 @@ run "stop"
 run "setprop ctl.stop vendor.qti.hardware.display.composer"
 sleep 5
 
-# ---- 2b) 音频桥开关（AUDIO_BRIDGE=1 才生效；不设 = 上面这套 stop 链原样，行为零变化）----
+# ---- 2b) 音频桥开关（09-26 起**默认开**；AUDIO_BRIDGE=0 显式关）----
 # 两条路线，用 AUDIO_ROUTE 选（默认 a）：
 #   · a = **A 路（已跑通并出声，见 droid-audio-bridge《直连音频HAL方案》§31~§34）**：
 #         audioserver 保持停（上面 `stop` 已把 class core 停了），我们的进程直连 vendor AIDL HAL：
@@ -322,7 +322,7 @@ sleep 5
 #   · b = 旧 B′ 路：把 audioserver 拉回来给 AAudio（aa-bridge 路线；§38 那条"轮内冷启 audioserver
 #         可能卡在等 system_server"未定案，故仅作回退选项保留）。
 # **红线**：音频非关键路径，任何一步失败都只 echo + || true，绝不 rollback（不能因为没声音把桌面搭进去）。
-if [ "${AUDIO_BRIDGE:-0}" = 1 ]; then
+if [ "${AUDIO_BRIDGE:-1}" = 1 ]; then
   AUDIO_ROUTE=${AUDIO_ROUTE:-a}
   if [ "$AUDIO_ROUTE" = b ]; then
     run "setprop ctl.start system_suspend; sleep 2; setprop ctl.start audioserver"
@@ -957,7 +957,7 @@ fi
 # ---- 5f) A 路容器侧喂流器（桌面/PipeWire 起来之后才拉，抓默认 sink 的 monitor）----
 # 与 §2b 的安卓侧 halsink 配套：feeder 把 anland PipeWire 的声音 s16/48k 推到 127.0.0.1:44777，
 # 安卓侧 argsloop 转 s32 喂进 HAL。共享 netns ⇒ 环回可达。非关键：缺脚本/起不来只报，不回滚。
-if [ "${AUDIO_BRIDGE:-0}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
+if [ "${AUDIO_BRIDGE:-1}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
   FEEDER=$DIR/scripts/aa-feeder.sh
   if [ ! -f "$FEEDER" ]; then
     echo "AUDIO-FEEDER SKIP $(date +%T)：没有 $FEEDER"
