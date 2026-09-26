@@ -339,7 +339,7 @@ if [ "${AUDIO_BRIDGE:-0}" = 1 ]; then
     if [ -n "$MISS" ]; then
       echo "AUDIO-BRIDGE(A) SKIP：/data/local/tmp 缺 $MISS（先 push droid-audio-bridge 产物+模板）"
     else
-      run 'pgrep -x argsloop >/dev/null || (nohup sh /data/local/tmp/halsink.sh 44777 >>/data/local/tmp/hal-sink.log 2>&1 &)' >/dev/null 2>&1
+      run 'pgrep -x argsloop >/dev/null || (nohup sh /data/local/tmp/halsink.sh 44777 >>/data/local/tmp/hal-sink.log 2>&1 </dev/null &)' >/dev/null 2>&1
       echo "AUDIO-BRIDGE(A) 安卓 sink 已拉起（监听 :44777，日志 /data/local/tmp/hal-sink.log）$(date +%T)"
     fi
   fi
