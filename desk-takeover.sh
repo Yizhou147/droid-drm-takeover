@@ -392,6 +392,11 @@ for f in /etc/default/locale /etc/environment; do
         esac
     done < "$f"
 done
+# 09-27：Electron 应用（zcode/trae/星火商店等）在轮内默认走 XWayland(X11)——X11 没有
+# Wayland text-input 协议，kwin 不知道文本框聚焦，**虚拟键盘永不自动弹出**（§41.5）。
+# 强制 Electron 全部 Wayland 原生：text-input-v3 生效 → VKB 自动弹出，中文输入
+# 走 text-input 干净路径（无 anland 镜像协议冲突）。 Electro 28+ 支持该 hint。
+DESK_ENV+=("ELECTRON_OZONE_PLATFORM_HINT=wayland")
 echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"
 kill_linux_stack
 rm -f $DIR/takeover.ok
