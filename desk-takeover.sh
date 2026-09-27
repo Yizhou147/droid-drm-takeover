@@ -401,6 +401,7 @@ env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     env -u DISPLAY -u WAYLAND_DISPLAY ${DESK_ENV[@]+"${DESK_ENV[@]}"} HOME=/home/xieyizhou \
         KWIN_DRM_DEVICES=/dev/dri/card0 \
         KWIN_IM_SHOW_ALWAYS=1 \
+        PCKEYD_INPUT_SOCKET=/run/user/1000/pckeyd-input.sock \
         FD_MESA_DEBUG=noubwc \
         KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
         XDG_SESSION_ID=bogus \
@@ -587,9 +588,7 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         echo "$XD" > /run/pc-keyd-display
         pkill -f "pc-keyd.py" 2>/dev/null
         nohup runuser -u xieyizhou -- env DISPLAY="$XD" HOME=/home/xieyizhou \
-            XDG_RUNTIME_DIR=/run/user/1000 \
-            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-            python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+            XDG_RUNTIME_DIR=/run/user/1000             PCKEYD_INPUT_SOCKET=/run/user/1000/pckeyd-input.sock             DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus             python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
         sleep 1
         if curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:48222/ping | grep -q 204; then
             echo "PC2-UP $(date +%T) (xtest backend, display=$XD)"
