@@ -193,6 +193,19 @@ chmod 666 /dev/uinput 2>/dev/null
 # 09-27 定案：DRM 轮内自动拉起（保持原行为）；其 uinput 键盘会让安卓发"已配置 pc-keyd-kbd"
 # 物理键盘通知，但仅存在于轮内——desk-stop 交还时负责 pkill（对应清理已加），轮外不残留。
 pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+# 09-27（§40 第二层）：起 kwin 前必须等 pc-keyd 的 uinput 设备完成 udev 注册
+# （seat 标签落盘）——udevd 写条目是异步的，kwin 枚举抢跑会永久错过该设备且
+# 轮内热插拔监听不生效。最多等 10s，超时仅警告不阻塞（组合键非关键路径）。
+PKREADY=""
+for i in $(seq 1 20); do
+    PKEV=$(grep -A20 'Name="pc-keyd-kbd"' /proc/bus/input/devices 2>/dev/null | grep -oE 'event[0-9]+' | head -1)
+    if [ -n "$PKEV" ]; then
+        PKMINOR=$(cat /sys/class/input/$PKEV/dev 2>/dev/null | cut -d: -f2)
+        if grep -qE '^G:seat' /run/udev/data/c13:$PKMINOR 2>/dev/null; then PKREADY=1; break; fi
+    fi
+    sleep 0.5
+done
+[ -n "$PKREADY" ] && echo "PK-READY $PKEV $(date +%T)" || echo "PK-WARN: pc-keyd 设备未就绪，本轮组合键可能失效（不阻塞）"
 # power-state-sync：小米 BSP 电流符号与内核 ABI 相反 → upower 永远判放电。
 # bind-mount 取反 current_now + 周期 kick（脚本自带幂等挂载判断；跨会话常驻，
 # desk-stop 不杀它，anland 托盘顺带受益）。
