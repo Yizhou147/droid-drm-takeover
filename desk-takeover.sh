@@ -184,28 +184,14 @@ mk_dri_node "kgsl/kgsl-3d0" "/dev/kgsl-3d0"
 # NM 靠 rfkill netlink 控制 WiFi 射频；容器重启后 /dev 重建，缺这节点=扫不到任何热点（09-23 实锤）
 [ -c /dev/rfkill ] || mknod /dev/rfkill c 10 242
 chmod 666 /dev/rfkill 2>/dev/null
-# pc-keyd（PC 布局组合键守护）的 uinput 注入要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）
+# pc-keyd v2 的 uinput 兜底路径要这个节点（内核 CONFIG_INPUT_UINPUT=y，只差节点）。
+# 09-27 v2 主通道改 XTEST/EIS（不再默认创建 uinput 设备 → 安卓"物理键盘"通知消失，
+# uinput 防滥用红线随之退役）；节点仅为 uinput 兜底保留。
 [ -c /dev/uinput ] || mknod /dev/uinput c 10 223
 chmod 666 /dev/uinput 2>/dev/null
-# pc-keyd（组合键守护）必须在 kwin 之前在场。只从本脚本 nohup 起（防开机
-# crash-loop 触发内核 uinput 防滥用；daemon 源码已独立成仓 droid-pc-keyboard，
-# 装在 /usr/local/bin/pc-keyd.py。详见 https://github.com/Yizhou147/droid-pc-keyboard）。
-# 09-27 定案：DRM 轮内自动拉起（保持原行为）；其 uinput 键盘会让安卓发"已配置 pc-keyd-kbd"
-# 物理键盘通知，但仅存在于轮内——desk-stop 交还时负责 pkill（对应清理已加），轮外不残留。
-pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
-# 09-27（§40 第二层）：起 kwin 前必须等 pc-keyd 的 uinput 设备完成 udev 注册
-# （seat 标签落盘）——udevd 写条目是异步的，kwin 枚举抢跑会永久错过该设备且
-# 轮内热插拔监听不生效。最多等 10s，超时仅警告不阻塞（组合键非关键路径）。
-PKREADY=""
-for i in $(seq 1 20); do
-    PKEV=$(grep -A20 'Name="pc-keyd-kbd"' /proc/bus/input/devices 2>/dev/null | grep -oE 'event[0-9]+' | head -1)
-    if [ -n "$PKEV" ]; then
-        PKMINOR=$(cat /sys/class/input/$PKEV/dev 2>/dev/null | cut -d: -f2)
-        if grep -qE '^G:seat' /run/udev/data/c13:$PKMINOR 2>/dev/null; then PKREADY=1; break; fi
-    fi
-    sleep 0.5
-done
-[ -n "$PKREADY" ] && echo "PK-READY $PKEV $(date +%T)" || echo "PK-WARN: pc-keyd 设备未就绪，本轮组合键可能失效（不阻塞）"
+# pc-keyd v2（组合键守护，droid-pc-keyboard 仓）改为 kwin/Xwayland 就绪后以会话用户启动
+# （见 DESKTOP-UP 之后的 PC2-UP 段）：XTEST 注入无需 root，且 DRM Xwayland 拒绝 root 的
+# X 连接（13:41 轮实测）。
 # power-state-sync：小米 BSP 电流符号与内核 ABI 相反 → upower 永远判放电。
 # bind-mount 取反 current_now + 周期 kick（脚本自带幂等挂载判断；跨会话常驻，
 # desk-stop 不杀它，anland 托盘顺带受益）。
@@ -586,6 +572,22 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
             echo "XWAYLAND-OK display=$XD pid=$XP $(date +%T)"
         else
             echo "XWAYLAND-MISMATCH display=$XD 但会话注入的是 :0 → 应用连不上，检查 /tmp/.X11-unix 残留"
+        fi
+        # ---- pc-keyd v2（组合键守护，XTEST/EIS 后端）----
+        # 必须 kwin+Xwayland 就绪后启动（连接 X :0 注入）；以会话用户运行（root 的 X 连接
+        # 被拒，13:41 轮实测）。v2 不创建 uinput 设备 → 安卓"物理键盘"通知消失；
+        # 显示号写入 /run/pc-keyd-display 供其 _xdisplay() 读取。
+        echo "$XD" > /run/pc-keyd-display
+        pkill -f "pc-keyd.py" 2>/dev/null
+        nohup runuser -u xieyizhou -- env DISPLAY="$XD" HOME=/home/xieyizhou \
+            XDG_RUNTIME_DIR=/run/user/1000 \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+        sleep 1
+        if curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:48222/ping | grep -q 204; then
+            echo "PC2-UP $(date +%T) (xtest backend, display=$XD)"
+        else
+            echo "PC2-FAIL $(date +%T): pc-keyd v2 未就绪（PC 页组合键本轮不可用，不阻塞）"
         fi
     fi
 ) >> $LOGD/desk-takeover.log 2>&1 &
