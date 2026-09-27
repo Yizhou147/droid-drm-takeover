@@ -400,6 +400,7 @@ env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     $DIR/bin/kwinwrap --out $LOGD/kwinatomic.log -- \
     env -u DISPLAY -u WAYLAND_DISPLAY ${DESK_ENV[@]+"${DESK_ENV[@]}"} HOME=/home/xieyizhou \
         KWIN_DRM_DEVICES=/dev/dri/card0 \
+        KWIN_IM_SHOW_ALWAYS=1 \
         FD_MESA_DEBUG=noubwc \
         KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
         XDG_SESSION_ID=bogus \
@@ -502,33 +503,12 @@ if [ -n "$KDED" ]; then
 else
     echo "KDED-SKIP 容器里找不到 kded5（装 kde-cli-tools/plasma-workspace 哪个包带的？）"
 fi
-# ---- 4c) 虚拟键盘（plasma-keyboard）显式拉起 + forceActivate（09-27 §41.7）----
-# 旧逻辑靠"Qt 应用 text-input 触发 kwin 自拉"，X11 应用（zcode/trae/星火等 Electron 系）
-# 没有 text-input 协议 → IM 永不拉起、VKB 永不弹出。改为：显式拉起 plasma-keyboard（IM 就绪），
-# 再走 kwin 官方 D-Bus org.kde.kwin.VirtualKeyboard.forceActivate() 强制召唤面板——
-# 键盘对所有窗口可用（X11 经 Xwayland 的 wl_keyboard，实测 zcode 能收键）。
-# 用户可点面板上的收起键隐藏；再弹可双击桌面"显示虚拟键盘"启动器（scripts/vkb-show.sh）。
-if ! pgrep -x plasma-keyboard >/dev/null; then
-    nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
-        -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
-        ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
-        HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        QT_QPA_PLATFORM=wayland /usr/bin/plasma-keyboard > $LOGD/plasma-keyboard.log 2>&1 &
-    sleep 2
-fi
-RUNUSER_ENV="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus XDG_RUNTIME_DIR=/run/user/1000"
-for i in 1 2 3 4 5; do
-    runuser -u xieyizhou -- env $RUNUSER_ENV \
-        gdbus call --session --dest org.kde.KWin --object-path /VirtualKeyboard \
-        --method org.kde.kwin.VirtualKeyboard.forceActivate >/dev/null 2>&1 && break
-    sleep 1
-done
-runuser -u xieyizhou -- env $RUNUSER_ENV \
-    gdbus call --session --dest org.kde.KWin --object-path /VirtualKeyboard \
-    --method org.kde.kwin.VirtualKeyboard.isVisible >/dev/null 2>&1 \
-    && echo "VKB-ACTIVE $(date +%T)（forceActivate 已召唤，X11 应用可键入）" \
-    || echo "VKB-WARN $(date +%T): 召唤失败（plasma-keyboard 未连上？看 plasma-keyboard.log）"
+# ---- 4c) 虚拟键盘原生弹出（09-27 §41.7）----
+# kwin env 已加 KWIN_IM_SHOW_ALWAYS=1（官方开关，inputmethod.cpp shouldShowOnActive）：
+# 每次窗口激活（含 X11/XWayland 应用——它们没有 text-input 协议，之前 VKB 永不弹出）
+# kwin 走原生路径弹出 VKB；anland 的 kwin 不带此 env，行为不变。
+# plasma-keyboard 由 kwin 按需自拉（kwinrc InputMethod 已配）。手动再弹：
+# scripts/vkb-show.sh（桌面启动器「显示虚拟键盘」，总线自动探测两模式通吃）。
 # ---- 托盘亮度/电池（09-24 三根因定修）----
 # 1) 容器 /sys 挂成 ro → backlighthelper 写亮度 EROFS；remount rw 解决
 # 2) 无 logind active session → polkit 默认拒 org.kde.powerdevil.backlighthelper.*
