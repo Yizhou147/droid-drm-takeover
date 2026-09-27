@@ -188,7 +188,11 @@ chmod 666 /dev/uinput 2>/dev/null
 # pc-keyd（组合键守护）必须在 kwin 之前在场。只从本脚本 nohup 起（防开机
 # crash-loop 触发内核 uinput 防滥用；daemon 源码已独立成仓 droid-pc-keyboard，
 # 装在 /usr/local/bin/pc-keyd.py。详见 https://github.com/Yizhou147/droid-pc-keyboard）。
-pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+# 09-27 起默认关闭（其 uinput 键盘会让安卓常驻一条"已配置 pc-keyd-kbd"物理键盘通知；
+# 需要 PC 页组合键时显式 PC_KEYD=1 进轮，或事后 nohup python3 /usr/local/bin/pc-keyd.py & 手动拉起）。
+if [ "${PC_KEYD:-0}" = "1" ]; then
+    pgrep -f "pc-keyd.py" >/dev/null || nohup python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+fi
 # power-state-sync：小米 BSP 电流符号与内核 ABI 相反 → upower 永远判放电。
 # bind-mount 取反 current_now + 周期 kick（脚本自带幂等挂载判断；跨会话常驻，
 # desk-stop 不杀它，anland 托盘顺带受益）。
