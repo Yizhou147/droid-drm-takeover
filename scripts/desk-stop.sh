@@ -51,7 +51,7 @@ rm -f $STARTED_FLAG
     pkill -9 -f "kwin_wayland --"; pkill -9 -f "plasmashell"
     pkill -9 -x bthci-bridge   # 放掉容器侧 HCI 接管（进程退→tty 关→内核自动注销 hci0）
     pkill -9 -f "aa-feeder.sh" 2>/dev/null    # A 路音频：容器 feeder + 安卓 argsloop sink
-    pkill -f "pc-keyd.py" 2>/dev/null         # pc-keyd 的 uinput 键盘会令安卓常驻物理键盘通知（09-27）；轮内没起它则无操作
+    pkill -9 -f "pc-keyd.py" 2>/dev/null         # pc-keyd 的 uinput 键盘会令安卓常驻物理键盘通知（09-27）；轮内没起它则无操作
     WDEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
     [ -n "$WDEV" ] && timeout 12 adb -s "$WDEV" shell "su -c 'pkill -x argsloop'" 2>/dev/null
     if [ -z "$WDEV" ]; then
@@ -121,7 +121,7 @@ kill_desktop() {
     pkill -x onboard
     pkill -9 -f "xdg-desktop-portal"
     pkill -9 -f "dmesg-harvester.sh"
-    pkill -f "pc-keyd.py" 2>/dev/null         # 09-27 默认关+交还清理：root 实例残留会让通知活到 anland（08:44 通知实证）
+    pkill -9 -f "pc-keyd.py" 2>/dev/null         # 09-27 默认关+交还清理：root 实例残留会让通知活到 anland（08:44 通知实证）
     # Xwayland 由 kwin --xwayland 拉起（09-24 接入），是 kwin 的子进程；kwin 被 -9 时
     # 它未必跟着退，残留会占住 display 号与 /tmp/.X11-unix/X<n> 死套接字
     pkill -9 -x Xwayland
