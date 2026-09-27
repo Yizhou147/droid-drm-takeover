@@ -1,117 +1,142 @@
 # Droid DRM Takeover
 
-在安卓设备上直接接管它的 DRM/KMS 显示，让一个**原生 Linux 桌面（KWin + Plasma）跑在平板的真实面板上**——
-3200x2136@120、触摸可用、不 ROOT 改内核、**不魔改一行 Mesa**。
+在 Android 设备上，由容器内的原生 Linux 桌面（KWin + Plasma）直接取得面板的 DRM/KMS 所有权，
+不经 Android SurfaceFlinger 合成与转发。帧路径零拷贝，延迟仅取决于 KMS 提交本身。
 
-> ⚠️ 目前只在 **Xiaomi Pad 8 Pro（codename `piano`，Adreno 830 / msm_geni_serial，内核 6.6.118-android15）** 上完整验证过。
-> 其他设备需要按"设备适配"一节重新探测对象 ID 和串口/固件参数，风险自负（最坏情况：需要长按电源强重启）。
+已在 **Xiaomi Pad 8 Pro**（codename `piano`，SM8750 / Adreno 830，内核 6.6.118-android15，HyperOS）
+完整验证：3200x2136@120 直驱、多点触摸、蓝牙外设、接管轮内音频外放、容器直管 WiFi。
 
-## 它解决什么问题
+> ⚠️ 仅在上述设备完整验证。其他设备必须按 [docs/tools.md](docs/tools.md) 的适配流程重新探测
+> DRM 对象与参数；已知最坏后果是长按电源强制重启（数据不丢，未保存的工作会丢）。
 
-在安卓上跑 Linux 图形（Termux/容器方案）通常只有一条路：把帧**转发**回安卓 SurfaceFlinger 合成上屏
-（Anland、Droidspaces 都是这个架构，Droidspaces 甚至刻意剪掉了 card 节点来防止绕过）。
-本项目证明了另一条路：**Linux 侧合成器直接从 KMS 手里抢到面板的所有权**，安卓整套图形栈原地退场，
-帧路径零拷贝零转发，延迟只取决于 KMS 提交本身。
+## 工作原理
 
-## 核心原理（为什么不需要动 Mesa）
+难点不在 GPU 用户态驱动（渲染链路零改动），而在**由谁向面板提交**：
 
-难点从来不在 GPU 用户态驱动，而在**谁能往屏上提交**：
-
-1. **master 的真相** —— `DRM master` 并不在内核或 surfaceflinger 手里，而是被安卓侧
-   `vendor.qti.hardware.display.composer` HAL 进程持有。`adb shell su` 里 `stop` + 显式
-   `setprop ctl.stop vendor.qti.hardware.display.composer`（注意：`stop` 不动 `class hal`，必须点名）
-   → master 自然空闲。
-2. **藏了节点而已** —— 小米只是把 `/dev/dri/card0` 从文件系统里删了，驱动仍在内核里活着。
-   主设备号从 sysfs 读出后 `mknod` 重建即可，无需任何驱动改动。
-3. **kwinwrap 交接仪式** —— 自制的 setuid 桥（`src/kwinwrap.c`）以 root 完成：
-   拿 master → **预清理安卓遗留 atomic 状态**（释放它占用的 plane/CRTC、把 connector DPMS 拉回 On）
-   → `DROP_MASTER` → setuid/setgid 降权到普通用户 → `exec kwin_wayland`。
-   之后 kwin 用 **stock GBM + EGL + atomic commit** 驱动面板，全程普通用户权限。
-4. **GPU 走现成路** —— `MESA_LOADER_DRIVER_OVERRIDE=kgsl` 让 EGL/drm 拿不到 wl_drm fd 时直接开
-   `/dev/kgsl-3d0`；kgsl 的 bo"只进不出"（无导出 ioctl）恰好不影响这个方向：显示端分配、GPU 导入渲染，
-   瓶颈在 KMS 提交侧（实测 TEST 51ms + flip 28ms 量级，与 GL 驱动无关）。
-
-一句话：**把"递交上屏的权力"（master + atomic 状态）从安卓手里合法接过来，渲染链路一个字都不改。**
-
-## 踩坑精华（每条都值一天时间）
-
-- **彻底断网根因**：接管后 SF 停 ~120s，安卓 system_server watchdog 会杀 system_server，init 级联
-  SIGKILL wpa_supplicant/netd/zygote → WiFi 掉线且 UI 不可用，只能强重启。对策：接管前解除
-  watchdog（`watchdog_timeout`/`nativehang`/`stay_on`）+ wake_lock 钉住；**接管与回滚脚本都必须与
-  将被它们杀掉的 GUI 栈脱钩**（setsid 后台 + pgrep 验证重试 + `fuser -k /dev/dri/card0` 兜底；
-  我们被这事咬了两次：desk-stop 和 desk-takeover 从桌面终端启动时，杀掉 kwin 的瞬间终端连带
-  脚本一起死，安卓又已 stop → 两头全黑）。
-- **双桌面共享 HOME，全局环境改动必须两边回归**：DRM 桌面的虚拟键盘要求 Qt 直连合成器 text-input，
-  为此删了全局 `/etc/environment` 的 `QT_IM_MODULE=fcitx5`——结果 anland（帧转发方案）的安卓 IME
-  桥恰恰依赖 Qt 走 fcitx5 桥，中文选词后只剩前缀字母（Chrome 不受影响）。修复=在 anland launcher
-  里**会话级**注入 `QT_IM_MODULE=fcitx5`（并把 fcitx5 守护起在同一 dbus 总线），全局保持干净。
-- **触摸验证禁旁听**：对触摸节点跑 `getevent` 会触发小米安全联动直接断网（多次实锤）。触摸链路一律
-  只让 kwin 一个读者，用 `bin/touchtest` 打点日志验证。
-- **虚拟键盘**：kwin 6.6 的 `zwp_input_method_v1` 只对 kwin 自己拉起的 IM 可见——配置
-  `setInputMethodCommand` 让 kwin 自动 exec plasma-keyboard；`/etc/environment` 里的
-  `QT_IM_MODULE=fcitx5` 会把 Qt 的 text-input 抢走导致键盘永不弹出，必须清掉。
-- **PC 键盘/拼音/组合键**：桌面输入体验的增强（全尺寸 PC 布局、中文拼音、uinput 组合键守护
-  pc-keyd）已拆分为独立项目 [droid-pc-keyboard](https://github.com/Yizhou147/droid-pc-keyboard)；
-  本仓库的 `desk-takeover.sh` 只负责在接管会话里把它拉起来（daemon 装在 `/usr/local/bin`）。
-- **任务栏打不开应用**：`xdg-desktop-portal` 必须带 `XDG_CURRENT_DESKTOP=KDE` 起来才有 KDE 后端。
-- **换网零配置**：接管前先从安卓动态读取当前连接的 SSID/PSK（`cmd wifi status` +
-  `WifiConfigStore.xml`）自动生成 wpa 配置；dhcpcd 拿到租约后再动态探测网关/网段，注入安卓遗留的
-  **table 1015**（安卓没有 `lookup main`，全部 fwmark 到 1015）。而且网络段是**纯尽力而为**：
-  关联/出口失败只打警告，绝不再回滚连坐已上屏的桌面。
-- **plasmashell 硬依赖 kactivitymanagerd，别赌 dbus 自动激活**：接管会话里激活超时 → shell 直接
-  `Aborting shell load`，现象是"kwin 活着、触摸在收、面板有模式，但整屏纯黑"。必须显式拉起
-  kactivitymanagerd（记得给 `QT_QPA_PLATFORM=wayland`，否则 Qt 找不到平台插件又自杀）并等
-  `org.kde.ActivityManager` 上总线后再起 plasmashell。
-- 其余对象 ID 漂移（conn/crtc/plane 每次 boot 都变）、vendor vblank 时间戳为 0、`TEST` 返 -22 噪音等，
-  见 docs；kwin.log 里 `Failed to open drm node: ""` 是节点发现噪音，**不代表软件渲染**
-  （实测 Mesa/Vulkan 完整，vkmark 1w+ 分）。
-
-## 设备要求
-
-- 安卓侧：可 ROOT（KernelSU/Magisk），高通平台（本项目为 composer HAL 停法，其他平台需调整）
-- Linux 容器：Ubuntu (aarch64)，KWin 6.6 + Plasma 6.x，`libdrm/libwayland` 开发包，`wpa_supplicant`、`dhcpcd`
-- 一条稳定的安卓控制通道（本项目用 adb over 本机转发，容器内 `adb connect`；不依赖 WiFi）
-
-## 快速开始
-
-```
-make                       # 编译 bin/ 下全部工具与探针
-cp configs/desk-wifi.conf.example /root/desk-wifi.conf   # 填你自己的 SSID/PSK（此文件永不入库）
-sudo bash desk-takeover.sh # 全自动：停安卓 → kwin 接管 → Plasma 桌面 → 容器接管 WiFi
-sudo bash scripts/desk-stop.sh   # 全自动还给安卓（可与桌面快捷方式/sudoers 白名单配合）
-```
-
-单轮短窗口验证用 `drm-takeover.sh`（接管 ~150s 自动恢复），常驻用 `PERSIST=1 MODE=kwin`。
+1. **DRM master 的归属** —— master 由 Android 侧
+   `vendor.qti.hardware.display.composer` HAL 持有（而非 surfaceflinger）。`adb shell su` 中
+   `stop` 之外必须显式 `setprop ctl.stop vendor.qti.hardware.display.composer`
+   （`stop` 不作用于 `class hal`，需按名停止）→ master 空闲。
+2. **节点缺失而非驱动缺失** —— 厂商仅从文件系统移除 `/dev/dri/card0`，驱动仍在内核中。
+   主/从设备号从 sysfs 现读后 `mknod` 重建即可，无需任何内核改动。
+3. **kwinwrap 交接** —— `src/kwinwrap.c` 以 root 完成：取得 master → 预清理 Android 遗留的
+   atomic 状态（释放其占用的 plane/CRTC、connector DPMS 恢复 On）→ `DROP_MASTER` →
+   按 `KWINWRAP_UID/GID` 降权 → `exec kwin_wayland`。此后 kwin 以普通用户权限经
+   stock GBM/EGL + atomic commit 驱动面板。
+4. **GPU 使用容器现有 Mesa 栈** —— kwin 经 `renderD128` 走 stock Mesa
+   （实测 renderer 为 `zink Vulkan 1.4 (Adreno, MESA_TURNIP)`，由 `GPU-WHICH` 探针判定）。
+   **严禁注入 `MESA_LOADER_DRIVER_OVERRIDE=kgsl` 等 Mesa 环境变量**：kgsl 的缓冲区无导出
+   ioctl，无法向 KMS 提供 dmabuf，注入后 kwin 一帧都无法送出（09-25 实测纯黑，已回退，
+   见 `desk-takeover.sh` 内注释）。判定是否软件渲染的唯一判据是 `glxinfo -B` 的 renderer
+   字符串；kwin.log 中 `Failed to open drm node: ""` 属 render 节点发现噪音，不构成
+   软件渲染的证据。
 
 ## 目录结构
 
 ```
-desk-takeover.sh        全自动接管：显示+桌面+WiFi（推荐入口）
-drm-takeover.sh         单轮/常驻接管（无桌面或仅 kwin），带自动回滚
+desk-takeover.sh        全自动接管入口：显示 + 桌面 + WiFi + 蓝牙 + 音频（推荐）
+drm-takeover.sh         单轮/常驻接管（无完整桌面），带回滚；常驻用 PERSIST=1 MODE=kwin
 scripts/                desk-stop / drm-stop / kwin-restart / keepbright / dmesg-harvester
-src/                    kwinwrap(核心) + 一批 atomic/drm/udev 探针 + touchdraw/touchtest/touchinj
-configs/                desk-wifi.conf.example
-docs/tools.md           全部编译产物的用法手册
-Makefile                一次 make 编全部，无需 wayland-scanner（协议桩已随仓库生成）
+                        / vkb-show / aa-feeder / input-node-sync / power-state-sync / log收集
+src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
+configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
+docs/tools.md           全部编译产物的用法手册与新设备适配流程
+Makefile                一次 make 编全部（协议桩随仓库分发，无需 wayland-scanner）
 ```
 
-## 工具速览
+## 快速开始
 
-`make` 产出 18 个二进制，**日常全自动、不需要手动跑任何一个**；按角色分三类：
+```
+make                     # 编译 bin/ 下全部工具
+# 可选：WiFi 兜底配置。主路径会接管前从 Android 动态读取当前 SSID/PSK，无此文件也能连网
+cp configs/desk-wifi.conf.example /root/desk-wifi.conf
+sudo bash desk-takeover.sh       # 全自动接管，直至 Plasma 桌面上屏
+sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
+```
 
-- **接管核心**（脚本内部调用）：`kwinwrap`（master 交接桥，心脏）、`setbright`/`setprop`（点亮屏幕）、`atomicspy`（录制每次 atomic 提交）。
-- **触摸验证**（替代被厂商安全策略禁止的 getevent 旁听）：`touchtest`（合成器链路画板）、`touchdraw`（裸 atomic 直绘）、`touchinj`（假触摸注入）、`udevprobe`/`udevmatch`（动态找触摸节点）。
-- **KMS 诊断探针**（新设备适配用）：`rawprobe`、`drmatomic`、`atombisect`、`connprops`、`planecrtc`、`informats`、`crtcstate`、`masterprobe`、`stageprobe`、`replicate`、`kwinprobe`。
+单轮短窗口验证用 `drm-takeover.sh`（约 150s 后自动恢复 Android）；常驻接管用
+`PERSIST=1 MODE=kwin`。
 
-每个工具的用法与新设备适配最短路径 → [docs/tools.md](docs/tools.md)。
+## 运行期开关
 
-运行日志默认写到仓库**同级**的 `logs/` 目录（可用 `LOG_DIR=...` 覆盖），与真实 WiFi 配置一样不进版本库。
+| 开关 | 默认 | 说明 |
+|---|---|---|
+| `LOG_DIR` | 仓库同级 `logs/` | 日志目录（不入库） |
+| `BT_BRIDGE` | `1`（开） | 蓝牙桥（见相关项目）。置 `0` 经 `/run/drm-round.conf` 或环境变量关闭；桥带自熔断，Android 框架复活时立即退场 |
+| `AUDIO_BRIDGE` | `1`（开） | 接管轮音频。失败仅告警，**绝不触发回滚**（音频不构成回滚条件） |
+| `AUDIO_ROUTE` | `a` | `a` = 直连 vendor AIDL HAL（`argsloop` SINK + `aa-feeder`，已实测外放）；`b` = 回退的 AAudio 路线 |
 
-## 风险提示
+## 子系统现状
 
-接管期间安卓整套 UI/网络栈是停摆的，脚本有回滚逻辑但**不承诺所有异常路径都能自愈**；
-最坏情况是长按电源强制重启（数据不会丢，但当前未保存工作会丢）。首次上机请保证：
-电量 >50%、有人在现场、且你不介意重启一次。
+| 子系统 | 实现方式 | 状态 |
+|---|---|---|
+| 显示 | kwinwrap 交接 + kwin DRM backend | 稳定；piano 需 split_commit 将单管虚拟 plane 改写为成对平面（对象 ID 随 boot 漂移，见已知问题） |
+| 触摸 | udev 属性合成 + libinput 校准矩阵，kwin 为唯一读者 | 可用（十指） |
+| 网络 | NetworkManager 裸进程直管 wlan0；SSID/PSK 接管前自 Android 现读；`ip rule` 备份/恢复标准三表；polkit 规则放行，plasma-nm 桌面 UI 可连可改密 | 可用；关联/出口失败仅告警，不连坐桌面 |
+| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ） | 鼠标/HID 可用，A2DP 出声已验证 |
+| 音频 | A 路：直连 vendor AIDL HAL（`argsloop` SINK 经 FMQ 喂数 + `aa-feeder` 抓 PipeWire monitor） | 接管轮内板载扬声器外放已实测 |
+| 输入法 | kwin 以 `KWIN_IM_SHOW_ALWAYS=1` 在窗口激活时弹出 plasma-keyboard（X11/Wayland 窗口均覆盖）；手动弹出 `scripts/vkb-show.sh`；X11 应用中文输入走 fcitx5-XIM | 可用 |
+| 组合键 | pc-keyd v2（XTEST/EIS 主通道；通道 C 经 kwin pkeyd 补丁，uinput 仅兜底） | X11 应用已验证；Wayland 应用待通道 C 真轮验证 |
+
+## 安全边界
+
+- **wlan0 全程零 admin 状态变更**：接管与交还双向都不得对 wlan0 执行 admin down/up。
+  cnss 驱动在 idle 态收到 down 后的任意一次 up（不分持有者）都会进入
+  MHI -110 → recovery → ASSERT 路径，D 态进程永久持有 rtnl，用户态无解，只能整机重启。
+  接管只做 L3 清理（地址/路由/邻居表），接口保持 UP 原样（5.36 定案）。
+- **uinput 防滥用**：内核对高频建删 uinput 设备有防护机制，触发后本启动会话内所有注入
+  静默丢弃。不得反复启停 uinput 守护；修饰键抬起必须无条件补发（finally），否则内核
+  卡键。pc-keyd v2 默认不创建 uinput 设备。
+
+## 已知问题与对策（均已内建于脚本）
+
+1. **system_server watchdog**：SF 停止约 120s 后，Android watchdog 杀死 system_server，
+   init 级联终止 wpa_supplicant/netd/zygote → WiFi 彻底掉线。对策：PERSIST 轮解除
+   watchdog（`watchdog_timeout` / `nativehang` / `stay_on`）+ wake_lock。
+2. **双桌面共享 HOME**：anland 与 DRM 桌面共用同一容器与 `/etc`，任何全局改动
+   （`/etc/environment`、kwinrc 等）必须双模式回归。历史事故：删除全局 `QT_IM_MODULE=fcitx5`
+   （DRM 侧必要）打坏 anland 中文输入——修复为在 anland launcher 内会话级注入。
+3. **触摸验证禁用 getevent**：对触摸节点运行 getevent 会触发小米安全联动直接断网（多次
+   实锤）。触摸链路只保留 kwin 一个读者，用 `bin/touchtest` 打点日志验证。
+4. **kactivitymanagerd 必须显式拉起**：依赖 dbus 自动激活会超时，plasmashell 直接
+   `Aborting shell load`，表现为"kwin 存活、触摸在收、面板有模式，但整屏黑"。脚本先拉起
+   并等待 `org.kde.ActivityManager` 上总线后再起 plasmashell（需 `QT_QPA_PLATFORM=wayland`）。
+5. **xdg-desktop-portal**：必须带 `XDG_CURRENT_DESKTOP=KDE` 启动，否则无 KDE 后端，
+   任务栏无法打开应用。
+6. **DRM 对象 ID 随 boot 漂移**：connector/crtc/plane ID 每次重启都变。触摸节点与 kgsl
+   主设备号已运行时解析；kwinwrap 内的 plane 对 ID 为 piano 快照值，其他设备适配时必须
+   重新探测（见 docs/tools.md）。
+7. **良性噪音**：vendor vblank 时间戳为 0（kwin 打印数次后自静音）；kwin 启动期部分
+   atomic TEST 返回 -22/-ENOENT 后仍走通提交。均无需处理。
+
+## 设备要求
+
+- Android 侧：可 root（KernelSU/Magisk），高通平台（本项目按 composer HAL 停法，其他平台需调整）
+- Linux 容器：Ubuntu aarch64，KWin 6.6 + Plasma 6.x，`libdrm`/`libwayland` 开发包，
+  NetworkManager + plasma-nm（网络主路径；`wpa_supplicant` 作为其 D-Bus 后端；
+  `dhcpcd` 仅 legacy 回退段使用）
+- 控制通道：容器内 adb（本机 adbd 优先，`emulator-5554`；不依赖 WiFi 射频）
+
+## 工具
+
+`make` 产出 18 个二进制与 `atomicspy.so`，**接管流程由脚本自动调用，日常无需手动运行**。
+按角色分为接管核心、触摸验证、KMS 诊断探针三类，全部用法与新设备适配流程见
+[docs/tools.md](docs/tools.md)。
+
+## 风险与回滚
+
+接管期间 Android 的 UI 与网络栈整体停摆。脚本具备回滚逻辑（`desk-stop.sh` 含 50s 看门狗
+兜底），但不承诺覆盖所有异常路径；最坏情况为长按电源强制重启。首次上机请保证：电量 >50%、
+有人在现场、可接受一次重启。
+
+## 相关项目
+
+- [droid-pc-keyboard](https://github.com/Yizhou147/droid-pc-keyboard) — PC 布局虚拟键盘、
+  拼音与 pc-keyd 组合键守护（本仓库在桌面就绪后以会话用户拉起 `/usr/local/bin/pc-keyd.py`）
+- [droid-bluetooth-bridge](https://github.com/Yizhou147/droid-bluetooth-bridge) — vendor
+  蓝牙 HAL 的 binder 客户端桥，为容器提供原生 `hci0`
+- [droid-audio-bridge](https://github.com/Yizhou147/droid-audio-bridge) — 接管轮直连 HAL
+  音频（A 路）与 anland 态 AAudio 环回
 
 ## License
 
