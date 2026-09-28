@@ -123,6 +123,17 @@ rollback() {
     # kwinrc 的 AllowTearing（2d 段写入）同样不能泄漏给 anland：rollback 必须自己删。
     kwriteconfig6 --file /home/xieyizhou/.config/kwinrc --group Compositing --key AllowTearing --delete 2>/dev/null
     chown xieyizhou:xieyizhou /home/xieyizhou/.config/kwinrc 2>/dev/null
+    # 座位输入法隔离的 rollback 半边 + 轮内 fcitx5 实例清理（同上不泄漏；
+    # anland 默认座位=fcitx5，09-28 定案，见 IM 段注释）。
+    pkill -x fcitx5 2>/dev/null
+    KIM=/home/xieyizhou/.config/kwinrc
+    if grep -q '^InputMethod\[' "$KIM" 2>/dev/null; then
+        sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' "$KIM"
+    else
+        printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop\n' >> "$KIM"
+    fi
+    chown xieyizhou:xieyizhou "$KIM" 2>/dev/null
+    unset KIM
     # GPUFLOOR 还原（1c 段）：共享内核，rollback 不还原 = 钉死的频率泄漏给 anland/安卓。
     # 还原值在 /run/desk-gpufreq.orig；文件丢失时按 takeover 日志里的 GPUFLOOR ORIG 行手工还原。
     if [ -f /run/desk-gpufreq.orig ]; then
@@ -445,9 +456,12 @@ if [ "${AUDIO_BRIDGE:-1}" = 1 ]; then
 fi
 
 
-# ---- IM：plasma-keyboard 本体路线（09-23 定案）----
+# ---- IM：plasma-keyboard 本体路线（09-23 定案；09-28 补 X11 支路）----
 # Qt 应用必须走 kwin 合成器 text-input 才会触发 kwin 自拉 plasma-keyboard，
-# 所以本会话剥离 QT_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
+# 所以本会话剥离 QT_IM_MODULE/GTK_IM_MODULE（/etc/environment 保持干净是给 anland 用的）；
+# **XMODIFIERS 例外**：给会话进程注入 @im=fcitx5，只影响 X11 客户端（星火/zcode/trae
+# 这类 Electron 无 text-input，中文只能走 fcitx5-XIM，轮内实例由 XWAYLAND-OK 后的
+# FCITX5-ROUND 段拉起并默认英文态；§41.11 方案一落地）。
 # 中文=官方 Qt VirtualKeyboard Pinyin 插件（droid-pc-keyboard 仓库 scripts/install-pinyin-plugin.sh 一次性装入），
 # 布局列表写 plasmakeyboardrc.enabledLocales。
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
@@ -455,6 +469,21 @@ sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmak
 chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
 grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/null \
     && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
+# ---- 座位输入法双模式隔离（09-28，必须赶在 :512 kwin 启动前写）----
+# [Wayland]InputMethod[$e] 在 kwinrc 里，两桌面共享同一份 HOME。anland 实测定案：
+# 座位=fcitx5 治好了星火/zcode/trae 的"输入 nihao→ni"（座位实例与应用 XIM 是同一个
+# fcitx5，键流只有一本账；旧形态座位=plasma-keyboard 时桥镜像字母被 fcitx5 的
+# per-IC 拼音态旁听吞字=双记账互踩）。但 DRM 轮若继承 fcitx5，会把 kwin 自拉的
+# plasma-keyboard 顶掉、打断 KWIN_IM_SHOW_ALWAYS 的 VKB 弹出链路（09-23 红线）。
+# 故：轮内强制 plasma-keyboard；desk-stop/rollback 交还时写回 fcitx5（anland 默认）。
+KIM=/home/xieyizhou/.config/kwinrc
+if grep -q '^InputMethod\[' "$KIM" 2>/dev/null; then
+    sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop|' "$KIM"
+else
+    printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop\n' >> "$KIM"
+fi
+chown xieyizhou:xieyizhou "$KIM" 2>/dev/null
+unset KIM
 
 # ---- 2d) VKMARK-ASYNC 实验（09-27，默认开；VKMARK_ASYNC=0 关）----
 # 依据：vkmark 分数=平均 fps，DRM 轮实测 13555≈135.5fps 贴刷新率墙——GPU 不是瓶颈，
@@ -567,7 +596,7 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
 nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
+    -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -596,7 +625,7 @@ KDED=$(ls /usr/bin/kded6 /usr/bin/kded5 /usr/libexec/kded5 /usr/lib/*/kded5 2>/d
 KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
 if [ -n "$KDED" ]; then
     nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
-        -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
+        -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
         ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
         HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -648,7 +677,7 @@ PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
 nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE -u XMODIFIERS \
+    -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -706,6 +735,35 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
             echo "PC2-UP $(date +%T) (xtest backend, display=$XD)"
         else
             echo "PC2-FAIL $(date +%T): pc-keyd v2 未就绪（PC 页组合键本轮不可用，不阻塞）"
+        fi
+        # ---- fcitx5 轮内实例（X11 应用中文唯一路线，09-28 §41.11 方案一落地）----
+        # 星火/zcode/trae 这类 Electron/X11 无 text-input，plasma-keyboard 的 QtVK 组词
+        # 进不去；只能经 fcitx5-XIM（会话进程已注入 XMODIFIERS，见上面 IM 段）。
+        # 两条红线：
+        #  * **必须剥 WAYLAND_DISPLAY**：fcitx5 的 waylandim 插件见到 Wayland 显示会来抢
+        #    座位 IM，跟 plasma-keyboard 打架（本轮座位归 plasma-keyboard，VKB 弹出链路
+        #    KWIN_IM_SHOW_ALWAYS 依赖它）；
+        #  * **默认英文态**（fcitx5-remote -c＝inactive 直出）：轮内键源是触摸/VKB/pc-keyd，
+        #    激活态会跟直出字母抢词；要打中文由用户 Ctrl+Space 主动切拼音（41.12 实测
+        #    XTEST Ctrl+Space 可达 XIM）。anland 侧对称：startanland-kde.sh 起 fcitx5 后
+        #    也补 -c。
+        pkill -x fcitx5 2>/dev/null
+        nohup runuser -u xieyizhou -- env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE DISPLAY="$XD" \
+            HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            fcitx5 -d > $LOGD/fcitx5-round.log 2>&1 &
+        FC5=0
+        for i in $(seq 1 8); do
+            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+                fcitx5-remote --check >/dev/null 2>&1 && { FC5=1; break; }
+            sleep 1
+        done
+        if [ "$FC5" = 1 ]; then
+            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+                fcitx5-remote -c >/dev/null 2>&1
+            echo "FCITX5-ROUND OK XIM 默认英文态 display=$XD $(date +%T)"
+        else
+            echo "FCITX5-ROUND FAIL: fcitx5 未起来，本轮 X11 应用中文不可用（不阻塞）—— 看 fcitx5-round.log"
         fi
     fi
 ) >> $LOGD/desk-takeover.log 2>&1 &
