@@ -248,6 +248,16 @@ rm -f $DIR/takeover.ok
 
 # ---- 4b) 复活 anland Linux 会话（kill_desktop 把它的 kwin/plasma 也顺带杀了，
 #          不补起来 Droid Spaces 打开就是白屏，只能重启容器——09-23 用户实测痛点） ----
+# ---- 4f) VKMARK-ASYNC 清理（desk-takeover 2d 段写入的 kwinrc AllowTearing；全局文件必须清，
+#          否则 anland 的 kwin 也带 tearing 许可。同样 chown 回用户，防 root 属主残留）----
+KRC=/home/xieyizhou/.config/kwinrc
+if [ -f "$KRC" ]; then
+    kwriteconfig6 --file "$KRC" --group Compositing --key AllowTearing --delete
+    chown xieyizhou:xieyizhou "$KRC"
+    echo "TEARING-CONFIG CLEANED (kwinrc AllowTearing 已删)"
+fi
+unset KRC
+
 if [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-kde.sh ]; then
     runuser -u xieyizhou -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
         && echo "anland session relaunched"
@@ -283,6 +293,38 @@ if ! run "iw dev wlan0 link 2>/dev/null | head -1" 2>/dev/null | grep -q "Connec
     run "svc wifi disable"; sleep 3
     run "svc wifi enable"; sleep 12
     run "iw dev wlan0 link 2>/dev/null | head -4; settings get global wifi_on" >> "$WF" 2>&1
+fi
+
+# ---- 4g) GPUFLOOR 还原（desk-takeover 1c 段钉的 GPU min_pwrlevel；共享内核必须还原，
+#          否则钉死的频率泄漏给 anland/安卓。orig 文件格式："<mode> <min_pwrlevel>"，
+#          落在 /run/desk-gpufreq.orig。1c 段把节点 chmod 成 0644 才能写，还原时按原 mode 复原）----
+if [ -f /run/desk-gpufreq.orig ]; then
+    read -r GM GO < /run/desk-gpufreq.orig
+    [ -z "$GO" ] && { GO="$GM"; GM=444; }   # 兼容旧的单值格式
+    case "$GO" in
+    *[!0-9]*|"") rm -f /run/desk-gpufreq.orig ;;
+    *) case "$GM" in *[!0-9]*|"") GM=444 ;; esac
+       GK=/sys/class/kgsl/kgsl-3d0/min_pwrlevel
+       # 先 chmod 解锁再写：vendor 可能已把 mode 改回 0444（拦路是 kernfs DAC，见 takeover 1c 注释）
+       GOUT=$(run "chmod 0644 $GK; echo $GO > $GK; chmod $GM $GK; cat $GK" | tr -d '\r' | awk 'END{print}')
+       rm -f /run/desk-gpufreq.orig
+       if [ "$GOUT" = "$GO" ]; then
+           echo "GPUFLOOR-RESTORE OK min_pwrlevel=$GO (mode->$GM)"
+       else
+           echo "GPUFLOOR-RESTORE FAIL 回读=$GOUT 预期=$GO ⇒ GPU 可能还钉着（泄漏给 anland），手工：chmod 0644 $GK; echo $GO > $GK; chmod $GM $GK"
+       fi ;;
+    esac
+fi
+
+# ---- 4h) PERFMAX 还原（desk-takeover 1d 段；无记录就跳过）----
+# 顺序不能换：先让 perfmax.sh 的重申循环退出，再 restore，否则 restore 刚写完就被循环写回顶档。
+if [ -n "$(run "test -s /data/local/tmp/perfmax.orig && echo HASREC")" ]; then
+    run "sh /data/local/tmp/perfmax.sh stop" >/dev/null 2>&1
+    sleep 3
+    run "sh /data/local/tmp/perfmax.sh restore" | tail -n 8
+else
+    # 循环可能在跑但记录已丢失（例如上一轮异常中断）——至少把循环关掉
+    run "test -f /data/local/tmp/perfmax.orig || rm -f /data/local/tmp/perfmax.orig; : > /data/local/tmp/perfmax.stop; pkill -f \"sh /data/local/tmp/perfmax\" >/dev/null 2>&1; echo PERFMAX-LOOP-KILLED" >/dev/null 2>&1
 fi
 
 # ---- 5) 结果取证 ----

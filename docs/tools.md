@@ -41,6 +41,17 @@ root 运行，否则 atomic ioctl 一律返回 `EACCES`。各工具不带参数�
 | `masterprobe` | 查询当前 DRM master 持有者 | 直跑 |
 | `kwinprobe` | 借 kwin 已持有的 card fd（附加指定 pid）在真实上下文中测量 | `kwinprobe <pid>` |
 
+## ④ 安卓侧性能/频率工具（经 adb root 使用，不进 DRM 通路）
+
+| 工具 | 作用 | 用法 |
+| --- | --- | --- |
+| `scripts/perfmax.sh` | 把本机 sysfs 可达的全部性能旋钮拧到顶并**可还原**：CPU 两簇 `scaling_min/max_freq`、GPU（`min_pwrlevel`/`pwrscale`/`hwcg`/`ifpc`）、DDR/LLCC 频率地板。子命令 `pin`/`loop`/`stop`/`restore`/`status`；原值与原 mode 记在安卓侧 `/data/local/tmp/perfmax.orig`，**写不进记录就什么都不拧**；`loop` 每 2s 重申一次（perf 守护进程会回写覆盖单次写），60min 自动退出 | 由 `desk-takeover.sh` 的 1d) PERFMAX 段自动调用（`PERFMAX=1` 开启）；手动：`adb -s <EP> push scripts/perfmax.sh /data/local/tmp/` 后 `adb -s <EP> shell "su -c 'sh /data/local/tmp/perfmax.sh pin'"` |
+| `scripts/cpu-prof.sh` | 归因探针：5s `/proc/stat` 差分给出**每个核的占用率**、被测进程各线程的**实际落点核**、每核当前频率、policy 上下限、GPU 档频与 `throttling` | 推到 `/data/local/tmp/` 后 `adb -s <EP> shell "su -c 'sh /data/local/tmp/cpu-prof.sh vkmark'"`；同一时刻只能有一个被测进程，否则占用率会被混计 |
+
+> 说明：perf HAL（QTI `perf2.IPerf` 与小米 `miperf2.IMiPerf`）对调用方做**按包名的白名单校验**，
+> root/uid 0 发 `perfLockAcquire`/`perfHint` 一律被拒（`EX_SERVICE_SPECIFIC`），因此本机性能调节走上面的
+> sysfs 路径而非 perflock。方法表、transaction code、资源 opcode 与白名单证据记录在工作总结 §48。
+
 ## 新设备适配最短路径
 
 1. `rawprobe` + `planecrtc` + `informats` —— 摸清面板资源拓扑；

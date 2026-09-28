@@ -120,6 +120,33 @@ rollback() {
     pkill -f "aa-feeder.sh" 2>/dev/null
     # pc-keyd 同理：rollback 不走 desk-stop，本轮起的实例要自己清（uinput 键盘会让安卓发键盘通知，09-27）。
     pkill -f "pc-keyd.py" 2>/dev/null
+    # kwinrc 的 AllowTearing（2d 段写入）同样不能泄漏给 anland：rollback 必须自己删。
+    kwriteconfig6 --file /home/xieyizhou/.config/kwinrc --group Compositing --key AllowTearing --delete 2>/dev/null
+    chown xieyizhou:xieyizhou /home/xieyizhou/.config/kwinrc 2>/dev/null
+    # GPUFLOOR 还原（1c 段）：共享内核，rollback 不还原 = 钉死的频率泄漏给 anland/安卓。
+    # 还原值在 /run/desk-gpufreq.orig；文件丢失时按 takeover 日志里的 GPUFLOOR ORIG 行手工还原。
+    if [ -f /run/desk-gpufreq.orig ]; then
+        read -r GM GO < /run/desk-gpufreq.orig
+        [ -z "$GO" ] && { GO="$GM"; GM=444; }   # 兼容旧的单值格式
+        case "$GO" in
+        *[!0-9]*|"") rm -f /run/desk-gpufreq.orig ;;
+        *) case "$GM" in *[!0-9]*|"") GM=444 ;; esac
+           # 先 chmod 解锁再写：vendor 温控/perfd 可能已把 mode 改回 0444（1c 段写完会复原）
+           GOUT=$(run "chmod 0644 /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo $GO > /sys/class/kgsl/kgsl-3d0/min_pwrlevel; chmod $GM /sys/class/kgsl/kgsl-3d0/min_pwrlevel; cat /sys/class/kgsl/kgsl-3d0/min_pwrlevel" | tr -d '\r' | awk 'END{print}')
+           rm -f /run/desk-gpufreq.orig
+           if [ "$GOUT" = "$GO" ]; then
+               echo "GPUFLOOR-RESTORE OK min_pwrlevel=$GO (mode->$GM)"
+           else
+               echo "GPUFLOOR-RESTORE FAIL 回读=$GOUT 预期=$GO ⇒ 频率可能还钉着，手工：chmod 0644 /sys/class/kgsl/kgsl-3d0/min_pwrlevel; echo $GO > 同路径; chmod $GM 同路径"
+           fi ;;
+        esac
+    fi
+    # PERFMAX 还原（1d 段）：先让重申循环退出（否则 restore 完立刻被写回顶档），再按记录还原 + 回读自证。
+    if [ -n "$(run "test -s /data/local/tmp/perfmax.orig && echo HASREC")" ]; then
+        run "sh /data/local/tmp/perfmax.sh stop" >/dev/null 2>&1
+        sleep 3
+        run "sh /data/local/tmp/perfmax.sh restore" | tail -n 6
+    fi
     # system_suspend 被 ctl.stop 后 `start` 拉不起它，新 system_server 会在
     # PowerManagerService.<init> waitForService(android.system.suspend) 卡死
     # → MIUIScout FW_SCOUT_HANG → 自动重启。必须先显式 ctl.start。
@@ -300,6 +327,74 @@ else
 fi
 chmod -R a+rX /run/udev
 
+# ---- 1c) GPUFLOOR 实验（默认关；09-28 同轮 A/B 实测钉频只值 ~6-16%、噪声就有 8.7%，
+#          见工作总结 §44 ⇒ 不作性能手段，只在测"频率-性能曲线"时显式开：
+#          /run/drm-round.conf 写 GPUFLOOR=1，或环境变量 GPUFLOOR=1）----
+# 钉 GPU `min_pwrlevel=0`（kgsl pwrlevel 0=最高档），让 GPU 全程驻留顶频。
+# 根因（09-28 实测，推翻 42.1 的"必是 SELinux"）：拦路是 **kernfs 自己的 DAC 检查**——
+# 同一 SELinux 标签(u:object_r:vendor_sysfs_kgsl)、同一全量 caps(CapEff=000001ffffffffff)，
+# 把节点 mode 从 0444 改成 0200 后写入立刻成功、改回 0444 又 EACCES。⇒ 无写位时
+# **CAP_DAC_OVERRIDE 对 sysfs 节点不豁免**，与 SELinux 无关，别再查 avc。
+# 修法：`chmod 0644` → 写 → 立刻把 mode 复原（值会保持钉住，mode 只影响后续写入）。
+# KSU 模块 `drm_gpu_pin`（sepolicy.rule 放行 ksu 写 vendor_sysfs_kgsl）09-28 已装并重启过，
+# 但按上面结论它**可能本来就是多余的**（未证伪：证伪要删模块再重启）；留着无害。
+# 实测收益：钉 0 后空闲 devfreq/cur_freq 即 1050000000（还原 13 后回落 160MHz）⇒ 旋钮真有效。
+# 09-27 实测基线：vkmark 全程 GPU 驻留 342MHz（顶档 1050MHz，DCVS 不升），
+# 3.07x 空间 ≈ 群友 anland+Scene 7000→20000 的倍率；devfreq/min_freq 同为 0444，现在已知
+# 解锁路径（chmod），但 min_pwrlevel 是 Scene 同款旋钮，继续用它。
+# 纪律：①单变量——本轮别再钉 CPU；②共享内核 ⇒ rollback/desk-stop 必须还原（orig 同时落
+# /run/desk-gpufreq.orig 与本日志，防 /run 丢失成孤儿钉）；③钉死后 thermal cooling 仍可
+# 下压，但 DCVS 的省电偏置被绕过 ⇒ 只作实验勿常驻；④写后必须回读自证（5.27）。
+if [ "${GPUFLOOR:-0}" = 1 ] && [ "${PERFMAX:-0}" != 1 ]; then
+    GKN=/sys/class/kgsl/kgsl-3d0/min_pwrlevel
+    GMIN=$(run "cat $GKN" | tr -d '\r' | awk 'END{print}')
+    GMODE=$(run "stat -c %a $GKN" | tr -d '\r' | awk 'END{print}')
+    case "$GMIN" in
+    *[!0-9]*|"") echo "GPUFLOOR SKIP: min_pwrlevel 读取异常[$GMIN]，宁可不钉" ;;
+    *)
+        case "$GMODE" in *[!0-9]*|"") GMODE=444 ;; esac
+        # 没有还原记录就不许钉：/run 写失败（非 root/被挂 ro）时若继续钉 = 孤儿钉泄漏给 anland
+        #（09-28 干跑实锤：orig 写入 permission denied，钉成功了、4g 段因文件不存在直接跳过）。
+        if ! echo "$GMODE $GMIN" > /run/desk-gpufreq.orig 2>/dev/null; then
+            echo "GPUFLOOR SKIP: 还原记录写不进 /run/desk-gpufreq.orig ⇒ 无记录不钉（防孤儿钉）"
+        else
+            echo "GPUFLOOR ORIG mode=$GMODE min_pwrlevel=$GMIN（异常中断手工还原：chmod 0644 $GKN; echo $GMIN > $GKN; chmod $GMODE $GKN）"
+            run "chmod 0644 $GKN; echo 0 > $GKN; chmod $GMODE $GKN"
+            GCHK=$(run "cat $GKN" | tr -d '\r' | awk 'END{print}')
+            if [ "$GCHK" = "0" ]; then
+                echo "GPUFLOOR OK: min_pwrlevel 已钉 0（GPU 全程驻留最高档，含空闲）"
+            else
+                echo "GPUFLOOR FAIL: 回读=$GCHK 预期=0（chmod 或写入被拒——拦路是 kernfs DAC 不是 SELinux，别去查 avc）"
+            fi
+        fi
+        ;;
+    esac
+    unset GKN GMIN GMODE GCHK
+fi
+
+# ---- 1d) PERFMAX 实验（默认关；/run/drm-round.conf 写 PERFMAX=1 或环境变量开）----
+# 把这台机器 sysfs 能拧的旋钮全拧到顶：CPU 两簇 min=max、GPU（min_pwrlevel=0 + 关 pwrscale/hwcg/ifpc）、
+# DDR/LLCC 频率地板。**为什么不是 perflock**：MIUI/QTI 的 perf HAL 对调用方做按包名的白名单校验
+# （IMiPerf::getXmlcont 返回的就是那张"包名×场景×PERF_LOCK_ACQUIRE"表），root(uid 0) 发过去
+# 一律 EX_SERVICE_SPECIFIC(-8)；而这三个旋钮 sysfs 都能直接拧 ⇒ 不需要 HAL。详见 scripts/perfmax.sh 头与工作总结 §48。
+# 代价（务必知道）：CPU 常驻顶频 + 内存地板拉满，实测 die 能到 65~69°C、掉电明显 ⇒ 只作跑分/实验，勿当桌面常驻。
+# 与 1c 的 GPUFLOOR 互斥（动同一个 min_pwrlevel，两边的还原记录会打架），同时开时以 PERFMAX 为准。
+# 还原：perfmax.sh 自己在安卓侧留记录（无记录不拧），rollback 与 desk-stop 都调 stop+restore 并回读自证。
+if [ "${PERFMAX:-0}" = 1 ]; then
+    if adb -s "$DEV" push "$DIR/scripts/perfmax.sh" /data/local/tmp/perfmax.sh >/dev/null 2>&1; then
+        run "chmod 755 /data/local/tmp/perfmax.sh; rm -f /data/local/tmp/perfmax.stop /data/local/tmp/perfmax.out"
+        # 先 pin 一次：它会写记录（写不进就拒绝拧）并打印回读自证，这行日志是本轮分数能不能用的前提
+        run "sh /data/local/tmp/perfmax.sh pin" | tail -n 5
+        # 再起循环：perf 守护进程会在几秒内把 scaling_max_freq 改回去（09-28 实测 3532800→2745600），
+        # 单次写必被覆盖。循环自带 60 分钟上限，忘了也不会一直满频。
+        run "setsid nohup sh /data/local/tmp/perfmax.sh loop >>/data/local/tmp/perfmax.out 2>&1 &"
+        sleep 3
+        run "tail -n 3 /data/local/tmp/perfmax.out"
+    else
+        echo "PERFMAX SKIP: push scripts/perfmax.sh 失败"
+    fi
+fi
+
 # ---- 2) 悬停保护 + 放倒安卓框架（网会掉 ~10-40s，属预期） ----
 run "setprop ctl.stop system_suspend"
 run "echo qoderdbg > /sys/power/wake_lock"
@@ -360,6 +455,23 @@ sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmak
 chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
 grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/null \
     && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
+
+# ---- 2d) VKMARK-ASYNC 实验（09-27，默认开；VKMARK_ASYNC=0 关）----
+# 依据：vkmark 分数=平均 fps，DRM 轮实测 13555≈135.5fps 贴刷新率墙——GPU 不是瓶颈，
+# 呈现被 vsync 的 FIFO/mailbox 串行化才是。开 KWin 官方 AllowTearing 后，应用可用
+# immediate 呈现（vkmark -p immediate），fps 脱离刷新率、由 GPU 吞吐决定。
+# kwinrc 是全局文件（双桌面共享 HOME）：轮内写入、desk-stop 删除；中途异常泄漏到
+# anland 的后果=仅当应用主动请求 immediate 且满足直扫条件才可能撕裂，良性可接受。
+# kwriteconfig6 以 root 改写会换属主，写完必须 chown 回 xieyizhou，否则 kwin/anland 都写不了自己的配置。
+if [ "${VKMARK_ASYNC:-1}" = 1 ]; then
+    KRC=/home/xieyizhou/.config/kwinrc
+    kwriteconfig6 --file "$KRC" --group Compositing --key AllowTearing true
+    chown xieyizhou:xieyizhou "$KRC"
+    kreadconfig6 --file "$KRC" --group Compositing --key AllowTearing | grep -q true \
+        && echo "TEARING-CONFIG OK (kwinrc Compositing/AllowTearing=true，desk-stop 会删)" \
+        || echo "TEARING-CONFIG FAIL（写不进 kwinrc，本轮 vkmark -p immediate 会继续贴墙）"
+    unset KRC
+fi
 
 # ---- 3) kwin 接管显示（SF 已随 stop 死亡，master 天然空闲）→ 先出桌面 ----
 # 桌面进程的环境补丁：**接管轮是 runuser+env 起的，不过 PAM**，所以 pam_env 给常态桌面的
