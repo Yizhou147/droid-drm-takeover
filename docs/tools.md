@@ -1,3 +1,5 @@
+中文 | [English](tools_english.md)
+
 # 工具清单（bin/ 产物）
 
 `make` 在 `bin/` 生成全部工具（18 个二进制 + `atomicspy.so`）。接管流程由

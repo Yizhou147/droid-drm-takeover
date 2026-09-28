@@ -1,3 +1,5 @@
+中文 | [English](README_english.md)
+
 # Droid DRM Takeover
 
 在 Android 设备上，由容器内的原生 Linux 桌面（KWin + Plasma）直接取得面板的 DRM/KMS 所有权，
@@ -40,7 +42,7 @@ scripts/                desk-stop / drm-stop / kwin-restart / keepbright / dmesg
                         / vkb-show / aa-feeder / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
-docs/tools.md           全部编译产物的用法手册与新设备适配流程
+docs/tools.md           全部编译产物的用法手册与新设备适配流程（英文版 docs/tools_english.md）
 Makefile                一次 make 编全部（协议桩随仓库分发，无需 wayland-scanner）
 ```
 
