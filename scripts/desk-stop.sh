@@ -49,7 +49,7 @@ rm -f $STARTED_FLAG
     echo "=== WATCHDOG FIRED $(date +%T)：主流程没走到 start，强制交还安卓 ==="
     pkill -9 -f "kwinwrap --out"; pkill -9 -f "socket=taketest"
     pkill -9 -f "kwin_wayland --"; pkill -9 -f "plasmashell"
-    pkill -9 -f "bt-keepalive.sh" 2>/dev/null   # 必须先于杀桥：否则桥一被杀，看门狗立刻把它当"没在跑"重拉
+    pkill -9 -f "bt-keepalive[.]sh" 2>/dev/null   # 必须先于杀桥：否则桥一被杀，看门狗立刻把它当"没在跑"重拉
     pkill -9 -x bthci-bridge   # 放掉容器侧 HCI 接管（进程退→tty 关→内核自动注销 hci0）
     pkill -9 -f "aa-feeder.sh" 2>/dev/null    # A 路音频：容器 feeder + 安卓 argsloop sink
     pkill -9 -f "pc-keyd.py" 2>/dev/null         # pc-keyd 的 uinput 键盘会令安卓常驻物理键盘通知（09-27）；轮内没起它则无操作
@@ -166,7 +166,7 @@ fi
 # 桥退出即关 tty → 内核自动注销 hci0，安卓侧无需任何还原（安卓开机本来就会自开 BT）。
 # 顺序：先停看门狗（它会替桥"复活"），再杀桥。
 # 看门狗是容器侧常驻进程，交还后若还活着就会跟安卓自己的蓝牙栈抢 HAL 客户端位（5.30 事故家族）。
-pkill -f "bt-keepalive.sh" 2>/dev/null
+pkill -f "bt-keepalive[.]sh" 2>/dev/null
 pkill -x bthci-bridge 2>/dev/null
 # 轮内"蓝牙关不掉"的总线策略只对本轮有效，交还即撤（轮外桌面就该能自己关蓝牙）。
 # 实测过这条 deny 不 ReloadConfig 也会随文件消失而失效，但那是"碰巧"，这里显式 Reload 一次。
@@ -286,9 +286,9 @@ fi
 
 # ---- 4b2) 蓝牙交还确认：看门狗与桥都必须已经死干净（桥活着=容器还占着 hci0 的 tty，
 #          安卓自己的蓝牙栈起不来；实测安卓开机/重启服务时会自己重新 enable）----
-KALEFT=$(pgrep -f "bt-keepalive.sh" | tr '\n' ' ')
+KALEFT=$(pgrep -f "bt-keepalive[.]sh" | tr '\n' ' ')
 if [ -n "$KALEFT" ]; then
-    pkill -9 -f "bt-keepalive.sh"; sleep 1
+    pkill -9 -f "bt-keepalive[.]sh"; sleep 1
     echo "BT-LEAK: 看门狗没死($KALEFT) → 已强杀（不先杀它，下面的重桥会立刻把桥再拉起来）"
 fi
 BTLEFT=$(pgrep -x bthci-bridge | tr '\n' ' ')

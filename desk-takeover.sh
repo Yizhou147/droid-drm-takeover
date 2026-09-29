@@ -103,7 +103,7 @@ kill_linux_stack() {
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
     pkill -f "aa-feeder.sh" 2>/dev/null     # A 路容器喂流器（安卓侧 argsloop 由 rollback/desk-stop 各自 run pkill）
-    pkill -f "bt-keepalive.sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
+    pkill -f "bt-keepalive[.]sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
     rm -f $DIR/takeover.ok
@@ -115,7 +115,7 @@ rollback() {
     # 抢同一颗 combo 芯片的电源协调（09-25 两轮把 WiFi 打进 recovery 死循环的直接嫌疑）。
     # rollback 不走 desk-stop，所以这里也得自己杀（见工作总结 5.30）。
     # 顺序要紧：先停看门狗，再杀桥 —— 反过来桥被杀的那一瞬间看门狗会把它当"桥没在跑"重新拉起。
-    pkill -f "bt-keepalive.sh" 2>/dev/null
+    pkill -f "bt-keepalive[.]sh" 2>/dev/null
     run "pkill -x bthci-bridge"
     # 总线策略也不能泄漏给轮外（rollback 不走 desk-stop，得自己撤）
     if [ -f /etc/dbus-1/system.d/61-bluez-drm-lock.conf ]; then
@@ -1137,6 +1137,23 @@ if [ "${BT_BRIDGE:-1}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
+# 【开局先问一句"芯片有没有电"】09-30 定案的失败模式：`rfkill name=bt_power soft=1` +
+# `persist.vendor.bluetooth.state=0` = 安卓侧把蓝牙关着（用户那次开关留下的状态），
+# 此时 HAL 虽然回 initializationComplete(SUCCESS) 但**不给命令通路**，实测每一任桥都卡在
+# 同一个点位 `转发=50 收回=50 回调=51`，bluez 侧显示 `off-blocked` —— 表现为"蓝牙打不开"，
+# 却跟我们的桥、跟桌面开关都没关系。芯片电源归 btpower/HAL 协调，手动去解是本项目画过的红线，
+# 所以这里只**判定并如实报告**，不拉起、不重拉（拉了也白拉，还会多造残留客户端）。
+BTOFF=0
+for r in /sys/class/rfkill/rfkill*; do
+    [ "$(cat $r/type 2>/dev/null)" = bluetooth ] || continue
+    [ "$(cat $r/name 2>/dev/null)" = bt_power ] || continue
+    if [ "$(cat $r/soft 2>/dev/null)" = 1 ]; then
+        BTOFF=1
+        echo "BT-OFF-BY-ANDROID $(date +%T): $(basename $r)(bt_power) soft=1，persist.vendor.bluetooth.state=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1) ⇒ 芯片没上电"
+        echo "  本轮跳过蓝牙桥（不是桥坏，是电源在安卓侧）。恢复：交还安卓 → 安卓里把蓝牙打开 → 再接管"
+    fi
+done
+if [ "$BTOFF" != 1 ]; then
 # `</dev/null`：detached 进程别占着 adb 的 pty。注意历史上这行每次吃满 12s 超时
 # （logs/desk-takeover.log 里 RUN-TIMEOUT 118 条全是它），但实测单独 launch 一个 detached
 # sleep 只花 0.1s ⇒ 超时真因未定，别把加这行说成"修好了超时"，它只是卫生写法。
@@ -1172,6 +1189,7 @@ if [ "$BTCUP" = 1 ]; then
     echo "  配对要先让对方发现你：bluetoothctl discoverable on（默认 180s 超时，不默认开）"
 else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetoothd、bt-bridge.log）"
+fi
 fi
 
 # 【不可关闭·策略层】09-29 深夜三轮对照实验（同一 uid 1000、同一条命令）把方向钉死了：
@@ -1221,18 +1239,19 @@ EOF
     else
         echo "BT-LOCK SKIP $(date +%T): 容器里没有 Controller，锁的实测留到看门狗的 NOT-POWERED 证据行"
     fi
-    # 【兜底 + 自愈】看门狗管两层：
-    #   ① root/bluetoothctl/rfkill 这些策略挡不住的下电路径 → 秒级 power on 回开；
-    #   ② 09-29 实证的"桥单向死"：HAL→内核的事件洪水照涨、内核→HAL 的命令计数冻结，
-    #      HCI_Reset 无人应答，power on 只报 Failed 且**不会自愈** → pkill -x 重拉桥。
+    # 【兜底 + 自愈】看门狗 scripts/bt-keepalive.sh（root，轮内常驻）：
+    #   · 芯片电源被安卓侧关着（bt_power soft=1）→ 只报 BT-CHIP-BLOCKED，**不重拉**（实测白拉 17 次）；
+    #   · 真掉电 → power on 回开（策略层只挡普通用户，root/CLI/rfkill 这条路归它兜）；
+    #   · 卡死三级台阶：内核 hciconfig up 重踢 → 重拉桥（先杀旧再拉新，整轮上限 2 次）→
+    #     到顶 BT-GIVEUP 收手并 dump logs/bt-wedge-*.txt 现场。猛拉 HAL 客户端是有害的，见脚本头注。
     # 它自带 surfaceflinger 熔断（交还即自退），desk-stop 与 rollback 还各杀一次，三重。
-    pkill -f "bt-keepalive.sh" 2>/dev/null
+    pkill -f "bt-keepalive[.]sh" 2>/dev/null
     SNAP_DIR=$LOGD nohup bash $DIR/scripts/bt-keepalive.sh >> $LOGD/bt-keepalive.log 2>&1 &
     KAPID=$!
     sleep 1
-    # 判据必须打在它声称的那个对象上：09-30 这行用 `pgrep -f bt-keepalive.sh` 报出来的
-    # pid=4722 其实是桥（共享 PID ns 里 pgrep -f 抓到了别的匹配），等于探针自证失败。
-    # 直接取自己后台任务的 $!，再验它活着且 cmdline 对得上。
+    # 判据必须打在它声称的那个对象上：`pgrep -f bt-keepalive.sh` 会匹配到**所有**同名实例
+    # （09-30 实测安卓侧确实并存过两个看门狗 = 两套重拉节奏叠着打同一个 HAL），head -1 报的
+    # 未必是本实例。直接取自己后台任务的 $!，再验它活着且 cmdline 对得上。
     if kill -0 "$KAPID" 2>/dev/null && tr '\0' ' ' < /proc/$KAPID/cmdline 2>/dev/null | grep -q "bt-keepalive.sh"; then
         echo "BT-KEEPALIVE OK $(date +%T): pid=$KAPID 日志 $LOGD/bt-keepalive.log"
     else
