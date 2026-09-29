@@ -448,13 +448,15 @@ if [ "${AUDIO_BRIDGE:-1}" = 1 ]; then
 fi
 
 
-# ---- IM：座位统一 = fcitx5（09-29 深夜实测定案，取代 09-23"plasma-keyboard 本体路线"）----
-# 两种模式的座位 IM 都是 fcitx5：waylandim 抢座位 → 全桌（Wayland+X11）键流经这唯一
-# 一枚 fcitx5 = 单记账，星火/zcode/trae 的"输入 nihao→ni"与"Ctrl+Space 只对 X11 有效"
-# 两个病根同源于"座位=plasma-keyboard 时 fcitx5 只是旁听第二记账"，统一座位后一并消。
-# plasma-keyboard 不作废：它是 fcitx5 virtualkeyboard UI 驱动的屏幕面板（触摸弹键盘）。
-# QT_IM_MODULE/GTK_IM_MODULE 仍剥离（/etc/environment 给 anland 保干净）；XMODIFIERS
-# 注入 @im=fcitx5 让 X11/Electron 应用把组合态交给这同一枚 fcitx5（frontend:xim）。
+# ---- IM：全桌统一 fcitx5（09-29 深夜实测定案，取代 09-23"plasma-keyboard 本体路线"）----
+# 关键实证（推翻了"只有 X11 能用 Ctrl+Space"）：Ctrl+Space 全局生效靠的是**应用侧
+# QT_IM_MODULE/GTK_IM_MODULE=fcitx5**,不是仅靠座位——konsole 一旦带上这俩变量,就在
+# fcitx5 上出现 frontend:dbus 输入上下文,通道 C 的 Ctrl+Space 经 konsole 转给 fcitx5
+# 处理,状态 1→2→1 实测翻转。所以本会话对所有 plasma 组件显式赋 QT/GTK_IM_MODULE=fcitx5
+# （下面各 nohup 段）,不再剥离；X11 侧继续用 XMODIFIERS=@im=fcitx5（frontend:xim）。
+# 全桌（Wayland+X11）键流最终都汇入这唯一一枚 fcitx5 = 单记账,"输入 nihao→ni"与
+# "Ctrl+Space 仅 X11"两个病根同源消除。plasma-keyboard 不作废：作为 fcitx5 virtualkeyboard
+# UI 的屏幕面板存在（触摸弹键盘）；默认英文态见 FCITX5-SEAT 段与 startanland-kde.sh 的 -c。
 # Qt/Wayland 应用中文兜底 = 官方 Qt VirtualKeyboard Pinyin 插件 + enabledLocales=zh_CN。
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
     || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
@@ -573,7 +575,7 @@ $DIR/bin/crtcstate > $LOGD/crtcstate-desk2.log 2>&1
 # 09-23 黑屏根因：plasmashell 硬依赖 kactivitymanagerd，总线自动激活今天直接超时
 # （"Aborting shell load: The activity manager daemon is not running" → 无壳黑屏）。
 # 不再赌 dbus 激活：显式拉起并等名字出现。
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
+nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 -u XMODIFIERS \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -588,7 +590,7 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u xieyizhou -- env QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
@@ -617,7 +619,7 @@ fi
 KDED=$(ls /usr/bin/kded6 /usr/bin/kded5 /usr/libexec/kded5 /usr/lib/*/kded5 2>/dev/null | head -1)
 KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
 if [ -n "$KDED" ]; then
-    nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+    nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
         -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
         ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
         HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
@@ -663,14 +665,14 @@ EOF
 systemctl restart polkit 2>/dev/null
 for i in $(seq 1 10); do systemctl is-active polkit >/dev/null 2>&1 && break; sleep 0.5; done
 PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
-[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE \
+[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
     QT_QPA_PLATFORM=wayland \
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
