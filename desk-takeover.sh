@@ -448,20 +448,21 @@ if [ "${AUDIO_BRIDGE:-1}" = 1 ]; then
 fi
 
 
-# ---- IM：轮内终版 = 座位 plasma-keyboard 保弹窗 + fcitx5 只管 X11（09-29 深夜，回退 efbfbe5 赋值）----
-# 两轮实测对撞出的边界：
-#  * **弹窗与"fcitx5 全桌"不可兼得**：kwin 只有看到 Qt 应用走合成器 text-input 才弹 VKB
-#    （09-23 定案）。efbfbe5 给轮内赋 QT_IM_MODULE=fcitx5 后 konsole 的 Ctrl+Space 确实
-#    全局通了（fcitx5 状态 1→2→1 实测），但 text-input 上报断链 ⇒ **VKB 弹不出来**
-#    （09-29 用户实报）。anland 不需要弹窗（安卓输入法），fcitx5 全桌统一只留给 anland。
-#  * 轮内回到：座位=plasma-keyboard（触摸弹 VKB + QtVK zh_CN 拼音；konsole 的
-#    Ctrl+Space=QtVK 自己的布局切换）；QT/GTK_IM_MODULE 继续剥；X11 应用（zcode/星火/
-#    trae）中文与 Ctrl+Space 切换=fcitx5：XMODIFIERS=@im=fcitx5 保留 + FCITX5-SEAT 段
-#    拉守护并置默认英文态（守护带不带 WAYLAND_DISPLAY 无妨，座位先被 plasma-keyboard 占）。
-#  * **入场各自归一**（谁入场谁写自己的值,不依赖交还恢复;轮内/会话里手动切换也不怕泄漏——
-#    09-29 用户轮内切 plasma-keyboard 泄漏回 anland 的教训）：轮内下面写 plasma-keyboard;
-#    anland 由 startanland-kde.sh 入场写 fcitx5（要求"每次进 anland 必须 fcitx5"）。
-# Qt/Wayland 应用中文兜底 = 官方 Qt VirtualKeyboard Pinyin 插件 + enabledLocales=zh_CN。
+# ---- IM：终版定案 = 座位 fcitx5 + 应用侧剥 QT/GTK_IM_MODULE（09-29 深夜复盘）----
+# 复盘 09-29 08:55~09:15 手动实测态，"弹窗+全桌 Ctrl+Space 切拼音"其实**能兼得**,
+# 配方两条,缺一不可：
+#  1) **座位=fcitx5**：kwin 经 imv2 把按键交给 fcitx5（fcitx5 desktop 带
+#     X-KDE-Wayland-VirtualKeyboard=true,由 kwin 启动时自拉）→ 任意窗口 Ctrl+Space
+#     切拼音都进得了 fcitx5（全局）,托盘图标也随之注册。
+#  2) **应用剥 QT_IM_MODULE/GTK_IM_MODULE**：保住应用向 kwin 上报 text-input →
+#     **触摸弹 plasma-keyboard** 触发链完好。efbfbe5 当年误赋值（以为全局靠它），
+#     副作用正是赋值让应用旁路 kwin、弹窗断——09-29 用户实报,复盘定案。
+#  两模式座位统一 fcitx5,anland 由 startanland-kde.sh 入场归一（那边历史上也赋
+#  QT_IM_MODULE,但 anland 无弹窗需求,不动它）。XMODIFIERS=@im=fcitx5 保留：X11 应用
+#  的 preedit 通道,与座位同一枚 fcitx5,不产生第二本账；SDL/GLFW 剥。
+# 待本轮真手验证（用户自验）：①触摸弹 plasma-keyboard；②任意窗口 Ctrl+Space 切拼音+
+# 候选窗；③开机日志见 FCITX5-SEAT OK。①若不弹的已知退路=本段 InputMethod 改回
+# plasma-keyboard + FCITX5-SEAT 段剥 WAYLAND_DISPLAY（回到 51f4d4a）。
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
     || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
 chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
@@ -469,9 +470,9 @@ grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/nul
     && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
 KIM=/home/xieyizhou/.config/kwinrc
 if grep -q '^InputMethod\[' "$KIM" 2>/dev/null; then
-    sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop|' "$KIM"
+    sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' "$KIM"
 else
-    printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop\n' >> "$KIM"
+    printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop\n' >> "$KIM"
 fi
 chown xieyizhou:xieyizhou "$KIM" 2>/dev/null
 unset KIM
@@ -728,32 +729,34 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         else
             echo "PC2-FAIL $(date +%T): pc-keyd v2 未就绪（PC 页组合键本轮不可用，不阻塞）"
         fi
-        # ---- fcitx5 就绪确认 + 默认英文态（09-29 终版：轮内 fcitx5 只服务 X11）----
-        # 轮内座位=plasma-keyboard（保 VKB 弹窗,见上面 IM 段）;fcitx5 守护负责
-        # X11/Electron（zcode/星火/trae）的 XIM 组词与 Ctrl+Space 切换（XMODIFIERS 已注入）。
-        # Wayland 应用的 Ctrl+Space 是 QtVK 自己的布局切换,不经 fcitx5——这是"弹窗 vs
-        # fcitx5 全桌"二选一里轮内选定的那一头（anland 才要 fcitx5 全桌）。
-        # 本段职责：确认守护在总线（kwin 或兜底手拉）+ fcitx5-remote -c 置默认英文态。
+        # ---- fcitx5 座位就绪确认 + 默认英文态（09-29 终版：座位=fcitx5）----
+        # 见上面 IM 段定案：本轮座位=fcitx5。kwin 启动时（:512,带 WAYLAND_DISPLAY=taketest）
+        # 按 X-KDE-Wayland-VirtualKeyboard=true 自拉 fcitx5,其 waylandim 抢座位=全桌键流经
+        # 它 → Ctrl+Space 全局。所以 fcitx5 **必须带 WAYLAND_DISPLAY**（绝不剥！剥了才退化成
+        # 只服务 X11、Wayland 应用 Ctrl+Space 无效的 51f4d4a 形态——那是被误当回退的中间态）。
+        # 本段职责：确认 fcitx5 已在总线（没自拉就兜底补拉一个带 WAYLAND_DISPLAY 的实例）
+        # + `fcitx5-remote -c` 置默认英文态（组词由用户 Ctrl+Space 主动开）。
         # 教训（09-28→09-29 反复）：**绝不在 env 里把 VAR=赋值排在 -u 选项前**——env 一旦看到
         # 第一个赋值就停止解析选项、把后续 -u 当命令执行 → daemon 全起不来 → 只有鼠标无桌面。
         FC5=0
-        # 轮内座位归 plasma-keyboard,fcitx5 必须**剥 WAYLAND_DISPLAY** 起（waylandim 见到
-        # Wayland 会来抢 imv2 座位,和 plasma-keyboard 打架→弹窗链路不可测）。只留 DISPLAY
-        # 让它当 XIM 服务器。
-        runuser -u xieyizhou -- env -u WAYLAND_DISPLAY DISPLAY="$XD" HOME=/home/xieyizhou \
-            XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-            fcitx5 -d >> $LOGD/fcitx5-round.log 2>&1 &
-        for i in $(seq 1 8); do
-            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        for i in $(seq 1 10); do
+            runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou \
+                XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote --check >/dev/null 2>&1 && { FC5=1; break; }
+            # 兜底：kwin 没能自拉（极少见）时手动补一个**带 WAYLAND_DISPLAY** 的实例（才能抢座位）
+            [ "$i" = 5 ] && nohup runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest \
+                DISPLAY="$XD" HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+                DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+                fcitx5 -d >> $LOGD/fcitx5-round.log 2>&1 &
             sleep 1
         done
         if [ "$FC5" = 1 ]; then
-            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou \
+                XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote -c >/dev/null 2>&1
-            echo "FCITX5-X11 OK XIM 就绪默认英文态 display=$XD $(date +%T)"
+            echo "FCITX5-SEAT OK 座位=fcitx5 默认英文态 display=$XD $(date +%T)"
         else
-            echo "FCITX5-X11 FAIL: fcitx5 未上总线（本轮 X11 应用中文/Ctrl+Space 不可用，不阻塞）—— 看 fcitx5-round.log"
+            echo "FCITX5-SEAT FAIL: fcitx5 未上总线（本轮 Ctrl+Space/中文不可用，不阻塞）—— 看 fcitx5-round.log"
         fi
     fi
 ) >> $LOGD/desk-takeover.log 2>&1 &
