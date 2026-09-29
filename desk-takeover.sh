@@ -423,7 +423,12 @@ run "stop"
 run "setprop ctl.stop vendor.qti.hardware.display.composer"
 sleep 5
 
-# ---- 2b) 音频桥开关（09-26 起**默认开**；AUDIO_BRIDGE=0 显式关）----
+# ---- 2b) 音频桥开关（09-26 起默认开 → **09-30 改默认关**；要开用 AUDIO_BRIDGE=1）----
+# 为什么关：A 路 = 停掉 audioserver、我们的 argsloop SINK 直连 vendor AIDL HAL 独占喇叭输出端口
+# （deep_buffer/speaker + setAudioPatch）。蓝牙音频（A2DP）走安卓自己的 audioserver → 蓝牙音频
+# 轨道，两者抢同一套输出路由：A 路在跑时蓝牙声音出不来/被抢回喇叭（09-30 用户实测到冲突）。
+# 先默认关掉 A 路让蓝牙可用；**两条音频路共存的正确做法仍是待办**（工作总结 §58 末尾待办 ⑤）。
+# 临时打开：echo 'AUDIO_BRIDGE=1' > /run/drm-round.conf   （/run 是 tmpfs，重启即回默认）
 # 两条路线，用 AUDIO_ROUTE 选（默认 a）：
 #   · a = **A 路（已跑通并出声，见 droid-audio-bridge《直连音频HAL方案》§31~§34）**：
 #         audioserver 保持停（上面 `stop` 已把 class core 停了），我们的进程直连 vendor AIDL HAL：
@@ -433,7 +438,7 @@ sleep 5
 #   · b = 旧 B′ 路：把 audioserver 拉回来给 AAudio（aa-bridge 路线；§38 那条"轮内冷启 audioserver
 #         可能卡在等 system_server"未定案，故仅作回退选项保留）。
 # **红线**：音频非关键路径，任何一步失败都只 echo + || true，绝不 rollback（不能因为没声音把桌面搭进去）。
-if [ "${AUDIO_BRIDGE:-1}" = 1 ]; then
+if [ "${AUDIO_BRIDGE:-0}" = 1 ]; then
   AUDIO_ROUTE=${AUDIO_ROUTE:-a}
   if [ "$AUDIO_ROUTE" = b ]; then
     run "setprop ctl.start system_suspend; sleep 2; setprop ctl.start audioserver"
@@ -1137,23 +1142,23 @@ if [ "${BT_BRIDGE:-1}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
-# 【开局先问一句"芯片有没有电"】09-30 定案的失败模式：`rfkill name=bt_power soft=1` +
-# `persist.vendor.bluetooth.state=0` = 安卓侧把蓝牙关着（用户那次开关留下的状态），
-# 此时 HAL 虽然回 initializationComplete(SUCCESS) 但**不给命令通路**，实测每一任桥都卡在
-# 同一个点位 `转发=50 收回=50 回调=51`，bluez 侧显示 `off-blocked` —— 表现为"蓝牙打不开"，
-# 却跟我们的桥、跟桌面开关都没关系。芯片电源归 btpower/HAL 协调，手动去解是本项目画过的红线，
-# 所以这里只**判定并如实报告**，不拉起、不重拉（拉了也白拉，还会多造残留客户端）。
+# 【开局遇到 bt_power soft=1 怎么办：等，不是跳过】09-30 实测两遍，第二遍把我的"定案"推翻了：
+# `rfkill name=bt_power soft=1`（伴随 persist.vendor.bluetooth.state=0）是**接管开局的暂态**，
+# 芯片电源由 vendor HAL/btpower 协调，它自己会回 0；一回 0，**同一个没被重拉过的桥**立刻就通
+# （00:52:15 还卡在 `转发=50 收回=50 回调=51` → 00:54:54 soft 归 0 → root power on 一次 →
+#  `Powered: yes`、同一进程计数走到 `转发=152`）。
+# 所以这里照常拉起桥、照常判定，只是把"电源还没到"这件事**如实标注**，并交给看门狗补最后一步
+# （它看到 soft 归 0 会自动 power on）。曾经写成"soft=1 就跳过桥"，那样本轮蓝牙永远不会可用——
+# 是用户的实测（"我试了下现在打开蓝牙能用啊"）把这条纠正回来的。
 BTOFF=0
 for r in /sys/class/rfkill/rfkill*; do
     [ "$(cat $r/type 2>/dev/null)" = bluetooth ] || continue
     [ "$(cat $r/name 2>/dev/null)" = bt_power ] || continue
-    if [ "$(cat $r/soft 2>/dev/null)" = 1 ]; then
-        BTOFF=1
-        echo "BT-OFF-BY-ANDROID $(date +%T): $(basename $r)(bt_power) soft=1，persist.vendor.bluetooth.state=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1) ⇒ 芯片没上电"
-        echo "  本轮跳过蓝牙桥（不是桥坏，是电源在安卓侧）。恢复：交还安卓 → 安卓里把蓝牙打开 → 再接管"
-    fi
+    [ "$(cat $r/soft 2>/dev/null)" = 1 ] && BTOFF=1
 done
-if [ "$BTOFF" != 1 ]; then
+if [ "$BTOFF" = 1 ]; then
+    echo "BT-POWER-PENDING $(date +%T): $(ls /sys/class/rfkill | while read x; do [ "$(cat /sys/class/rfkill/$x/name 2>/dev/null)" = bt_power ] && echo $x; done | tr '\n' ' ')(bt_power) soft=1，persist.vendor.bluetooth.state=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1) ⇒ 芯片电源还没到（开局暂态）。照拉桥，上电这一步交给看门狗在 soft 归 0 后自动补"
+fi
 # `</dev/null`：detached 进程别占着 adb 的 pty。注意历史上这行每次吃满 12s 超时
 # （logs/desk-takeover.log 里 RUN-TIMEOUT 118 条全是它），但实测单独 launch 一个 detached
 # sleep 只花 0.1s ⇒ 超时真因未定，别把加这行说成"修好了超时"，它只是卫生写法。
@@ -1174,22 +1179,22 @@ if [ "$BTCUP" = 1 ]; then
     # 【默认开】09-29 实锤：bluetoothd 自己起时芯片还没 hci0，后来挂上来的适配器不保证是
     # 上电态（当时 bluetoothctl show = Powered: no / PowerState: on，桌面里就是"打不开"）。
     # 所以判过 Controller 存在之后必须显式要一次上电，并按实测结果报，不拿"进程在跑"当"能用"。
+    # 上电重试放宽到 6 次×5s（≈30s）：芯片电源是开局暂态，多等一会儿常常就自己通了
     BTPOW=0
-    for i in 1 2 3; do
+    for i in 1 2 3 4 5 6; do
         bluetoothctl power on >/dev/null 2>&1
-        sleep 2
+        sleep 5
         bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && { BTPOW=1; break; }
     done
     if [ "$BTPOW" = 1 ]; then
-        echo "BT-POWER OK $(date +%T): Powered: yes"
+        echo "BT-POWER OK $(date +%T): Powered: yes（第 $i 次）"
     else
-        echo "BT-POWER FAIL $(date +%T): 三次 power on 后仍不是 Powered: yes —— $(bluetoothctl show 2>/dev/null | grep -E 'Powered|PowerState' | tr '\n' ' ')"
+        echo "BT-POWER FAIL $(date +%T): 6 次 power on 后仍不是 Powered: yes —— $(bluetoothctl show 2>/dev/null | grep -E 'Powered|PowerState' | tr '\n' ' ') bt_power.soft=$( { for x in /sys/class/rfkill/rfkill*; do [ "$(cat $x/name 2>/dev/null)" = bt_power ] && cat $x/soft; done; } ) ⇒ 交给看门狗：它在 soft 归 0 后自动补 power on，不会重拉桥"
     fi
     echo "BT-NATIVE OK $(date +%T): $(bluetoothctl list | head -1)"
     echo "  配对要先让对方发现你：bluetoothctl discoverable on（默认 180s 超时，不默认开）"
 else
     echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetoothd、bt-bridge.log）"
-fi
 fi
 
 # 【不可关闭·策略层】09-29 深夜三轮对照实验（同一 uid 1000、同一条命令）把方向钉死了：
@@ -1265,7 +1270,7 @@ fi
 # ---- 5f) A 路容器侧喂流器（桌面/PipeWire 起来之后才拉，抓默认 sink 的 monitor）----
 # 与 §2b 的安卓侧 halsink 配套：feeder 把 anland PipeWire 的声音 s16/48k 推到 127.0.0.1:44777，
 # 安卓侧 argsloop 转 s32 喂进 HAL。共享 netns ⇒ 环回可达。非关键：缺脚本/起不来只报，不回滚。
-if [ "${AUDIO_BRIDGE:-1}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
+if [ "${AUDIO_BRIDGE:-0}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
   FEEDER=$DIR/scripts/aa-feeder.sh
   if [ ! -f "$FEEDER" ]; then
     echo "AUDIO-FEEDER SKIP $(date +%T)：没有 $FEEDER"
@@ -1281,6 +1286,10 @@ if [ "${AUDIO_BRIDGE:-1}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
       echo "AUDIO-FEEDER FAIL $(date +%T)：feeder 没起来（查 PipeWire/默认 sink、$LOGD/hal-feeder.log）"
     fi
   fi
+fi
+if [ "${AUDIO_BRIDGE:-0}" != 1 ]; then
+    # 明着写一行，免得以后把"轮内没声音"当成故障去查（09-30 起默认关，原因见 §2b 头注）
+    echo "AUDIO-SPEAKER OFF $(date +%T)：A 路外放默认关闭（与蓝牙 A2DP 抢同一套输出路由）；要外放：echo 'AUDIO_BRIDGE=1' > /run/drm-round.conf 后重跑一轮"
 fi
 
 # ---- 6) 收尾：取证收割机 + 状态 ----

@@ -166,16 +166,19 @@ while :; do
         sleep "$INTERVAL"; continue
     fi
 
-    # ★ 芯片被安卓侧关着时**不要重拉桥**（09-30 定案）：bt_power rfkill soft=1 时 HAL 不给命令
-    # 通路，实测每一任桥都卡在同一个点位 `转发=50 收回=50 回调=51`，bluez 侧表现为 off-blocked。
-    # 上一版把它当"HCI 卡死"，17 次重拉全是白干（还额外制造残留客户端与多实例风险）。
-    # 这种状态会持续整轮，所以证据行 5 分钟只打一次，别把日志冲满。
+    # ★ `bt_power soft=1` 是**暂态**，不是死局（09-30 实测两次，第二次把我自己的"定案"推翻了）：
+    #   芯片电源由 vendor HAL/btpower 协调，接管开局那几分钟常是 soft=1；它自己会回 0，
+    #   一回 0，同一个桥（**不重拉**）就通：00:52:15 还卡在 `转发=50 收回=50 回调=51`，
+    #   00:54:54 soft 归 0 → root `bluetoothctl power on` 一次 → 00:54:57 `Powered: yes`，
+    #   同一进程计数直接走到 `转发=152 收回=1257`。
+    #   ⇒ 正确动作是**等 + 到位后 power on 一次**；重拉桥反而是伤害（每次重拉注销 hci0，
+    #     把正在逼近的电源窗口又吹掉 —— 09-30 前 17 次重拉一次都没治好，就是这个机制）。
     CB=$(chip_blocked)
     if [ "${CB%%:*}" = 1 ] && [ $(( $(date +%s) - CB_LAST )) -ge 300 ]; then
         CB_LAST=$(date +%s)
         BV=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1)
         echo "BT-CHIP-BLOCKED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} 桥=${BP:-安卓侧查不到} ${CB#*:}(bt_power) soft=1 persist.vendor.bluetooth.state=${BV:-查不到}"
-        echo "          ⇒ 芯片电源在安卓侧被关，HAL 不给命令通路，重拉桥无效 ⇒ 不动作（手动解这颗 rfkill 是蓝牙红线：电源协调归 btpower/HAL）。恢复办法：交还安卓 → 安卓里把蓝牙打开 → 再重新接管"
+        echo "          ⇒ 芯片电源暂未被 HAL 拉起来（实测是开局暂态，会自己回 0）。本进程**等**它回 0 后自动 power on（root，一次即可），期间不重拉桥（重拉会注销 hci0、把恢复窗口吹掉）。绝不手动解这颗 rfkill：电源协调归 btpower/HAL，是红线"
         PREV=$CNT; sleep "$INTERVAL"; continue
     fi
     [ "${CB%%:*}" = 1 ] && { PREV=$CNT; sleep "$INTERVAL"; continue; }
