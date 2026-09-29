@@ -39,7 +39,7 @@
 desk-takeover.sh        全自动接管入口：显示 + 桌面 + WiFi + 蓝牙 + 音频（推荐）
 drm-takeover.sh         单轮/常驻接管（无完整桌面），带回滚；常驻用 PERSIST=1 MODE=kwin
 scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
-                        / vkb-show / aa-feeder / input-node-sync / power-state-sync / log收集
+                        / vkb-show / aa-feeder / bt-keepalive / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
 docs/tools.md           全部编译产物的用法手册与新设备适配流程（英文版 docs/tools_english.md）
@@ -64,7 +64,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | 开关 | 默认 | 说明 |
 |---|---|---|
 | `LOG_DIR` | 仓库同级 `logs/` | 日志目录（不入库） |
-| `BT_BRIDGE` | `1`（开） | 蓝牙桥（见相关项目）。置 `0` 经 `/run/drm-round.conf` 或环境变量关闭；桥带自熔断，Android 框架复活时立即退场 |
+| `BT_BRIDGE` | `1`（开） | 蓝牙桥（见相关项目）+ 配套的 `scripts/bt-keepalive.sh`（默认上电、掉电回开、桥卡死重拉）。置 `0` 经 `/run/drm-round.conf` 或环境变量关闭；桥与看门狗都带自熔断，Android 框架复活时立即退场 |
 | `AUDIO_BRIDGE` | `1`（开） | 接管轮音频。失败仅告警，**绝不触发回滚**（音频不构成回滚条件） |
 | `AUDIO_ROUTE` | `a` | `a` = 直连 vendor AIDL HAL（`argsloop` SINK + `aa-feeder`，已实测外放）；`b` = 回退的 AAudio 路线 |
 
@@ -75,7 +75,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | 显示 | kwinwrap 交接 + kwin DRM backend | 稳定；piano 需 split_commit 将单管虚拟 plane 改写为成对平面（对象 ID 随 boot 漂移，见已知问题） |
 | 触摸 | udev 属性合成 + libinput 校准矩阵，kwin 为唯一读者 | 可用（十指） |
 | 网络 | NetworkManager 裸进程直管 wlan0；SSID/PSK 接管前自 Android 现读；`ip rule` 备份/恢复标准三表；polkit 规则放行，plasma-nm 桌面 UI 可连可改密 | 可用；关联/出口失败仅告警，不连坐桌面 |
-| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ） | 鼠标/HID 可用，A2DP 出声已验证 |
+| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ）；`scripts/bt-keepalive.sh` 轮内常驻 | 鼠标/HID 可用，A2DP 出声已验证；轮内与 WiFi 同政策「默认开 + 关不掉」：判到适配器后显式上电并实测 `Powered: yes`（BT-POWER）、装一条 dbus 总线策略拒桌面用户写适配器属性并每轮自检（BT-LOCK，蓝牙侧没有 polkit 可用）、掉电与桥卡死由看门狗回开/重拉（BT-RECOVER） |
 | 音频 | A 路：直连 vendor AIDL HAL（`argsloop` SINK 经 FMQ 喂数 + `aa-feeder` 抓 PipeWire monitor） | 接管轮内板载扬声器外放已实测 |
 | 输入法 | 轮内定稿（09-29）：座位=plasma-keyboard，kwin 以 `KWIN_IM_SHOW_ALWAYS=1` 窗口激活时弹出（X11/Wayland 均覆盖）；旁观 fcitx5 守护（`FCITX5-BYST` 段，带 WAYLAND_DISPLAY 但晚于座位、只当 XIM 前端，默认英文态）负责 X11 应用组词；PC 页 Ctrl+Space 由 pc-keyd 特判 `fcitx5-remote -T` DBus 直达；两模式各自入场归一 kwinrc（轮=plasma-keyboard / anland=fcitx5） | 可用 |
 | 组合键 | pc-keyd v2（XTEST/EIS 主通道；通道 C 经 kwin pkeyd 补丁，uinput 仅兜底） | X11 应用已验证；Wayland 应用待通道 C 真轮验证 |

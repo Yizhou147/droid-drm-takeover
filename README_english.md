@@ -48,7 +48,7 @@ The hard part is not the userspace GPU driver (the rendering stack is untouched)
 desk-takeover.sh        Fully automatic takeover entry: display + desktop + WiFi + Bluetooth + audio (recommended)
 drm-takeover.sh         Single-round/persistent takeover (no full desktop), with rollback; use PERSIST=1 MODE=kwin for persistent
 scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
-                        / vkb-show / aa-feeder / input-node-sync / power-state-sync / log收集
+                        / vkb-show / aa-feeder / bt-keepalive / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap (core) + KMS probe suite + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example (WiFi fallback config sample)
 docs/tools.md           Usage manual for all build artifacts + new-device adaptation flow
@@ -74,7 +74,7 @@ for persistent takeover use `PERSIST=1 MODE=kwin`.
 | Switch | Default | Description |
 |---|---|---|
 | `LOG_DIR` | `logs/` next to the repo | Log directory (not in git) |
-| `BT_BRIDGE` | `1` (on) | Bluetooth bridge (see related projects). Set `0` via `/run/drm-round.conf` or env var; the bridge has a self-fuse and exits immediately when the Android framework comes back |
+| `BT_BRIDGE` | `1` (on) | Bluetooth bridge (see related projects) plus its companion `scripts/bt-keepalive.sh` (powers the adapter on, re-powers it if it drops, relaunches a wedged bridge). Set `0` via `/run/drm-round.conf` or an env var; both the bridge and the watchdog carry a self-fuse and exit immediately when the Android framework comes back |
 | `AUDIO_BRIDGE` | `1` (on) | Audio during takeover rounds. Failures only warn and **never trigger a rollback** (audio is not a rollback condition) |
 | `AUDIO_ROUTE` | `a` | `a` = direct vendor AIDL HAL (`argsloop` SINK + `aa-feeder`, speaker output measured); `b` = fallback AAudio route |
 
@@ -85,7 +85,7 @@ for persistent takeover use `PERSIST=1 MODE=kwin`.
 | Display | kwinwrap handover + kwin DRM backend | Stable; piano requires split_commit to rewrite single-pipe virtual planes into paired planes (object IDs drift per boot, see known issues) |
 | Touch | Synthetic udev properties + libinput calibration matrix, kwin as the sole reader | Working (10-finger) |
 | Network | Bare NetworkManager process managing wlan0 directly; SSID/PSK read from Android before takeover; `ip rule` backup/restore of the standard three tables; polkit rules granted, plasma-nm desktop UI can connect and change passwords | Working; association/egress failures only warn, never take the desktop down with them |
-| Bluetooth | droid-bluetooth-bridge (vendor HAL binder client → pty H4 → kernel hci0 → container BlueZ) | Mouse/HID working; A2DP audio output verified |
+| Bluetooth | droid-bluetooth-bridge (vendor HAL binder client → pty H4 → kernel hci0 → container BlueZ); `scripts/bt-keepalive.sh` stays resident during the round | Mouse/HID working; A2DP audio output verified. Inside a round Bluetooth follows the same "on by default, cannot be switched off" policy as WiFi: once the adapter is detected it is explicitly powered on and `Powered: yes` is measured (BT-POWER), a dbus bus policy refuses desktop-user writes to adapter properties and is self-checked every round (BT-LOCK; Bluetooth has no polkit equivalent here), and the watchdog re-powers or relaunches a wedged bridge (BT-RECOVER) |
 | Audio | Route A: direct vendor AIDL HAL (`argsloop` SINK fed via FMQ + `aa-feeder` capturing the PipeWire monitor) | Built-in speaker output measured inside takeover rounds |
 | Input method | Final 09-29 layout: plasma-keyboard holds the seat and kwin pops it on window activation via `KWIN_IM_SHOW_ALWAYS=1` (X11 + Wayland); a bystander fcitx5 daemon (FCITX5-BYST: starts with WAYLAND_DISPLAY but after the seat, so it only serves as the XIM front, default English) composes Chinese for X11 apps; PC-page Ctrl+Space is special-cased in pc-keyd to `fcitx5-remote -T` over DBus; each mode pins kwinrc InputMethod on entry (round=plasma-keyboard, anland=fcitx5) | Working |
 | Key combos | pc-keyd v2 (XTEST/EIS primary channel; channel C via the kwin pkeyd patch, uinput only as last resort) | Verified for X11 apps; Wayland apps pending channel-C on-device verification |

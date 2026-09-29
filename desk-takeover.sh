@@ -103,6 +103,7 @@ kill_linux_stack() {
     pkill -x dhcpcd 2>/dev/null
     pkill -f "xdg-desktop-portal" 2>/dev/null
     pkill -f "aa-feeder.sh" 2>/dev/null     # A 路容器喂流器（安卓侧 argsloop 由 rollback/desk-stop 各自 run pkill）
+    pkill -f "bt-keepalive.sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
     rm -f $DIR/takeover.ok
@@ -113,7 +114,16 @@ rollback() {
     # 交还安卓前必须放掉蓝牙桥：桥活着 = 我们和安卓的蓝牙栈同时持有 HAL 客户端位，
     # 抢同一颗 combo 芯片的电源协调（09-25 两轮把 WiFi 打进 recovery 死循环的直接嫌疑）。
     # rollback 不走 desk-stop，所以这里也得自己杀（见工作总结 5.30）。
+    # 顺序要紧：先停看门狗，再杀桥 —— 反过来桥被杀的那一瞬间看门狗会把它当"桥没在跑"重新拉起。
+    pkill -f "bt-keepalive.sh" 2>/dev/null
     run "pkill -x bthci-bridge"
+    # 总线策略也不能泄漏给轮外（rollback 不走 desk-stop，得自己撤）
+    if [ -f /etc/dbus-1/system.d/61-bluez-drm-lock.conf ]; then
+        rm -f /etc/dbus-1/system.d/61-bluez-drm-lock.conf
+        dbus-send --system --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1
+        echo "BT-LOCK REMOVED（rollback 路径）$(date +%T)"
+    fi
     # A 路音频：安卓侧常驻 sink（进程名 argsloop）与容器侧 feeder 都要放掉，
     # 否则交还后 audioserver 想接管 HAL 会被我们占着的 stream/patch 挡住（端口 63/deep_buffer 被占）。
     run "pkill -x argsloop" 2>/dev/null
@@ -1114,6 +1124,9 @@ fi
 # （ping 通、dmesg 里 `is_driver_recovering` 计数 0），蓝牙鼠标连上可用；
 # 之前"默认开就炸 WiFi"是错的归因，真凶是**同轮里 restart 服务化 udevd**（见 5.31）。
 # 桥本身只走 BT 的 glink/ttyHS，绝不下固件、绝不碰 btpower ioctl。
+# 轮内蓝牙与 WiFi 同政策：**默认开 + 用户关不掉**。落点不同（蓝牙侧没有 polkit 可用）：
+# 5c 尾装一条 dbus 总线策略拒桌面用户写适配器属性（每轮实测它在不在），掉电兜底与桥卡死
+# 自愈交给 scripts/bt-keepalive.sh。
 # 三道护栏（都是被实测逼出来的，缺一不可）：
 #   ① 桥自熔断：每 10s 查 init.svc.surfaceflinger，一旦 running 就自退
 #      （曾抓到 surfaceflinger=running 时桥还活着 = 安卓蓝牙栈与我们同时持有 HAL 客户端位）；
@@ -1138,10 +1151,87 @@ if [ "$BTCUP" = 1 ]; then
     # 名字：E:Name 来自芯片自己的 Read_Local_Name（这台是主机名 Ubuntu），列表里像陌生机器；
     # BlueZ 对外广播/展示用 Alias，这里钉成稳定可认的名字（改不动 Name）。
     bluetoothctl system-alias "Piano BT" >/dev/null 2>&1
+    # 【默认开】09-29 实锤：bluetoothd 自己起时芯片还没 hci0，后来挂上来的适配器不保证是
+    # 上电态（当时 bluetoothctl show = Powered: no / PowerState: on，桌面里就是"打不开"）。
+    # 所以判过 Controller 存在之后必须显式要一次上电，并按实测结果报，不拿"进程在跑"当"能用"。
+    BTPOW=0
+    for i in 1 2 3; do
+        bluetoothctl power on >/dev/null 2>&1
+        sleep 2
+        bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && { BTPOW=1; break; }
+    done
+    if [ "$BTPOW" = 1 ]; then
+        echo "BT-POWER OK $(date +%T): Powered: yes"
+    else
+        echo "BT-POWER FAIL $(date +%T): 三次 power on 后仍不是 Powered: yes —— $(bluetoothctl show 2>/dev/null | grep -E 'Powered|PowerState' | tr '\n' ' ')"
+    fi
     echo "BT-NATIVE OK $(date +%T): $(bluetoothctl list | head -1)"
     echo "  配对要先让对方发现你：bluetoothctl discoverable on（默认 180s 超时，不默认开）"
 else
-    echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetooth 服务、bt-bridge.log）"
+    echo "BT-NATIVE FAIL $(date +%T): 容器里看不到 Controller（查 $BTBIN 是否活、bluetoothd、bt-bridge.log）"
+fi
+
+# 【不可关闭·策略层】09-29 深夜三轮对照实验（同一 uid 1000、同一条命令）把方向钉死了：
+#   · 容器**原生状态下普通用户写适配器属性是成功的**（`method return`）⇒ 桌面本来能把蓝牙关掉；
+#   · 装上下面这条 scoped deny → 同一写操作回 `AccessDenied: Rejected send message, 3 matched rules`；
+#   · 再删掉文件 → 又恢复成功。
+#   注：全程没执行 ReloadConfig 也照样生效（dbus 自己读到了 system.d 的变化），但这里仍显式
+#   Reload 一次，不靠"碰巧"。（我一度把"装了文件后被拒"错读成"包自带规则早就在拒"，方向正好
+#   反了一次 —— 复盘见 工作总结 §58。）
+# 作用域也是实测的：只拦 `/org/bluez/hci0`（适配器）上的 `Properties.Set`；
+#   设备对象上用不存在的属性名做一次写 → 回的是 bluez 的 `UnknownProperty`（=总线放行）
+#   ⇒ 扫描/配对/连鼠标/Trusted 不受影响；`Get` 照常放行，UI 读状态不会卡。
+# WiFi 那边的 polkit NO 在蓝牙上没有对应物：bluetoothd 不接 polkit（NEEDED 只有
+# libdbus/libglib/libudev/libasound/libdw/libc），能落地的层次就是总线策略。
+# 文件持久在容器 rootfs 的 /etc 里 ⇒ desk-stop 必须删，否则"关不掉"会泄漏到轮外。
+if [ "${BT_BRIDGE:-1}" = 1 ]; then
+    cat > /etc/dbus-1/system.d/61-bluez-drm-lock.conf <<'EOF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <!-- DRM 接管轮：蓝牙总开关对桌面用户拒动（Powered 只能由 root/看门狗决定）。
+       属性写只发生在 /org/bluez/hci0（适配器）上；设备对象(/org/bluez/hci0/dev_*)不拦，
+       所以扫描、配对、连鼠标这些照常。 -->
+  <policy user="xieyizhou">
+    <deny send_destination="org.bluez" send_path="/org/bluez/hci0"
+          send_interface="org.freedesktop.DBus.Properties" send_member="Set"/>
+  </policy>
+</busconfig>
+EOF
+    # 重启 system bus 会连带打断 NM/kded，所以只 ReloadConfig。
+    dbus-send --system --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 \
+        || echo "BT-LOCK NOTE $(date +%T): ReloadConfig 没应答（实测不靠它也生效，继续自检）"
+    # 自检必须自证会被触发：以桌面用户身份做一次**幂等**的属性写（Alias 写回当前值，零副作用），
+    # 期望被拒；没被拒就明报 BT-LOCK MISSING —— 不拿"装了文件"冒充"锁上了"。
+    # 没有 Controller 时这条路径走不到（回 UnknownObject，那是"没测到"不是"没锁"），单独 SKIP。
+    if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then
+        CURALIAS=$(bluetoothctl show 2>/dev/null | awk '/^\tAlias:/{print $2}')
+        LOCKCHK=$(runuser -u xieyizhou -- dbus-send --system --dest=org.bluez --print-reply \
+            /org/bluez/hci0 org.freedesktop.DBus.Properties.Set \
+            string:org.bluez.Adapter1 string:Alias variant:string:"${CURALIAS:-Piano BT}" 2>&1)
+        if echo "$LOCKCHK" | grep -q "AccessDenied"; then
+            echo "BT-LOCK OK $(date +%T): 桌面用户写适配器属性被总线拒（蓝牙总开关点不动；root 与看门狗照常能动）"
+        else
+            echo "BT-LOCK MISSING $(date +%T): 写了策略文件但属性写**没被拒** ⇒ 桌面仍能关蓝牙，只剩下面的看门狗兜底。返回：$(echo "$LOCKCHK" | tr '\n' ' ' | head -c 160)"
+        fi
+    else
+        echo "BT-LOCK SKIP $(date +%T): 容器里没有 Controller，锁的实测留到看门狗的 NOT-POWERED 证据行"
+    fi
+    # 【兜底 + 自愈】看门狗管两层：
+    #   ① root/bluetoothctl/rfkill 这些策略挡不住的下电路径 → 秒级 power on 回开；
+    #   ② 09-29 实证的"桥单向死"：HAL→内核的事件洪水照涨、内核→HAL 的命令计数冻结，
+    #      HCI_Reset 无人应答，power on 只报 Failed 且**不会自愈** → pkill -x 重拉桥。
+    # 它自带 surfaceflinger 熔断（交还即自退），desk-stop 与 rollback 还各杀一次，三重。
+    pkill -f "bt-keepalive.sh" 2>/dev/null
+    nohup bash $DIR/scripts/bt-keepalive.sh >> $LOGD/bt-keepalive.log 2>&1 &
+    sleep 1
+    KAPID=$(pgrep -f "bt-keepalive.sh" | head -1)
+    if [ -n "$KAPID" ]; then
+        echo "BT-KEEPALIVE OK $(date +%T): pid=$KAPID 日志 $LOGD/bt-keepalive.log"
+    else
+        echo "BT-KEEPALIVE FAIL $(date +%T): 没起来（查 $LOGD/bt-keepalive.log）"
+    fi
 fi
 else
     echo "BT-BRIDGE SKIPPED $(date +%T)（本轮 /run/drm-round.conf 或环境变量里显式 BT_BRIDGE=0）"
