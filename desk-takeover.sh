@@ -1137,7 +1137,10 @@ if [ "${BT_BRIDGE:-1}" = 1 ]; then
 BTBIN=/data/local/tmp/bthci-bridge
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
-run "test -x $BTBIN || echo BT-NO-BIN; pgrep -x bthci-bridge || nohup $BTBIN --keep 0 >>/data/local/tmp/bt-bridge.log 2>&1 &"
+# `</dev/null`：detached 进程别占着 adb 的 pty。注意历史上这行每次吃满 12s 超时
+# （logs/desk-takeover.log 里 RUN-TIMEOUT 118 条全是它），但实测单独 launch 一个 detached
+# sleep 只花 0.1s ⇒ 超时真因未定，别把加这行说成"修好了超时"，它只是卫生写法。
+run "test -x $BTBIN || echo BT-NO-BIN; pgrep -x bthci-bridge || nohup $BTBIN --keep 0 </dev/null >>/data/local/tmp/bt-bridge.log 2>&1 &"
 # 判据要重试：桥的 initialize→initializationComplete→内核 init 60 命令→bluetoothd 认领
 # 整串要在 WiFi 关联同窗口排队，+8s 单发经常赶不上（16:59 轮实测：报 FAIL 时桥其实活着，
 # bt-bridge.log 里 hciEventReceived 一直有——FAIL 是判据太早，不是功能坏）。
@@ -1224,13 +1227,16 @@ EOF
     #      HCI_Reset 无人应答，power on 只报 Failed 且**不会自愈** → pkill -x 重拉桥。
     # 它自带 surfaceflinger 熔断（交还即自退），desk-stop 与 rollback 还各杀一次，三重。
     pkill -f "bt-keepalive.sh" 2>/dev/null
-    nohup bash $DIR/scripts/bt-keepalive.sh >> $LOGD/bt-keepalive.log 2>&1 &
+    SNAP_DIR=$LOGD nohup bash $DIR/scripts/bt-keepalive.sh >> $LOGD/bt-keepalive.log 2>&1 &
+    KAPID=$!
     sleep 1
-    KAPID=$(pgrep -f "bt-keepalive.sh" | head -1)
-    if [ -n "$KAPID" ]; then
+    # 判据必须打在它声称的那个对象上：09-30 这行用 `pgrep -f bt-keepalive.sh` 报出来的
+    # pid=4722 其实是桥（共享 PID ns 里 pgrep -f 抓到了别的匹配），等于探针自证失败。
+    # 直接取自己后台任务的 $!，再验它活着且 cmdline 对得上。
+    if kill -0 "$KAPID" 2>/dev/null && tr '\0' ' ' < /proc/$KAPID/cmdline 2>/dev/null | grep -q "bt-keepalive.sh"; then
         echo "BT-KEEPALIVE OK $(date +%T): pid=$KAPID 日志 $LOGD/bt-keepalive.log"
     else
-        echo "BT-KEEPALIVE FAIL $(date +%T): 没起来（查 $LOGD/bt-keepalive.log）"
+        echo "BT-KEEPALIVE FAIL $(date +%T): pid=$KAPID 不在或 cmdline 不是 bt-keepalive.sh（查 $LOGD/bt-keepalive.log）"
     fi
 fi
 else
