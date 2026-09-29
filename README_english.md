@@ -87,7 +87,7 @@ for persistent takeover use `PERSIST=1 MODE=kwin`.
 | Network | Bare NetworkManager process managing wlan0 directly; SSID/PSK read from Android before takeover; `ip rule` backup/restore of the standard three tables; polkit rules granted, plasma-nm desktop UI can connect and change passwords | Working; association/egress failures only warn, never take the desktop down with them |
 | Bluetooth | droid-bluetooth-bridge (vendor HAL binder client → pty H4 → kernel hci0 → container BlueZ) | Mouse/HID working; A2DP audio output verified |
 | Audio | Route A: direct vendor AIDL HAL (`argsloop` SINK fed via FMQ + `aa-feeder` capturing the PipeWire monitor) | Built-in speaker output measured inside takeover rounds |
-| Input method | kwin pops up plasma-keyboard on window activation via `KWIN_IM_SHOW_ALWAYS=1` (covers both X11 and Wayland windows); manual popup `scripts/vkb-show.sh`; Chinese input for X11 apps via fcitx5-XIM | Working |
+| Input method | Final 09-29 layout: plasma-keyboard holds the seat and kwin pops it on window activation via `KWIN_IM_SHOW_ALWAYS=1` (X11 + Wayland); a bystander fcitx5 daemon (FCITX5-BYST: starts with WAYLAND_DISPLAY but after the seat, so it only serves as the XIM front, default English) composes Chinese for X11 apps; PC-page Ctrl+Space is special-cased in pc-keyd to `fcitx5-remote -T` over DBus; each mode pins kwinrc InputMethod on entry (round=plasma-keyboard, anland=fcitx5) | Working |
 | Key combos | pc-keyd v2 (XTEST/EIS primary channel; channel C via the kwin pkeyd patch, uinput only as last resort) | Verified for X11 apps; Wayland apps pending channel-C on-device verification |
 
 ## Safety boundaries
