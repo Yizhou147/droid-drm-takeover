@@ -122,8 +122,22 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 ## 工具
 
 `make` 产出 19 个二进制与 `atomicspy.so`，**接管流程由脚本自动调用，日常无需手动运行**。
-按角色分为接管核心、触摸验证、KMS 诊断探针三类，全部用法与新设备适配流程见
+按角色分为接管核心、触摸验证、KMS 诊断探针、存储四类，全部用法与新设备适配流程见
 [docs/tools.md](docs/tools.md)。
+
+## 安卓存储
+
+容器里的 `/storage/emulated/0` 是容器启动时 bind 的**那一个** Android FUSE 超级块。Android 每次重启
+框架（交还时的 `start`、MediaProvider 崩溃、用户解锁）都会 mount 出新的超级块，容器抱着旧的那份之后
+一律返回 `ENOTCONN`，表现为"拒绝访问"——与权限无关，改授权不可能修好。
+
+- **交还后自动修复**：`scripts/storage-fix.sh` 比对主机与容器同一挂点的 major:minor，不一致就用
+  `open_tree`+`setns`+`move_mount` 把当下活的挂载重新接进容器。已挂在 `desk-stop.sh` 与 `drm-stop.sh`
+  的交还路径（后台运行），判据在 `logs/storage-fix.log` 的 `STORAGE-OK` / `STORAGE-STALE`。
+  非接管触发的重挂不会自愈，手动跑 `bash scripts/storage-fix.sh 90`。
+- **接管轮内请用 `/Android`**：轮里 Android 框架是停的，根本没有活的 FUSE 可接。`/Android` 是
+  `container.config` 里 `bind_mounts` 绑的 `/data/media/0`（储存本体，在 `/data` 上，不随框架重启失效）。
+  代价：绕过 per-app 储存权限、`chmod`/`chown` 真生效、新文件不进 MediaStore；轮里当传输通道用即可。
 
 ## 风险与回滚
 

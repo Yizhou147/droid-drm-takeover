@@ -141,9 +141,28 @@ for persistent takeover use `PERSIST=1 MODE=kwin`.
 ## Tools
 
 `make` produces 19 binaries plus `atomicspy.so`. **The takeover flow invokes them automatically;
-you never need to run them manually day-to-day.** They fall into three roles — takeover core,
-touch verification, KMS diagnostic probes — full usage and the new-device adaptation flow are in
-[docs/tools_english.md](docs/tools_english.md).
+you never need to run them manually day-to-day.** They fall into four roles — takeover core,
+touch verification, KMS diagnostic probes, storage — full usage and the new-device adaptation flow
+are in [docs/tools_english.md](docs/tools_english.md).
+
+## Android storage
+
+The container's `/storage/emulated/0` is a bind of **one particular** Android FUSE superblock, taken
+when the container booted. Every framework restart (the `start` during handover, a MediaProvider
+crash, user unlock) mounts a new superblock, so the container keeps holding the dead one and every
+access returns `ENOTCONN` — it shows up as "access denied" and no permission change can fix it.
+
+- **Auto-repair after handover**: `scripts/storage-fix.sh` compares major:minor of the same mount
+  point in the host and in the container and, on mismatch, re-attaches the currently live mount into
+  the container namespace with `open_tree`+`setns`+`move_mount`. It is wired into the handover paths
+  of `desk-stop.sh` and `drm-stop.sh` (background), with verdicts `STORAGE-OK` / `STORAGE-STALE` in
+  `logs/storage-fix.log`. Remounts *not* triggered by a takeover do not self-heal; run
+  `bash scripts/storage-fix.sh 90` manually.
+- **Inside a takeover round use `/Android`**: the Android framework is stopped then, so there is no
+  live FUSE to attach at all. `/Android` comes from the `bind_mounts` entry for `/data/media/0` in
+  `container.config` (the storage itself, on `/data`, so it never goes stale). The price: per-app
+  storage permissions are bypassed, `chmod`/`chown` really take effect, and new files are not indexed
+  by MediaStore. Treat it as a transfer channel during rounds.
 
 ## Risk & rollback
 
