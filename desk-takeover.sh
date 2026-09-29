@@ -575,7 +575,7 @@ $DIR/bin/crtcstate > $LOGD/crtcstate-desk2.log 2>&1
 # 09-23 黑屏根因：plasmashell 硬依赖 kactivitymanagerd，总线自动激活今天直接超时
 # （"Aborting shell load: The activity manager daemon is not running" → 无壳黑屏）。
 # 不再赌 dbus 激活：显式拉起并等名字出现。
-nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 -u XMODIFIERS \
+nohup runuser -u xieyizhou -- env -u DISPLAY -u XMODIFIERS QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -590,8 +590,8 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
+nohup runuser -u xieyizhou -- env -u SDL_IM_MODULE -u GLFW_IM_MODULE \
+    QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
     WAYLAND_DISPLAY=taketest \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -619,8 +619,8 @@ fi
 KDED=$(ls /usr/bin/kded6 /usr/bin/kded5 /usr/libexec/kded5 /usr/lib/*/kded5 2>/dev/null | head -1)
 KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
 if [ -n "$KDED" ]; then
-    nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
-        -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
+    nohup runuser -u xieyizhou -- env -u DISPLAY -u SDL_IM_MODULE -u GLFW_IM_MODULE \
+        QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 \
         ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
         HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -672,8 +672,8 @@ PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
     QT_QPA_PLATFORM=wayland \
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env -u DISPLAY QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
+nohup runuser -u xieyizhou -- env -u DISPLAY -u SDL_IM_MODULE -u GLFW_IM_MODULE \
+    QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 XMODIFIERS=@im=fcitx5 \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
     HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
@@ -732,14 +732,13 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         else
             echo "PC2-FAIL $(date +%T): pc-keyd v2 未就绪（PC 页组合键本轮不可用，不阻塞）"
         fi
-        # ---- fcitx5 座位就绪确认（09-29 实测重写，推翻 09-28 的"剥 WAYLAND_DISPLAY"版）----
-        # IM 段已把 kwinrc 座位写成 fcitx5，kwin 启动时（:512，早于此处）会带
-        # WAYLAND_DISPLAY=taketest 自拉 fcitx5 → waylandim 抢座位 = 全桌键流经它（单记账），
-        # 托盘图标随 virtualkeyboard UI 激活出现，Ctrl+Space 切英文/拼音全应用生效。
-        # **绝不 pkill、绝不剥 WAYLAND_DISPLAY**——那样会把座位打回 plasma-keyboard、
-        # Ctrl+Space 退化成只对 X11 应用可用（09-28→09-29 反复实测坐实）。
-        # 默认英文态：等 fcitx5 上总线后 fcitx5-remote -c（inactive＝直出字母，座位透传），
-        # 组词由用户 Ctrl+Space 主动开。
+        # ---- fcitx5 就绪确认 + 默认英文态（09-29 实测重写）----
+        # 注意：全局 Ctrl+Space 的真机制是**上面各 daemon 已赋 QT/GTK_IM_MODULE=fcitx5**
+        # → 应用在 fcitx5 上建 frontend:dbus/xim 输入上下文（见 §57c，非靠 kwin 座位 waylandim）。
+        # 本段只负责：确认 fcitx5 守护在总线上（kwin 会自拉，兜底手拉），并置默认英文态
+        # （fcitx5-remote -c＝inactive 直出字母），组词由用户 Ctrl+Space 主动开。
+        # 教训（09-28→09-29 反复）：**绝不在 env 里把 VAR=赋值排在 -u 选项前**——env 一旦看到
+        # 第一个赋值就停止解析选项、把后续 -u 当命令执行 → daemon 全起不来 → 只有鼠标无桌面。
         FC5=0
         for i in $(seq 1 10); do
             runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou \
