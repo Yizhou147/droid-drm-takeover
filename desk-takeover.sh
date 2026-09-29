@@ -458,12 +458,13 @@ fi
 #     经应用 XIM 转发给 fcitx5,实测可用（09:21 用户原话“x11 应用 Ctrl+space 已可用”）；
 #  ③ 应用侧仍剥 QT/GTK_IM_MODULE（保住 text-input 上报→弹窗）,XMODIFIERS=@im=fcitx5
 #     保留（X11 preedit/热键通道）。SDL/GLFW 剥。
-# ⚠ 已知边界：Wayland 原生应用（konsole）的键先给座位 plasma-keyboard（QtVK 布局）,
-#    不会转给 fcitx5——故“Wayland 应用 Ctrl+Space 切 fcitx5”这个配置做不到；上午若
-#    konsole 也能切,是因为那是我手拉、带了 QT_IM_MODULE=fcitx5 的测试窗。本轮先如实
-#    复刻该配方交用户测,再据结果决定是否上“面板+fcitx5 backend 桥”方案。
-# 失败态对照（防再踩）：开机就座位=fcitx5→面板名额被占、弹不出=12:56/14:16 轮；
-#   守护开机剥 WAYLAND_DISPLAY→X11 热键也死=10:0x 轮。
+#  ④（文末 BYST 段执行）守护就绪后把 kwinrc 改回 fcitx5 并 `KWin reconfigure` **热换
+#     IM 座位**:kwin 的面板注册(virtualkeyboard 插件)只在启动时读 InputMethod,已钉死
+#     plasma-keyboard,reconfigure 不动它 → 座位=fcitx5(全桌含 Wayland 的键流/热键/组词)
+#     + 面板=plasma-keyboard(弹窗)= 09:05~09:20 手测态的完整复刻(09:17 实证:热换后
+#     kwin 依旧重拉 plasma-keyboard)。
+# 失败态对照（防再踩）：起跑就把 InputMethod=fcitx5 → 面板注册同被占、弹不出
+#   =12:56/14:16 轮；守护剥 WAYLAND_DISPLAY 且不做④热换 → 热键半死=10:0x 轮。
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
     || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
 chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
@@ -752,7 +753,17 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         if [ "$FC5" = 1 ]; then
             runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote -c >/dev/null 2>&1
-            echo "FCITX5-BYST OK 旁观守护就绪 默认英文 display=$XD $(date +%T)"
+            # ---- 热换座位→fcitx5(ghost 配方最后一步,09-29 15:0x 定案)----
+            # kwin 的两条登记是**分开**的:virtualkeyboard 插件(面板=plasma-keyboard)只在
+            # kwin 启动时读 InputMethod;reconfigure 只重绑 IM 座位。所以此刻把 kwinrc 改成
+            # fcitx5+reconfigure = 座位→fcitx5(全桌键流/热键/组词,含 Wayland 窗口),
+            # 面板注册**保持 plasma-keyboard 不动**(弹窗继续可用)——与 09:05~09:20 手测
+            # 完全同构(09:17 实测:reconfigure 后 kwin 依旧重拉 plasma-keyboard)。
+            KSWAP=/home/xieyizhou/.config/kwinrc
+            sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' "$KSWAP"
+            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+                qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1
+            echo "FCITX5-BYST OK 旁观守护+座位热换fcitx5 面板仍plasma-keyboard display=$XD $(date +%T)"
         else
             echo "FCITX5-BYST FAIL: fcitx5 未上总线（本轮 X11 中文/Ctrl+Space 不可用，不阻塞）—— 看 fcitx5-round.log"
         fi
