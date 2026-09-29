@@ -753,17 +753,13 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         if [ "$FC5" = 1 ]; then
             runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote -c >/dev/null 2>&1
-            # ---- 热换座位→fcitx5(ghost 配方最后一步,09-29 15:0x 定案)----
-            # kwin 的两条登记是**分开**的:virtualkeyboard 插件(面板=plasma-keyboard)只在
-            # kwin 启动时读 InputMethod;reconfigure 只重绑 IM 座位。所以此刻把 kwinrc 改成
-            # fcitx5+reconfigure = 座位→fcitx5(全桌键流/热键/组词,含 Wayland 窗口),
-            # 面板注册**保持 plasma-keyboard 不动**(弹窗继续可用)——与 09:05~09:20 手测
-            # 完全同构(09:17 实测:reconfigure 后 kwin 依旧重拉 plasma-keyboard)。
-            KSWAP=/home/xieyizhou/.config/kwinrc
-            sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' "$KSWAP"
-            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-                qdbus6 org.kde.KWin /KWin reconfigure >/dev/null 2>&1
-            echo "FCITX5-BYST OK 旁观守护+座位热换fcitx5 面板仍plasma-keyboard display=$XD $(date +%T)"
+            # ---- 热换座位实验已撤回(09-29 15:2x 证伪)----
+            # 曾按"09:05 手测态"推断 reconfigure 能把 IM 座位换给 fcitx5 而面板注册不动;
+            # 现场验证:换后 konsole 依旧 0 wayland IC(konsole_xwin 实验)、X11 通道 C 键被
+            # 座位 QtVK 吞(xdotool XTEST 1→2 对比实锤)——reconfigure 不重绑键盘中继,
+            # 热换无意义。Ctrl+Space 改走 pc-keyd 的 fcitx5-remote -T 特判(droid-pc-keyboard
+            # 09-29 提交),座位保持 plasma-keyboard=弹窗满血。
+            echo "FCITX5-BYST OK 旁观守护就绪 默认英文 display=$XD $(date +%T)"
         else
             echo "FCITX5-BYST FAIL: fcitx5 未上总线（本轮 X11 中文/Ctrl+Space 不可用，不阻塞）—— 看 fcitx5-round.log"
         fi
