@@ -34,6 +34,14 @@ rm -f "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null
 # （DRM 桌面的虚拟键盘依赖这点），所以只在 anland 会话级注入：
 export QT_IM_MODULE=fcitx5
 export GTK_IM_MODULE=fcitx5
+# 入场归一（09-29）：kwinrc [Wayland]InputMethod 是两桌面共享的文件，DRM 轮里手动切过
+# plasma-keyboard 会泄漏到 anland（用户要求：每次进 anland 必须 fcitx5）。不依赖
+# desk-stop 恢复，每个 anland 入场点自己写一遍。注意 sed 空匹配也返回 0，必须先 grep。
+if grep -q '^InputMethod\[' ~/.config/kwinrc 2>/dev/null; then
+    sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' ~/.config/kwinrc
+else
+    printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop\n' >> ~/.config/kwinrc
+fi
 # 托盘亮度/电池（09-24）：容器 /sys 默认 ro → 亮度写 EROFS；powerdevil 也要人拉
 sudo -n mount -o remount,rw /sys 2>/dev/null || true
 PWDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
