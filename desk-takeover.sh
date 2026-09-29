@@ -754,6 +754,16 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
             runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou \
                 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote -c >/dev/null 2>&1
+            # ---- 面板补拉（09-29 定案,09:05~09:20 实测态的固化）----
+            # 座位=fcitx5 后 kwin 的"键盘 app"登记=fcitx5(无 UI)→ plasma-keyboard 没人拉起
+            # → 弹窗死(12:56 轮实锤)。但 kwin 的 virtualkeyboard 插件与座位 IM 是两条线
+            # (09:03 我杀掉 plasma-keyboard 后 kwin 3 秒自拉=实证):显式把它拉起来当面板,
+            # 弹出由 KWIN_IM_SHOW_ALWAYS/activeClientSupportsTextInput 触发,组词切换走
+            # fcitx5 座位——两头同时成立,就是 09:05~09:20 用户能边弹键盘边 Ctrl+Space 的形态。
+            pgrep -x plasma-keyboard >/dev/null || nohup runuser -u xieyizhou -- \
+                env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+                DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus QT_QPA_PLATFORM=wayland \
+                /usr/bin/plasma-keyboard > $LOGD/plasma-keyboard.log 2>&1 &
             echo "FCITX5-SEAT OK 座位=fcitx5 默认英文态 display=$XD $(date +%T)"
         else
             echo "FCITX5-SEAT FAIL: fcitx5 未上总线（本轮 Ctrl+Space/中文不可用，不阻塞）—— 看 fcitx5-round.log"
