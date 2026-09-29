@@ -75,7 +75,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | 显示 | kwinwrap 交接 + kwin DRM backend | 稳定；piano 需 split_commit 将单管虚拟 plane 改写为成对平面（对象 ID 随 boot 漂移，见已知问题） |
 | 触摸 | udev 属性合成 + libinput 校准矩阵，kwin 为唯一读者 | 可用（十指） |
 | 网络 | NetworkManager 裸进程直管 wlan0；SSID/PSK 接管前自 Android 现读；`ip rule` 备份/恢复标准三表；polkit 规则放行，plasma-nm 桌面 UI 可连可改密 | 可用；关联/出口失败仅告警，不连坐桌面 |
-| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ）；`scripts/bt-keepalive.sh` 轮内常驻 | 鼠标/HID 可用，A2DP 出声已验证；轮内与 WiFi 同政策「默认开 + 关不掉」：判到适配器后显式上电并实测 `Powered: yes`（BT-POWER）、装一条 dbus 总线策略拒桌面用户写适配器属性并每轮自检（BT-LOCK，蓝牙侧没有 polkit 可用）、掉电与桥卡死由看门狗回开/重拉（BT-RECOVER） |
+| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ）；`scripts/bt-keepalive.sh` 轮内常驻 | 鼠标/HID 可用，A2DP 出声已验证；轮内与 WiFi 同政策「默认开 + 关不掉」：判到适配器后显式上电并实测 `Powered: yes`（BT-POWER）、装一条 dbus 总线策略拒桌面用户写适配器属性并每轮自检（BT-LOCK，蓝牙侧没有 polkit 可用）、掉电与卡死由看门狗按「内核重踢 → 重拉桥(先杀旧，整轮上限 2 次) → 收手留现场 `logs/bt-wedge-*.txt`」三级台阶处理（BT-KICK/BT-RESTART/BT-GIVEUP）。开局若发现 `bt_power` rfkill 被安卓侧软阻塞则报 `BT-OFF-BY-ANDROID`/`BT-CHIP-BLOCKED` 并**不**重拉（芯片电源归 vendor HAL/btpower，手动解是红线；恢复＝交还安卓→安卓里开蓝牙→再接管） |
 | 音频 | A 路：直连 vendor AIDL HAL（`argsloop` SINK 经 FMQ 喂数 + `aa-feeder` 抓 PipeWire monitor） | 接管轮内板载扬声器外放已实测 |
 | 输入法 | 轮内定稿（09-29）：座位=plasma-keyboard，kwin 以 `KWIN_IM_SHOW_ALWAYS=1` 窗口激活时弹出（X11/Wayland 均覆盖）；旁观 fcitx5 守护（`FCITX5-BYST` 段，带 WAYLAND_DISPLAY 但晚于座位、只当 XIM 前端，默认英文态）负责 X11 应用组词；PC 页 Ctrl+Space 由 pc-keyd 特判 `fcitx5-remote -T` DBus 直达；两模式各自入场归一 kwinrc（轮=plasma-keyboard / anland=fcitx5） | 可用 |
 | 组合键 | pc-keyd v2（XTEST/EIS 主通道；通道 C 经 kwin pkeyd 补丁，uinput 仅兜底） | X11 应用已验证；Wayland 应用待通道 C 真轮验证 |

@@ -56,6 +56,7 @@ RESTARTS=0
 KICKED=""                   # 每段只踢一次内核，别刷
 GAVEUP=""
 NEXT_JUDGE=0                # 早于这个 epoch 秒不判定（宽限期）
+CB_LAST=0                   # 上次报 BT-CHIP-BLOCKED 的时刻（同状态 5 分钟只报一次，防刷日志）
 
 run() {
     local out rc
@@ -165,6 +166,20 @@ while :; do
         sleep "$INTERVAL"; continue
     fi
 
+    # ★ 芯片被安卓侧关着时**不要重拉桥**（09-30 定案）：bt_power rfkill soft=1 时 HAL 不给命令
+    # 通路，实测每一任桥都卡在同一个点位 `转发=50 收回=50 回调=51`，bluez 侧表现为 off-blocked。
+    # 上一版把它当"HCI 卡死"，17 次重拉全是白干（还额外制造残留客户端与多实例风险）。
+    # 这种状态会持续整轮，所以证据行 5 分钟只打一次，别把日志冲满。
+    CB=$(chip_blocked)
+    if [ "${CB%%:*}" = 1 ] && [ $(( $(date +%s) - CB_LAST )) -ge 300 ]; then
+        CB_LAST=$(date +%s)
+        BV=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1)
+        echo "BT-CHIP-BLOCKED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} 桥=${BP:-安卓侧查不到} ${CB#*:}(bt_power) soft=1 persist.vendor.bluetooth.state=${BV:-查不到}"
+        echo "          ⇒ 芯片电源在安卓侧被关，HAL 不给命令通路，重拉桥无效 ⇒ 不动作（手动解这颗 rfkill 是蓝牙红线：电源协调归 btpower/HAL）。恢复办法：交还安卓 → 安卓里把蓝牙打开 → 再重新接管"
+        PREV=$CNT; sleep "$INTERVAL"; continue
+    fi
+    [ "${CB%%:*}" = 1 ] && { PREV=$CNT; sleep "$INTERVAL"; continue; }
+
     # 掉电/无适配器：整行证据先落日志。每个数都必须是被读到的，读不到写 NOREAD——
     # 否则"没测到"会伪装成"没发生"（见 工作总结 §探针自证纪律）
     echo "BT-KEEPALIVE NOT-POWERED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} 桥=${BP:-安卓侧查不到} 重拉=$RESTARTS 冻轮=$FWD_FROZEN"
@@ -176,15 +191,6 @@ while :; do
         PREV=$CNT; sleep "$INTERVAL"; continue
     fi
 
-    # ★ 芯片被安卓侧关着时**不要重拉桥**（09-30 定案）：bt_power rfkill soft=1 时 HAL 不给命令
-    # 通路，实测每一任桥都卡在同一个点位 `转发=50 收回=50 回调=51`，bluez 侧表现为 off-blocked。
-    # 上一版把它当"HCI 卡死"，17 次重拉全是白干（还额外制造残留客户端与多实例风险）。
-    CB=$(chip_blocked)
-    if [ "${CB%%:*}" = 1 ]; then
-        BV=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1)
-        echo "BT-CHIP-BLOCKED $(now): ${CB#*:}(bt_power) soft=1 且 persist.vendor.bluetooth.state=${BV:-查不到} ⇒ 芯片电源在安卓侧被关，HAL 不会给命令通路，重拉桥无效 ⇒ 不动作（碰它是蓝牙红线：电源协调归 btpower/HAL）。恢复办法：交还安卓 → 安卓里把蓝牙打开 → 再重新接管。"
-        PREV=$CNT; sleep "$INTERVAL"; continue
-    fi
 
     if [ -n "$FWD" ] && [ "$FWD" = "$PREV_FWD" ]; then
         FWD_FROZEN=$(( FWD_FROZEN + 1 ))
