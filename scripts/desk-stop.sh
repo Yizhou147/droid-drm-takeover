@@ -259,6 +259,13 @@ if [ -f "$KRC" ]; then
 fi
 unset KRC
 
+# ---- 4b1) 把安卓存储接回容器（后台跑，别拖慢 anland 复活）：交还时安卓重启框架会 mount
+#           出**新的** fuse 超级块，容器 boot 时 bind 的旧那份从此 ENOTCONN —— 表现为
+#           "拒绝访问"，改权限无效（根因与判据见 工作总结 §3.12）。设备侧脚本自己等源活
+#           了再动手，这里只负责触发；判据行落在 $LOGD/storage-fix.log。
+nohup bash $ROOT/scripts/storage-fix.sh 90 >>"$LOGD/storage-fix.log" 2>&1 </dev/null &
+echo "STORAGE-FIX launched bg pid=$! log=$LOGD/storage-fix.log"
+
 if [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-kde.sh ]; then
     runuser -u xieyizhou -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
         && echo "anland session relaunched"

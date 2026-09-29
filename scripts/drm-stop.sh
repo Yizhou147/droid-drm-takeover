@@ -37,4 +37,11 @@ adb -s "$DEV" shell "su -c 'wm dismiss-keyguard; am start -a android.settings.DI
 adb -s "$DEV" shell input keyevent 224 >/dev/null 2>&1
 rm -f $DIR/takeover.ok $ROOT/takeover.ok
 run "getprop init.svc.surfaceflinger; getprop init.svc.vendor.qti.hardware.display.composer"
+# ---- 5) 把安卓存储接回容器：轮里 system_server 被冻/被 watchdog 杀过，交还后安卓会换
+#          新的 fuse 超级块，容器抱着的旧那份从此 ENOTCONN（根因见 工作总结 §3.12）。
+#          后台跑，别把交还流程卡在这上面；判据行在 $LOGD/storage-fix.log。
+mkdir -p "$LOGD"
+nohup bash $ROOT/scripts/storage-fix.sh 90 >>"$LOGD/storage-fix.log" 2>&1 </dev/null &
+echo "STORAGE-FIX launched bg pid=$! log=$LOGD/storage-fix.log"
+
 echo "DRM-STOP DONE $(date +%T)"

@@ -38,7 +38,7 @@
 ```
 desk-takeover.sh        全自动接管入口：显示 + 桌面 + WiFi + 蓝牙 + 音频（推荐）
 drm-takeover.sh         单轮/常驻接管（无完整桌面），带回滚；常驻用 PERSIST=1 MODE=kwin
-scripts/                desk-stop / drm-stop / kwin-restart / keepbright / dmesg-harvester
+scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
                         / vkb-show / aa-feeder / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
@@ -121,7 +121,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 
 ## 工具
 
-`make` 产出 18 个二进制与 `atomicspy.so`，**接管流程由脚本自动调用，日常无需手动运行**。
+`make` 产出 19 个二进制与 `atomicspy.so`，**接管流程由脚本自动调用，日常无需手动运行**。
 按角色分为接管核心、触摸验证、KMS 诊断探针三类，全部用法与新设备适配流程见
 [docs/tools.md](docs/tools.md)。
 

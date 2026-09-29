@@ -47,7 +47,7 @@ The hard part is not the userspace GPU driver (the rendering stack is untouched)
 ```
 desk-takeover.sh        Fully automatic takeover entry: display + desktop + WiFi + Bluetooth + audio (recommended)
 drm-takeover.sh         Single-round/persistent takeover (no full desktop), with rollback; use PERSIST=1 MODE=kwin for persistent
-scripts/                desk-stop / drm-stop / kwin-restart / keepbright / dmesg-harvester
+scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
                         / vkb-show / aa-feeder / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap (core) + KMS probe suite + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example (WiFi fallback config sample)
@@ -140,7 +140,7 @@ for persistent takeover use `PERSIST=1 MODE=kwin`.
 
 ## Tools
 
-`make` produces 18 binaries plus `atomicspy.so`. **The takeover flow invokes them automatically;
+`make` produces 19 binaries plus `atomicspy.so`. **The takeover flow invokes them automatically;
 you never need to run them manually day-to-day.** They fall into three roles — takeover core,
 touch verification, KMS diagnostic probes — full usage and the new-device adaptation flow are in
 [docs/tools_english.md](docs/tools_english.md).

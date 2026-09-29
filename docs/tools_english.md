@@ -2,7 +2,7 @@
 
 # Tool inventory (bin/ artifacts)
 
-`make` builds every tool into `bin/` (18 binaries + `atomicspy.so`). The takeover flow invokes
+`make` builds every tool into `bin/` (19 binaries + `atomicspy.so`). The takeover flow invokes
 them automatically via `desk-takeover.sh` / `drm-takeover.sh`; you never need to run any of them
 manually day-to-day. This document is for new-device adaptation and troubleshooting.
 
@@ -44,7 +44,36 @@ tool without arguments prints its usage.
 | `masterprobe` | Query who currently holds DRM master | run directly |
 | `kwinprobe` | Borrow the card fd already held by kwin (attach by pid) to measure in the real context | `kwinprobe <pid>` |
 
-## ④ Android-side performance/frequency tools (over adb root, outside the DRM path)
+## ④ Storage: re-attach Android storage into the container
+
+The container's `/storage/emulated/0` is a bind of whichever fuse superblock Android had mounted
+when the container booted. Every framework restart (the `start` during handover, a MediaProvider
+crash, user unlock) mounts a **new** superblock, so the container keeps holding the dead one and
+every access returns `ENOTCONN` — it shows up as "access denied" and no permission change can fix
+it. Full measurements: main project 《工作总结.md》 §3.12.
+
+| Tool | Purpose | Usage |
+|---|---|---|
+| `storage-rebind` | Runs on the Android side (root, init mount ns). Compares major:minor of the same mount point in the host and in the container; on mismatch it re-attaches the currently live mount into the container namespace with `open_tree(OPEN_TREE_CLONE)`+`setns`+`move_mount`. Statically linked musl build (Android has no glibc) | `storage-rebind [-c] [-s src -d container-mountpoint] [container-pid]`; the pid defaults to `/data/local/Droidspaces/Pids/*.pid` |
+| `scripts/storage-fix.sh` | Orchestration: pushes the tool and the device-side script on demand, waits until the host source is actually usable, then verifies inside the container namespace with a timeout | `bash scripts/storage-fix.sh [wait-seconds=60]`; verdicts `STORAGE-OK` / `STORAGE-STALE` / `HOST-SOURCE-DEAD` |
+
+Wired into the handover paths `desk-stop.sh` (4b1) and `drm-stop.sh` (step 5); runs in the
+background, verdicts land in `logs/storage-fix.log`. **Do not expect `/storage/emulated/0` to work
+during a takeover round**: the framework is stopped then, so there is no live FUSE to attach. For
+in-round access to phone storage use `/Android` (the container config `bind_mounts` entry for
+`/data/media/0`).
+
+Two hard rules, read them before changing this area:
+
+- Mount liveness may only be judged from `/proc/<pid>/mountinfo`. `stat`/`ls` on that mount inside
+  the container namespace hangs forever while system_server is SIGSTOPped (even `umount2` has to
+  use `MNT_DETACH`).
+- Never run `mount --bind /proc/1/root/...` inside the container namespace: path lookup follows the
+  current namespace, where `/proc/1` is the container's own init, so it re-binds **the already dead
+  superblock** (measured). Cross-namespace injection requires open_tree+move_mount. Note
+  `open_tree=428` and `move_mount=429` (asm-generic; do not swap them).
+
+## ⑤ Android-side performance/frequency tools (over adb root, outside the DRM path)
 
 | Tool | Purpose | Usage |
 | --- | --- | --- |

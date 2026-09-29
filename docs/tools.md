@@ -2,7 +2,7 @@
 
 # 工具清单（bin/ 产物）
 
-`make` 在 `bin/` 生成全部工具（18 个二进制 + `atomicspy.so`）。接管流程由
+`make` 在 `bin/` 生成全部工具（19 个二进制 + `atomicspy.so`）。接管流程由
 `desk-takeover.sh` / `drm-takeover.sh` 自动调用，日常使用无需手动运行其中任何一个；
 本文面向新设备适配与故障排查。
 
@@ -43,7 +43,31 @@ root 运行，否则 atomic ioctl 一律返回 `EACCES`。各工具不带参数�
 | `masterprobe` | 查询当前 DRM master 持有者 | 直跑 |
 | `kwinprobe` | 借 kwin 已持有的 card fd（附加指定 pid）在真实上下文中测量 | `kwinprobe <pid>` |
 
-## ④ 安卓侧性能/频率工具（经 adb root 使用，不进 DRM 通路）
+## ④ 存储：把安卓的存储重新挂回容器
+
+容器 boot 时 bind 的 `/storage/emulated/0` 是安卓**当时那个** fuse 超级块。安卓每次重启框架
+（交还时的 `start`、MediaProvider 崩、用户解锁）都会 mount 出一个新的超级块，容器抱着的旧那份
+之后一律返回 `ENOTCONN`，表现为"拒绝访问"，与权限/授权无关（改权限不可能修好）。完整实测记录
+见主项目《工作总结.md》§3.12。
+
+| 工具 | 作用 | 用法 |
+|---|---|---|
+| `storage-rebind` | 在安卓侧（root、init mount ns）比对主机与容器同一挂点的 major:minor，不一致就用 `open_tree(OPEN_TREE_CLONE)`+`setns`+`move_mount` 把当下活的挂载重新接进容器。静态 musl 产物（安卓没有 glibc） | `storage-rebind [-c] [-s 源 -d 容器挂点] [容器pid]`；pid 缺省取 `/data/local/Droidspaces/Pids/*.pid` |
+| `scripts/storage-fix.sh` | 编排层：按需 push 工具与设备侧脚本，等安卓侧源真的可用后再动手，最后在容器 ns 里带 timeout 验收 | `bash scripts/storage-fix.sh [等待秒=60]`；判据 `STORAGE-OK` / `STORAGE-STALE` / `HOST-SOURCE-DEAD` |
+
+已接进 `desk-stop.sh`（4b1）与 `drm-stop.sh`（第 5 步）交还路径，后台运行，判据落在
+`logs/storage-fix.log`。**接管轮内不要指望 `/storage/emulated/0`**：那时框架是停的，压根没有活的
+FUSE 可接；轮里读写手机存储走 `/Android`（容器配置 `bind_mounts` 绑 `/data/media/0`）。
+
+两条铁律，改这块代码前先读：
+
+- 判断挂载死活**只能读 `/proc/<pid>/mountinfo`**。在容器 ns 里 `stat`/`ls` 那个挂载，遇到
+  system_server 被 SIGSTOP 的冻结态会永久挂住（连 `umount2` 都要带 `MNT_DETACH`）。
+- 不要在容器 ns 里 `mount --bind /proc/1/root/...`：路径解析走当前 ns，`/proc/1` 是容器自己的
+  init，结果会把**已经死掉的旧超级块**再绑一遍（实测踩过）。跨 ns 只能用 open_tree+move_mount。
+  另注：`open_tree=428`、`move_mount=429`（asm-generic，别记反）。
+
+## ⑤ 安卓侧性能/频率工具（经 adb root 使用，不进 DRM 通路）
 
 | 工具 | 作用 | 用法 |
 | --- | --- | --- |
