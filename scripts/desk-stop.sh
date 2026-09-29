@@ -253,17 +253,9 @@ rm -f $DIR/takeover.ok
 KRC=/home/xieyizhou/.config/kwinrc
 if [ -f "$KRC" ]; then
     kwriteconfig6 --file "$KRC" --group Compositing --key AllowTearing --delete
-    # 座位输入法双模式隔离（desk-takeover IM 段轮内强写 plasma-keyboard）：
-    # 交还按 anland 定案默认恢复 fcitx5（09-28：星火"ni"残留的治本路径=座位实例与
-    # 应用 XIM 同为一枚 fcitx5、单记账）。改 anland 默认时要连同 desk-takeover 的
-    # IM 段与 rollback 段两处字符串一起改。
-    if grep -q '^InputMethod\[' "$KRC" 2>/dev/null; then
-        sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' "$KRC"
-    else
-        printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop\n' >> "$KRC"
-    fi
+    # 座位 IM 无需恢复：09-29 起两模式统一 fcitx5，交还后 anland 自拉的会话继承同值。
     chown xieyizhou:xieyizhou "$KRC"
-    echo "TEARING-CONFIG CLEANED (kwinrc AllowTearing 已删; InputMethod 已恢复 fcitx5)"
+    echo "TEARING-CONFIG CLEANED (kwinrc AllowTearing 已删)"
 fi
 unset KRC
 
