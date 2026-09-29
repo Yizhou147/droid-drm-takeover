@@ -448,21 +448,22 @@ if [ "${AUDIO_BRIDGE:-1}" = 1 ]; then
 fi
 
 
-# ---- IM：终版定案 = 座位 fcitx5 + 应用侧剥 QT/GTK_IM_MODULE（09-29 深夜复盘）----
-# 复盘 09-29 08:55~09:15 手动实测态，"弹窗+全桌 Ctrl+Space 切拼音"其实**能兼得**,
-# 配方两条,缺一不可：
-#  1) **座位=fcitx5**：kwin 经 imv2 把按键交给 fcitx5（fcitx5 desktop 带
-#     X-KDE-Wayland-VirtualKeyboard=true,由 kwin 启动时自拉）→ 任意窗口 Ctrl+Space
-#     切拼音都进得了 fcitx5（全局）,托盘图标也随之注册。
-#  2) **应用剥 QT_IM_MODULE/GTK_IM_MODULE**：保住应用向 kwin 上报 text-input →
-#     **触摸弹 plasma-keyboard** 触发链完好。efbfbe5 当年误赋值（以为全局靠它），
-#     副作用正是赋值让应用旁路 kwin、弹窗断——09-29 用户实报,复盘定案。
-#  两模式座位统一 fcitx5,anland 由 startanland-kde.sh 入场归一（那边历史上也赋
-#  QT_IM_MODULE,但 anland 无弹窗需求,不动它）。XMODIFIERS=@im=fcitx5 保留：X11 应用
-#  的 preedit 通道,与座位同一枚 fcitx5,不产生第二本账；SDL/GLFW 剥。
-# 待本轮真手验证（用户自验）：①触摸弹 plasma-keyboard；②任意窗口 Ctrl+Space 切拼音+
-# 候选窗；③开机日志见 FCITX5-SEAT OK。①若不弹的已知退路=本段 InputMethod 改回
-# plasma-keyboard + FCITX5-SEAT 段剥 WAYLAND_DISPLAY（回到 51f4d4a）。
+# ---- IM：复刻 09-29 09:05~09:20 实测成功态（关键在**顺序**，不是最终配置）----
+# 用户实测“弹窗+Ctrl+Space 切拼音”那段能兼得,拼出配方：
+#  ① 起跑座位=**plasma-keyboard**：kwin 登记并自拉它 → 弹出机制全程可用（弹窗跟着
+#     “键盘 app 登记”走,与守护无关）；
+#  ② 桌面起来**之后**再补拉带 WAYLAND_DISPLAY 的 fcitx5（见文末 FCITX5-BYST 段）：
+#     imv2 先到先得,plasma-keyboard 已占座位 → fcitx5 只能当旁观者（不抢面板名额）,
+#     但它的 XIM 服务器/dbus 前端全功能 → X11 应用（zcode/星火/trae）的 Ctrl+Space
+#     经应用 XIM 转发给 fcitx5,实测可用（09:21 用户原话“x11 应用 Ctrl+space 已可用”）；
+#  ③ 应用侧仍剥 QT/GTK_IM_MODULE（保住 text-input 上报→弹窗）,XMODIFIERS=@im=fcitx5
+#     保留（X11 preedit/热键通道）。SDL/GLFW 剥。
+# ⚠ 已知边界：Wayland 原生应用（konsole）的键先给座位 plasma-keyboard（QtVK 布局）,
+#    不会转给 fcitx5——故“Wayland 应用 Ctrl+Space 切 fcitx5”这个配置做不到；上午若
+#    konsole 也能切,是因为那是我手拉、带了 QT_IM_MODULE=fcitx5 的测试窗。本轮先如实
+#    复刻该配方交用户测,再据结果决定是否上“面板+fcitx5 backend 桥”方案。
+# 失败态对照（防再踩）：开机就座位=fcitx5→面板名额被占、弹不出=12:56/14:16 轮；
+#   守护开机剥 WAYLAND_DISPLAY→X11 热键也死=10:0x 轮。
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
     || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
 chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
@@ -470,9 +471,9 @@ grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/nul
     && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
 KIM=/home/xieyizhou/.config/kwinrc
 if grep -q '^InputMethod\[' "$KIM" 2>/dev/null; then
-    sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop|' "$KIM"
+    sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop|' "$KIM"
 else
-    printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop\n' >> "$KIM"
+    printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop\n' >> "$KIM"
 fi
 chown xieyizhou:xieyizhou "$KIM" 2>/dev/null
 unset KIM
@@ -641,8 +642,7 @@ fi
 # kwin env 已加 KWIN_IM_SHOW_ALWAYS=1（官方开关，inputmethod.cpp shouldShowOnActive）：
 # 每次窗口激活（含 X11/XWayland 应用——它们没有 text-input 协议，之前 VKB 永不弹出）
 # kwin 走原生路径弹出 VKB；anland 的 kwin 不带此 env，行为不变。
-# 屏幕键盘面板由座位 IM 驱动（09-29 起座位=fcitx5，plasma-keyboard 经 fcitx5 的
-# virtualkeyboard UI 弹出；见上面 IM 段与下面 FCITX5-SEAT 段）。手动再弹：
+# 屏幕键盘面板=kwin 按 InputMethod 登记自拉的 plasma-keyboard（顺序配方见上面 IM 段;
 # scripts/vkb-show.sh（桌面启动器「显示虚拟键盘」，总线自动探测两模式通吃）。
 # ---- 托盘亮度/电池（09-24 三根因定修）----
 # 1) 容器 /sys 挂成 ro → backlighthelper 写亮度 EROFS；remount rw 解决
@@ -729,44 +729,32 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         else
             echo "PC2-FAIL $(date +%T): pc-keyd v2 未就绪（PC 页组合键本轮不可用，不阻塞）"
         fi
-        # ---- fcitx5 座位就绪确认 + 默认英文态（09-29 终版：座位=fcitx5）----
-        # 见上面 IM 段定案：本轮座位=fcitx5。kwin 启动时（:512,带 WAYLAND_DISPLAY=taketest）
-        # 按 X-KDE-Wayland-VirtualKeyboard=true 自拉 fcitx5,其 waylandim 抢座位=全桌键流经
-        # 它 → Ctrl+Space 全局。所以 fcitx5 **必须带 WAYLAND_DISPLAY**（绝不剥！剥了才退化成
-        # 只服务 X11、Wayland 应用 Ctrl+Space 无效的 51f4d4a 形态——那是被误当回退的中间态）。
-        # 本段职责：确认 fcitx5 已在总线（没自拉就兜底补拉一个带 WAYLAND_DISPLAY 的实例）
-        # + `fcitx5-remote -c` 置默认英文态（组词由用户 Ctrl+Space 主动开）。
-        # 教训（09-28→09-29 反复）：**绝不在 env 里把 VAR=赋值排在 -u 选项前**——env 一旦看到
-        # 第一个赋值就停止解析选项、把后续 -u 当命令执行 → daemon 全起不来 → 只有鼠标无桌面。
+        # ---- fcitx5 旁观守护（09-29 晚,复刻 08:56→09:20 你实测成功的**顺序**）----
+        # 成功态三要素,顺序是关键：
+        #   ① kwinrc InputMethod=plasma-keyboard 起跑 → kwin 登记并自拉 plasma-keyboard,
+        #      弹出机制全程可用（弹窗跟着"键盘 app 登记"走,和守护无关）；
+        #   ② 轮起来**之后**再补拉带 WAYLAND_DISPLAY 的 fcitx5：imv2 先到先得,它晚到一步
+        #      只能当旁观者（不抢面板名额）,但 XIM/dbus 前端全功能——轮内 zcode/星火等
+        #      X11 应用的 Ctrl+Space 经应用转发给 fcitx5,实测可用（09:21 你原话）；
+        #   ③ 本段负责那个"轮起来之后"的守护+`-c` 置默认英文。
+        # 对照失败态:开机就抢座（座位=fcitx5）→ 面板名额没了=12:56/14:16 轮;
+        # 守护剥 WAYLAND_DISPLAY 开机拉 → X11 热键也死=10:0x 轮。
+        pkill -x fcitx5 2>/dev/null; sleep 1
+        nohup runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest DISPLAY="$XD" HOME=/home/xieyizhou \
+            XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            fcitx5 -d > $LOGD/fcitx5-round.log 2>&1 &
         FC5=0
-        for i in $(seq 1 10); do
-            runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou \
-                XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        for i in $(seq 1 8); do
+            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote --check >/dev/null 2>&1 && { FC5=1; break; }
-            # 兜底：kwin 没能自拉（极少见）时手动补一个**带 WAYLAND_DISPLAY** 的实例（才能抢座位）
-            [ "$i" = 5 ] && nohup runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest \
-                DISPLAY="$XD" HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-                DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-                fcitx5 -d >> $LOGD/fcitx5-round.log 2>&1 &
             sleep 1
         done
         if [ "$FC5" = 1 ]; then
-            runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou \
-                XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
                 fcitx5-remote -c >/dev/null 2>&1
-            # ---- 面板补拉（09-29 定案,09:05~09:20 实测态的固化）----
-            # 座位=fcitx5 后 kwin 的"键盘 app"登记=fcitx5(无 UI)→ plasma-keyboard 没人拉起
-            # → 弹窗死(12:56 轮实锤)。但 kwin 的 virtualkeyboard 插件与座位 IM 是两条线
-            # (09:03 我杀掉 plasma-keyboard 后 kwin 3 秒自拉=实证):显式把它拉起来当面板,
-            # 弹出由 KWIN_IM_SHOW_ALWAYS/activeClientSupportsTextInput 触发,组词切换走
-            # fcitx5 座位——两头同时成立,就是 09:05~09:20 用户能边弹键盘边 Ctrl+Space 的形态。
-            pgrep -x plasma-keyboard >/dev/null || nohup runuser -u xieyizhou -- \
-                env WAYLAND_DISPLAY=taketest HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-                DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus QT_QPA_PLATFORM=wayland \
-                /usr/bin/plasma-keyboard > $LOGD/plasma-keyboard.log 2>&1 &
-            echo "FCITX5-SEAT OK 座位=fcitx5 默认英文态 display=$XD $(date +%T)"
+            echo "FCITX5-BYST OK 旁观守护就绪 默认英文 display=$XD $(date +%T)"
         else
-            echo "FCITX5-SEAT FAIL: fcitx5 未上总线（本轮 Ctrl+Space/中文不可用，不阻塞）—— 看 fcitx5-round.log"
+            echo "FCITX5-BYST FAIL: fcitx5 未上总线（本轮 X11 中文/Ctrl+Space 不可用，不阻塞）—— 看 fcitx5-round.log"
         fi
     fi
 ) >> $LOGD/desk-takeover.log 2>&1 &
