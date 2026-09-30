@@ -6,6 +6,18 @@ ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 DIR=$ROOT
 LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
 mkdir -p "$LOGD"
+# ---- 用户与路径参数（09-30 参数化，为分发而做；本机没有 conf 时等价于原硬编码）----
+# 有 /etc/drm-takeover.conf 就读它（由 drm-tui 安装器生成）。
+# 这里**不猜"当前用户"**：接管必须以桌面用户身份跑（runuser / HOME / polkit subject / XDG_RUNTIME_DIR
+# 全都按它来）。root 终端里 id -un == root，猜错的结果是"kwin 以 root 起 → DRM Xwayland 拒绝连接
+# + polkit 规则对不上 → 亮度/NM 全拒"，比直接报错难查得多。
+DRM_CONF_FILE=${DRM_CONF_FILE:-/etc/drm-takeover.conf}
+[ -r "$DRM_CONF_FILE" ] && . "$DRM_CONF_FILE"
+DRM_USER=${DRM_USER:-xieyizhou}
+DRM_UID=${DRM_UID:-1000}
+DRM_HOME=${DRM_HOME:-/home/xieyizhou}
+DRM_RT=/run/user/$DRM_UID
+
 
 # ---- 自脱钩（09-23 黑屏事故教训，同 desk-stop v2）：快捷方式从桌面 konsole 进来时，
 #      konsole 是将被本脚本杀掉的 kwin 的客户端；kwin 一死 pty 关闭，前台脚本陪葬，
@@ -149,8 +161,8 @@ rollback() {
     # pc-keyd 同理：rollback 不走 desk-stop，本轮起的实例要自己清（uinput 键盘会让安卓发键盘通知，09-27）。
     pkill -f "pc-keyd.py" 2>/dev/null
     # kwinrc 的 AllowTearing（2d 段写入）同样不能泄漏给 anland：rollback 必须自己删。
-    kwriteconfig6 --file /home/xieyizhou/.config/kwinrc --group Compositing --key AllowTearing --delete 2>/dev/null
-    chown xieyizhou:xieyizhou /home/xieyizhou/.config/kwinrc 2>/dev/null
+    kwriteconfig6 --file "$DRM_HOME/.config/kwinrc" --group Compositing --key AllowTearing --delete 2>/dev/null
+    chown "$DRM_USER:$DRM_USER" "$DRM_HOME/.config/kwinrc" 2>/dev/null
     # 轮内 fcitx5 实例清理：交还后 anland 会话会自拉自己的 fcitx5（座位同为 fcitx5，
     # 09-29 统一），这里只杀掉本轮起的那个，不动 kwinrc（两模式同值，无需恢复）。
     pkill -x fcitx5 2>/dev/null
@@ -317,7 +329,7 @@ nohup setsid bash $DIR/scripts/input-node-sync.sh > $LOGD/input-node-sync.log 2>
 chmod 666 "/dev/input/$TSNODE" 2>/dev/null
 # 自证探针（09-25 教训：整轮都是"权限不对但没人报错"）：以**桌面用户身份**试读触摸屏。
 # 读不到就等于触摸屏 + 一切鼠标全失效，必须当场喊出来，而不是等用户报"用不了"。
-if runuser -u xieyizhou -- test -r "/dev/input/$TSNODE" 2>/dev/null; then
+if runuser -u "$DRM_USER" -- test -r "/dev/input/$TSNODE" 2>/dev/null; then
     echo "INPUT-PERM OK $(date +%T)：uid 1000 可读 /dev/input/$TSNODE"
 else
     echo "INPUT-PERM FAIL $(date +%T)：uid 1000 读不了 /dev/input/$TSNODE ⇒ 触摸屏与所有鼠标都会失效"
@@ -328,7 +340,7 @@ fi
 # （llvmpipe），画面照样出，只是花屏/掉帧，最容易被骗成"GPU 驱动炸了"。当场以桌面用户身份验。
 GPU_OK=1
 for n in /dev/dri/renderD128 /dev/kgsl-3d0; do
-    if runuser -u xieyizhou -- test -r "$n" -a -w "$n" 2>/dev/null; then
+    if runuser -u "$DRM_USER" -- test -r "$n" -a -w "$n" 2>/dev/null; then
         echo "GPU-PERM OK $(date +%T)：uid 1000 可读写 $n"
     else
         echo "GPU-PERM FAIL $(date +%T)：uid 1000 读写不了 $n ⇒ kwin 会退软件渲染（花屏/无动效）"
@@ -501,18 +513,18 @@ fi
 #     kwin 依旧重拉 plasma-keyboard)。
 # 失败态对照（防再踩）：起跑就把 InputMethod=fcitx5 → 面板注册同被占、弹不出
 #   =12:56/14:16 轮；守护剥 WAYLAND_DISPLAY 且不做④热换 → 热键半死=10:0x 轮。
-sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null \
-    || printf '[General]\nenabledLocales=en_US,zh_CN\n' > /home/xieyizhou/.config/plasmakeyboardrc
-chown xieyizhou:xieyizhou /home/xieyizhou/.config/plasmakeyboardrc 2>/dev/null
-grep -q "^VirtualKeyboardEnabled=true" /home/xieyizhou/.config/kwinrc 2>/dev/null \
-    && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' /home/xieyizhou/.config/kwinrc
-KIM=/home/xieyizhou/.config/kwinrc
+sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' "$DRM_HOME/.config/plasmakeyboardrc" 2>/dev/null \
+    || printf '[General]\nenabledLocales=en_US,zh_CN\n' > "$DRM_HOME/.config/plasmakeyboardrc"
+chown "$DRM_USER:$DRM_USER" "$DRM_HOME/.config/plasmakeyboardrc" 2>/dev/null
+grep -q "^VirtualKeyboardEnabled=true" "$DRM_HOME/.config/kwinrc" 2>/dev/null \
+    && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' "$DRM_HOME/.config/kwinrc"
+KIM="$DRM_HOME/.config/kwinrc"
 if grep -q '^InputMethod\[' "$KIM" 2>/dev/null; then
     sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop|' "$KIM"
 else
     printf '[Wayland]\nInputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop\n' >> "$KIM"
 fi
-chown xieyizhou:xieyizhou "$KIM" 2>/dev/null
+chown "$DRM_USER:$DRM_USER" "$KIM" 2>/dev/null
 unset KIM
 
 # ---- 2d) VKMARK-ASYNC 实验（09-27，默认开；VKMARK_ASYNC=0 关）----
@@ -521,11 +533,11 @@ unset KIM
 # immediate 呈现（vkmark -p immediate），fps 脱离刷新率、由 GPU 吞吐决定。
 # kwinrc 是全局文件（双桌面共享 HOME）：轮内写入、desk-stop 删除；中途异常泄漏到
 # anland 的后果=仅当应用主动请求 immediate 且满足直扫条件才可能撕裂，良性可接受。
-# kwriteconfig6 以 root 改写会换属主，写完必须 chown 回 xieyizhou，否则 kwin/anland 都写不了自己的配置。
+# kwriteconfig6 以 root 改写会换属主，写完必须 chown 回桌面用户，否则 kwin/anland 都写不了自己的配置。
 if [ "${VKMARK_ASYNC:-1}" = 1 ]; then
-    KRC=/home/xieyizhou/.config/kwinrc
+    KRC="$DRM_HOME/.config/kwinrc"
     kwriteconfig6 --file "$KRC" --group Compositing --key AllowTearing true
-    chown xieyizhou:xieyizhou "$KRC"
+    chown "$DRM_USER:$DRM_USER" "$KRC"
     kreadconfig6 --file "$KRC" --group Compositing --key AllowTearing | grep -q true \
         && echo "TEARING-CONFIG OK (kwinrc Compositing/AllowTearing=true，desk-stop 会删)" \
         || echo "TEARING-CONFIG FAIL（写不进 kwinrc，本轮 vkmark -p immediate 会继续贴墙）"
@@ -567,26 +579,26 @@ echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份�
 kill_linux_stack
 rm -f $DIR/takeover.ok
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
-    KWINWRAP_UID=1000 KWINWRAP_GID=1000 KWINWRAP_BRIGHTNESS=2048 \
-    KWINWRAP_USER=xieyizhou \
-    KWINWRAP_GROUPS="$(id -G xieyizhou 2>/dev/null | tr ' ' ',')" \
+    KWINWRAP_UID=$DRM_UID KWINWRAP_GID=$DRM_UID KWINWRAP_BRIGHTNESS=2048 \
+    KWINWRAP_USER=$DRM_USER \
+    KWINWRAP_GROUPS="$(id -G "$DRM_USER" 2>/dev/null | tr ' ' ',')" \
     $DIR/bin/kwinwrap --out $LOGD/kwinatomic.log -- \
-    env -u DISPLAY -u WAYLAND_DISPLAY ${DESK_ENV[@]+"${DESK_ENV[@]}"} HOME=/home/xieyizhou \
+    env -u DISPLAY -u WAYLAND_DISPLAY ${DESK_ENV[@]+"${DESK_ENV[@]}"} HOME="$DRM_HOME" \
         KWIN_DRM_DEVICES=/dev/dri/card0 \
         KWIN_IM_SHOW_ALWAYS=1 \
-        PCKEYD_INPUT_SOCKET=/run/user/1000/pckeyd-input.sock \
+        PCKEYD_INPUT_SOCKET=$DRM_RT/pckeyd-input.sock \
         FD_MESA_DEBUG=noubwc \
         KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
         XDG_SESSION_ID=bogus \
-        XDG_RUNTIME_DIR=/run/user/1000 \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        XDG_RUNTIME_DIR=$DRM_RT \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         kwin_wayland --socket=taketest --xwayland \
     > $LOGD/kwin.log 2>&1 &
 KPID=$!
 sleep 6
 kill -0 $KPID 2>/dev/null || rollback "kwin died (see kwin.log)"
-runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
-    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
+    HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
     QT_QPA_PLATFORM=wayland \
     timeout 5 wayland-info > $LOGD/wayland-info.log 2>&1
 [ $? = 0 ] || rollback "wayland-info self-check failed"
@@ -616,18 +628,18 @@ $DIR/bin/crtcstate > $LOGD/crtcstate-desk2.log 2>&1
 # 09-23 黑屏根因：plasmashell 硬依赖 kactivitymanagerd，总线自动激活今天直接超时
 # （"Aborting shell load: The activity manager daemon is not running" → 无壳黑屏）。
 # 不再赌 dbus 激活：显式拉起并等名字出现。
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
+nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} QT_QPA_PLATFORM=wayland WAYLAND_DISPLAY=taketest \
-    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
     /usr/lib/aarch64-linux-gnu/libexec/kactivitymanagerd > $LOGD/kactivitymanagerd.log 2>&1 &
 for i in $(seq 1 10); do
-    runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
         --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager && break
     sleep 1
 done
-runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
@@ -636,11 +648,11 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
 # 做完判断就不会自己回读 ⇒ 托盘无图标 + 设置显示"已禁用"，而鼠标其实照连。
 # 所以 5c 里蓝牙上电后要再拉一次同一个壳（`--replace` 自带替换旧实例，不需要 kill）。
 start_plasmashell() {
-    nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
+    nohup runuser -u "$DRM_USER" -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
         -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
         WAYLAND_DISPLAY=taketest \
-        HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         QT_QPA_PLATFORM=wayland \
         /usr/bin/plasmashell --replace >> $LOGD/plasma.log 2>&1 &
 }
@@ -667,11 +679,11 @@ fi
 KDED=$(ls /usr/bin/kded6 /usr/bin/kded5 /usr/libexec/kded5 /usr/lib/*/kded5 2>/dev/null | head -1)
 KDNAME=$(basename "$KDED" 2>/dev/null)   # KF6 那份叫 kded，判活必须跟着实际名字走
 if [ -n "$KDED" ]; then
-    nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+    nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
         -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
         ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
-        HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         QT_QPA_PLATFORM=wayland "$KDED" > $LOGD/kded.log 2>&1 &
     KDPID=""
     for i in 1 2 3 4 5; do
@@ -696,8 +708,8 @@ fi
 # 按键到达后无人处理（物理键和 xdotool 注入一起哑）。显式 loadModule 修复，实测音量随按键变化。
 if [ -n "$KDPID" ]; then
     sleep 2
-    AK=$(XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-        runuser -u xieyizhou -- busctl --user call org.kde.kded6 /kded org.kde.kded6 \
+    AK=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        runuser -u "$DRM_USER" -- busctl --user call org.kde.kded6 /kded org.kde.kded6 \
         loadModule s audioshortcutsservice 2>&1)
     case "$AK" in
         *"b true"*) echo "AUDIOKEY-OK audioshortcutsservice 已加载 $(date +%T)";;
@@ -718,7 +730,7 @@ mount -o remount,rw /sys 2>/dev/null || echo "WARN: /sys remount failed, brightn
 cat > /etc/polkit-1/rules.d/61-powerdevil-backlight.rules <<'EOF'
 polkit.addRule(function(action, subject) {
     if (action.id.indexOf("org.kde.powerdevil.backlighthelper.") === 0 &&
-        subject.user === "xieyizhou") {
+        subject.user === "__DRM_USER__") {
         return polkit.Result.YES;
     }
 });
@@ -728,18 +740,18 @@ EOF
 systemctl restart polkit 2>/dev/null
 for i in $(seq 1 10); do systemctl is-active polkit >/dev/null 2>&1 && break; sleep 0.5; done
 PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
-[ -n "$PDEV" ] && nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE \
+[ -n "$PDEV" ] && nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
-    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
     QT_QPA_PLATFORM=wayland \
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
-nohup runuser -u xieyizhou -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
+nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest XDG_CURRENT_DESKTOP=KDE XDG_SESSION_TYPE=wayland \
-    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
     QT_QPA_PLATFORM=wayland \
     /usr/libexec/xdg-desktop-portal > $LOGD/portal.log 2>&1 &
 touch $DIR/takeover.ok
@@ -755,7 +767,7 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
 # 探针不成立时打 NO-PROBE（glxinfo 没输出/连不上 :0），绝不说成"没有 GPU"。
 (
     sleep 12
-    R=$(runuser -u xieyizhou -- env DISPLAY=:0 timeout 12 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1)
+    R=$(runuser -u "$DRM_USER" -- env DISPLAY=:0 timeout 12 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1)
     case "$R" in
         *llvmpipe*) echo "GPU-WHICH $(date +%T): $R ⇒ **软渲染**，Xwayland 打不开 render 节点（查补充组/GPU-NODE）" ;;
         "")         echo "GPU-WHICH $(date +%T): NO-PROBE（glxinfo 无输出/连不上 :0）⇒ 这条没测到，别当作没有 GPU" ;;
@@ -787,8 +799,8 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         # 显示号写入 /run/pc-keyd-display 供其 _xdisplay() 读取。
         echo "$XD" > /run/pc-keyd-display
         pkill -f "pc-keyd.py" 2>/dev/null
-        nohup runuser -u xieyizhou -- env DISPLAY="$XD" HOME=/home/xieyizhou \
-            XDG_RUNTIME_DIR=/run/user/1000             PCKEYD_INPUT_SOCKET=/run/user/1000/pckeyd-input.sock             DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus             python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
+        nohup runuser -u "$DRM_USER" -- env DISPLAY="$XD" HOME="$DRM_HOME" \
+            XDG_RUNTIME_DIR=$DRM_RT             PCKEYD_INPUT_SOCKET=$DRM_RT/pckeyd-input.sock             DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus             python3 /usr/local/bin/pc-keyd.py > /tmp/pc-keyd.log 2>&1 &
         sleep 1
         if curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:48222/ping | grep -q 204; then
             echo "PC2-UP $(date +%T) (xtest backend, display=$XD)"
@@ -806,17 +818,17 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         # 对照失败态:开机就抢座（座位=fcitx5）→ 面板名额没了=12:56/14:16 轮;
         # 守护剥 WAYLAND_DISPLAY 开机拉 → X11 热键也死=10:0x 轮。
         pkill -x fcitx5 2>/dev/null; sleep 1
-        nohup runuser -u xieyizhou -- env WAYLAND_DISPLAY=taketest DISPLAY="$XD" HOME=/home/xieyizhou \
-            XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        nohup runuser -u "$DRM_USER" -- env WAYLAND_DISPLAY=taketest DISPLAY="$XD" HOME="$DRM_HOME" \
+            XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
             fcitx5 -d > $LOGD/fcitx5-round.log 2>&1 &
         FC5=0
         for i in $(seq 1 8); do
-            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
                 fcitx5-remote --check >/dev/null 2>&1 && { FC5=1; break; }
             sleep 1
         done
         if [ "$FC5" = 1 ]; then
-            runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
                 fcitx5-remote -c >/dev/null 2>&1
             # ---- 热换座位实验已撤回(09-29 15:2x 证伪)----
             # 曾按"09:05 手测态"推断 reconfigure 能把 IM 座位换给 fcitx5 而面板注册不动;
@@ -917,14 +929,14 @@ polkit.addRule(function(action, subject) {
     // 09-25 缺陷③：轮内"WiFi 总开关"对普通用户直接拒绝——实测关掉后 soft-block +
     // supplicant WoWLAN 半连接态，再开大概率失败还把 plasma UI 卡住（NM 重试风暴）。
     // 单条网络的连接/断开不受影响；root（本脚本的 nmcli radio wifi on 引导）不受影响。
-    if (subject.user === "xieyizhou" &&
+    if (subject.user === "__DRM_USER__" &&
         (action.id === "org.freedesktop.NetworkManager.enable-disable-wifi" ||
          action.id === "org.freedesktop.NetworkManager.enable-disable-network" ||
          action.id === "org.freedesktop.NetworkManager.sleep-wifi"))
         return polkit.Result.NO;
 });
 polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("org.freedesktop.NetworkManager") === 0 && subject.user === "xieyizhou")
+    if (action.id.indexOf("org.freedesktop.NetworkManager") === 0 && subject.user === "__DRM_USER__")
         return polkit.Result.YES;
 });
 EOF
@@ -1298,12 +1310,15 @@ if [ "${BT_BRIDGE:-1}" = 1 ]; then
   <!-- DRM 接管轮：蓝牙总开关对桌面用户拒动（Powered 只能由 root/看门狗决定）。
        属性写只发生在 /org/bluez/hci0（适配器）上；设备对象(/org/bluez/hci0/dev_*)不拦，
        所以扫描、配对、连鼠标这些照常。 -->
-  <policy user="xieyizhou">
+  <policy user="__DRM_USER__">
     <deny send_destination="org.bluez" send_path="/org/bluez/hci0"
           send_interface="org.freedesktop.DBus.Properties" send_member="Set"/>
   </policy>
 </busconfig>
 EOF
+# 占位符替换：策略文件内容必须是确定的用户名（heredoc 用引号包住，避免任何 shell 展开跑进策略里）
+sed -i "s/__DRM_USER__/$DRM_USER/g" /etc/polkit-1/rules.d/61-powerdevil-backlight.rules \
+    /etc/polkit-1/rules.d/60-nm-drm.rules /etc/dbus-1/system.d/61-bluez-drm-lock.conf 2>/dev/null
     # 重启 system bus 会连带打断 NM/kded，所以只 ReloadConfig。
     dbus-send --system --dest=org.freedesktop.DBus /org/freedesktop/DBus \
         org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 \
@@ -1313,7 +1328,7 @@ EOF
     # 没有 Controller 时这条路径走不到（回 UnknownObject，那是"没测到"不是"没锁"），单独 SKIP。
     if bluetoothctl list 2>/dev/null | grep -q "^Controller"; then
         CURALIAS=$(bluetoothctl show 2>/dev/null | awk '/^\tAlias:/{print $2}')
-        LOCKCHK=$(runuser -u xieyizhou -- dbus-send --system --dest=org.bluez --print-reply \
+        LOCKCHK=$(runuser -u "$DRM_USER" -- dbus-send --system --dest=org.bluez --print-reply \
             /org/bluez/hci0 org.freedesktop.DBus.Properties.Set \
             string:org.bluez.Adapter1 string:Alias variant:string:"${CURALIAS:-Piano BT}" 2>&1)
         if echo "$LOCKCHK" | grep -q "AccessDenied"; then
@@ -1356,7 +1371,7 @@ if [ "${AUDIO_BRIDGE:-0}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
     echo "AUDIO-FEEDER SKIP $(date +%T)：没有 $FEEDER"
   else
     pgrep -f "aa-feeder.sh" >/dev/null 2>&1 || \
-      runuser -u xieyizhou -- env HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+      runuser -u "$DRM_USER" -- env HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
         nohup sh "$FEEDER" 127.0.0.1:44777 >>"$LOGD/hal-feeder.log" 2>&1 &
     sleep 2
     if pgrep -f "aa-feeder.sh" >/dev/null 2>&1; then

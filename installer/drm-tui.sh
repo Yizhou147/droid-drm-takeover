@@ -49,6 +49,30 @@ readonly ICON_BACK="droid-back-android.png"
 readonly TAKEOVER_SCRIPT="desk-takeover.sh"
 readonly STOP_SCRIPT="scripts/desk-stop.sh"
 
+# 阶段表按"哪条链"分开：把交还当接管去匹配，会得到一张永远不动的阶段表——
+# 用户看到的就是"按了没反应"，比不显示更糟。token 全部取自脚本里真实存在的判据行。
+STAGE_ROWS_TAKEOVER=(
+    "预检与读取当前 WiFi|WIFI-GEN|NO-ADB-DEVICE|15"
+    "重建 DRM 节点与 udev 合成记录|GPU-NODE|TOUCH-RECORD FAIL|10"
+    "输入热插拔（裸 udevd）|UDEV-HOTPLUG OK|UDEV-HOTPLUG OFF|6"
+    "触摸/GPU 权限自证|GPU-PERM OK|INPUT-PERM FAIL|5"
+    "放倒安卓显示栈|ANDROID-STOP|ROLLBACK|45"
+    "kwin 接管显示（画面应已上屏）|KWIN-UP|kwin died|15"
+    "起 Plasma 桌面组件|DESKTOP-UP|PLASMA-FAIL|30"
+    "XWayland 就绪|XWAYLAND-OK|XWAYLAND-ABSENT|12"
+    "组合键守护 pc-keyd|PC2-UP|PC2-FAIL|6"
+    "容器接管 WiFi|NET-TAKEOVER|NET-FAILED|60"
+)
+STAGE_ROWS_STOP=(
+    "解除悬停保护|WATCHDOG|WATCHDOG_PID|5"
+    "收掉容器侧 supplicant|WPA-GRACEFUL|WPA-TERM|12"
+    "恢复安卓显示栈|SURFACEFLINGER|ROLLBACK|90"
+    "交还蓝牙 HAL|BT-HANDOVER|BT-LEAK-STILL|15"
+    "还原 kwinrc 撕裂许可|TEARING-CONFIG|TEARING-CONFIG FAIL|4"
+    "复活 anland 会话|anland session relaunched|ANLAND-MISS|25"
+    "接回安卓存储|STORAGE-FIX|STORAGE-STALE|12"
+)
+
 # ---------------------------------------------------------------- 基础设施 ----
 
 detect_json_parser() {
@@ -84,6 +108,11 @@ load_state() {
     drm_conf_defaults
     drm_conf_load || info "$(msg "还没有配置文件（$DRM_CONF_FILE），先用当前默认值" 'No config file yet; using defaults for now')"
     DRM_REPO_DIR="${DRM_CONF[REPO_DIR]}"
+    # conf 的 UI_LANG 可以是 auto/zh/en：非 auto 时当作强制覆盖，再跑一次 detect_language
+    if [[ "${DRM_CONF[UI_LANG]:-auto}" != "auto" ]]; then
+        DRM_FORCE_LANG="${DRM_CONF[UI_LANG]}"
+        detect_language
+    fi
     # 先取安卓侧身份（机型/通道/surfaceflinger），再判状态：detect_state 的"安卓是否停着"
     # 全靠 DRM_SF，不调这一步就会既显示"设备未知"又误报"看不到 adb 设备"（09-30 冒烟测试实锤）。
     # 导出成普通变量：接管/交还那段是按 $LOG_DIR、$REPO_DIR 这些名字写的，
@@ -91,6 +120,63 @@ load_state() {
     drm_conf_eval
     detect_android_identity
     detect_state >/dev/null
+}
+
+# ---- 打开时的后台自检（dstui 的姿势：界面先画，结果到了再刷）----
+# 菜单**只读结果文件**，绝不在这上面等网络：查更新走 GitHub API，未认证限速 60 次/小时，
+# 慢或者失败都不能让主菜单转不出来。
+drm_check_path() { printf '%s/.drm-tui-check' "${DRM_CONF[LOG_DIR]}"; }
+
+start_background_checks() {
+    local out; out="$(drm_check_path)"
+    mkdir -p "${DRM_CONF[LOG_DIR]}" 2>/dev/null || return 0
+    rm -f -- "$out"
+    (
+        {
+            printf '# 生成于 %s\n' "$(date '+%F %T')"
+            local fails; fails=$(run_precheck 2>/dev/null | tail -1)
+            printf 'precheck_fails=%s\n' "${fails:-1}"
+            if detect_json_parser; then
+                local j; j="$(mktemp -t drm-chk.XXXXXX.json)"
+                if github_api "/repos/$REPO_SLUG/releases/latest" "$j"; then
+                    printf 'latest_tag=%s\n' "$(json_get "$j" .tag_name)"
+                    printf 'latest_draft=%s\n' "$(json_get "$j" .draft)"
+                else
+                    printf 'latest_tag=\n'
+                fi
+                rm -f -- "$j"
+            fi
+        } >"$out.tmp" 2>/dev/null
+        mv -f -- "$out.tmp" "$out" 2>/dev/null
+    ) &
+    disown 2>/dev/null || true
+}
+
+# 头部那一行：新鲜（<10 分钟）就报数，没结果就一个字"检查中"，超时就提示重跑
+render_check_line() {
+    local f; f="$(drm_check_path)"
+    [[ -r "$f" ]] || { info "$(msg '后台自检进行中…' 'background checks running…')"; return 0; }
+    local newest=$(( $(date +%s) - 600 ))
+    if [[ "$f" -ot "$newest" ]]; then
+        info "$(msg '自检结果已过期（>10 分钟），可用"检查安装 / 修复"重跑' 'Checks are stale (>10 min); run Check installation / repair')"
+        return 0
+    fi
+    local fails="" latest=""
+    fails=$(sed -n 's/^precheck_fails=//p' "$f" | head -1)
+    latest=$(sed -n 's/^latest_tag=//p' "$f" | head -1)
+    if [[ "${fails:-1}" == "0" ]]; then
+        ok "$(msg '预检通过' 'Precheck passed')"
+    else
+        warn "$(msg "预检有 ${fails:-?} 项未通过（详见「检查安装 / 修复」）" 'Precheck has '"${fails:-?}"' unmet item(s); see Check installation / repair')"
+    fi
+    if [[ -n "$latest" ]]; then
+        local installed="${DRM_CONF[INSTALLED_VERSION]:-未记录}"
+        if [[ "$installed" == "$latest" ]]; then
+            say "$(msg "  主仓已是最新（$latest）" '  Main repo is up to date ('"$latest"')')"
+        else
+            say "$(msg "  主仓有新版：$latest（本地 $installed）" '  New main-repo release: '"$latest"' (local '"$installed"')')"
+        fi
+    fi
 }
 
 # ---------------------------------------------------------------- 安装流程 ----
@@ -257,17 +343,45 @@ install_keyboard_if_chosen() {
 }
 
 install_patched_kwin() {
-    local script="${DRM_CONF[REPO_DIR]}/scripts/install-anland-kde.sh"
-    if [[ ! -f "$script" ]]; then
-        warn "$(msg '缺 install-anland-kde.sh：跳过定制 kwin。X11 应用将不会弹出虚拟键盘（功能降级，不影响接管本身）。' \
-               'install-anland-kde.sh missing; skipping patched kwin. X11 apps will not pop the VKB (degraded, takeover itself still works).')"
+    # 装法：install-anland-kde.sh 本身就是 anland-kde-packages 那个滚动 release 的资产，
+    # 取回来直接跑它 —— 它已经处理好多发行版、三源回退、apt holds、以及 --uninstall 回退，
+    # 不要在这里重新发明一遍（尤其别试图用 dpkg 判断补丁在不在，见 §12.3 的 md5sums 污染）。
+    detect_json_parser || return 1
+    local out asset_id base
+    out="$(mktemp -t drm-kwin.XXXXXX.json)"
+    github_api "/repos/$KWIN_REPO_SLUG/releases/tags/$KWIN_ROLLING_TAG" "$out" || {
+        rm -f -- "$out"
+        warn "$(msg '取不到 anland-kde-packages 的 release 信息（仓库或 tag 变了？）' 'Cannot read the rolling kwin release')"; return 1; }
+    # draft 的 release 不会有公开 URL，这里直接要求已发布
+    local draft
+    draft=$(json_get "$out" ".draft")
+    if [[ "$draft" == "true" ]]; then
+        rm -f -- "$out"
+        warn "$(msg 'anland-kde-packages 仍是 draft：镜像站拿不到，请先公开发布' 'Rolling kwin release is still a draft; publish it before mirroring')"; return 1
+    fi
+    asset_id=$(json_get "$out" '.assets[].name')
+    rm -f -- "$out"
+
+    local tmp; tmp="$(mktemp -t drm-kwininst.XXXXXX.sh)"
+    local srcidx="${DRM_CONF[DOWNLOAD_SOURCE]}"
+    [[ "$srcidx" =~ ^[123]$ ]] || srcidx=""
+    base="$(source_base "${srcidx:-2}" "$KWIN_REPO_SLUG")"
+    info "$(msg "下载 install-anland-kde.sh（源 ${SRC_LABELS[${srcidx:-2}-1]}）" 'Downloading install-anland-kde.sh')"
+    if ! dl_curl 120 "$tmp" "$base/$KWIN_ROLLING_TAG/install-anland-kde.sh"; then
+        rm -f -- "$tmp"
+        warn "$(msg '取不到 install-anland-kde.sh，跳过定制 kwin（X11 应用将不弹虚拟键盘，接管本身不受影响）'                'Cannot fetch the kwin installer; skipping patched kwin (VKB will not pop for X11 apps)')"
         return 1
     fi
-    local src="3"
-    [[ "${DRM_CONF[DOWNLOAD_SOURCE]}" =~ ^[123]$ ]] && src="${DRM_CONF[DOWNLOAD_SOURCE]}"
-    step 1 1 "$(msg '换装打过补丁的 kwin（含 anland 后端）' 'Installing patched kwin (carries the anland backend)')"
-    bash "$script" "--$src" || { warn "$(msg '定制 kwin 安装失败，继续其余安装' 'Patched kwin failed; continuing')"; return 1; }
-    ok "$(msg '定制 kwin 已安装' 'Patched kwin installed')"
+    # 这个脚本自带 --uninstall（回发行版 kwin），把入口透出给用户
+    local chosen="${srcidx:-3}"
+    step 1 1 "$(msg '换装打过补丁的 kwin（含 anland 后端与 pc-keyd 通道 C）' 'Installing patched kwin')"
+    if bash "$tmp" "--$chosen"; then
+        ok "$(msg '定制 kwin 已安装' 'Patched kwin installed')"
+    else
+        warn "$(msg '定制 kwin 安装失败：X11 应用弹键盘这项功能没有，接管与 anland 都不受影响'                'Patched kwin failed: X11 VKB popup unavailable; takeover and anland unaffected')"
+    fi
+    rm -f -- "$tmp"
+    check_kwin_patch
 }
 
 # ---- 桌面快捷方式 ----
@@ -332,19 +446,9 @@ install_tui_entry() {
 # ---------------------------------------------------------------- 运行期 ----
 
 # 轮内显示：脚本自己 setsid 脱钩并把日志落盘，我们 tail 它并翻成人话。
-# 阶段表只列**脚本里真实存在的判据 token**，不编造；预计秒数用来提示"这一步大概还要等多久"。
-readonly -a DRM_STAGES=(
-    "预检与读取当前 WiFi|WIFI-GEN|NO-ADB-DEVICE|15"
-    "重建 DRM 节点与 udev 合成记录|GPU-NODE|TOUCH-RECORD FAIL|10"
-    "输入热插拔（裸 udevd）|UDEV-HOTPLUG OK|UDEV-HOTPLUG OFF|6"
-    "触摸/GPU 权限自证|GPU-PERM OK|INPUT-PERM FAIL|5"
-    "放倒安卓显示栈|ANDROID-STOP|ROLLBACK|45"
-    "kwin 接管显示（画面应已上屏）|KWIN-UP|kwin died|15"
-    "起 Plasma 桌面组件|DESKTOP-UP|PLASMA-FAIL|30"
-    "XWayland 就绪|XWAYLAND-OK|XWAYLAND-ABSENT|12"
-    "组合键守护 pc-keyd|PC2-UP|PC2-FAIL|6"
-    "容器接管 WiFi|NET-TAKEOVER|NET-FAILED|60"
-)
+# 轮内显示：脚本自己 setsid 脱钩并把日志落盘，我们 tail 它并翻成人话。
+# 阶段表只列**脚本里真实存在的判据 token**（不编造）；预计秒数用来提示"这一步大概还要等多久"。
+STAGE_ROWS=()
 
 # 关键纪律：阶段完成只能由"它自己那行判据"证明。历史上用 pgrep kwinwrap 当
 # "plasmashell 起来了"的判据 = 永远真，害黑屏白猜三轮（工作总结 §7/5.27）。
@@ -352,7 +456,7 @@ stream_round_log() {
     local logfile="$1" child_pid="$2"
     local -A stage_done=()
     local entry name done_pat fail_pat eta idx=0
-    for entry in "${DRM_STAGES[@]}"; do
+    for entry in "${STAGE_ROWS[@]}"; do
         IFS='|' read -r name done_pat fail_pat eta <<<"$entry"
         stage_names+=("$name")
         printf '  %b…%b [%2ds] %s\n' "$COLOR_DIM" "$COLOR_RESET" "$eta" "$name"
@@ -364,8 +468,8 @@ stream_round_log() {
         if [[ -f "$logfile" ]]; then
             while IFS= read -r cur_line; do
                 shown=1
-                for idx in "${!DRM_STAGES[@]}"; do
-                    IFS='|' read -r name done_pat fail_pat eta <<<"${DRM_STAGES[idx]}"
+                for idx in "${!STAGE_ROWS[@]}"; do
+                    IFS='|' read -r name done_pat fail_pat eta <<<"${STAGE_ROWS[idx]}"
                     [[ "${stage_done[$idx]:-}" == "1" ]] && continue
                     if [[ "$cur_line" =~ $done_pat ]]; then
                         stage_done[$idx]=1
@@ -393,12 +497,17 @@ run_takeover() {
     head2 "$action"
     msg "  即将运行：$script" "  About to run: $script"
     msg "  · 中途安卓桌面整体下线十几~几十秒、可能短暂黑屏，这是放倒显示栈的正常过程。" \
-        "  · Android's UI fully stops for tens of seconds and the screen may go black briefly. That is expected."
+        "  · The Android UI stops completely for tens of seconds; a briefly black screen is expected."
     msg "  · 任一关键步失败，脚本会自己把安卓恢复回去；实在不放心可以先跑一次交还。" \
         "  · If a key step fails, the script restores Android by itself."
     say ""
     confirm "$(msg '确认开始？' 'Proceed?')" || { say "$(msg '已取消。' 'Cancelled.')"; return 0; }
 
+    if [[ "$script" == "$STOP_SCRIPT" ]]; then
+        STAGE_ROWS=("${STAGE_ROWS_STOP[@]}")
+    else
+        STAGE_ROWS=("${STAGE_ROWS_TAKEOVER[@]}")
+    fi
     mkdir -p "$LOG_DIR" 2>/dev/null || true
     : >"$logfile" 2>/dev/null || warn "$(msg '日志目录不可写（接管仍会跑，只是这里看不到进度）' 'Log dir not writable; progress will not show here')"
 
@@ -408,6 +517,9 @@ run_takeover() {
     drm_conf_bool AUDIO_BRIDGE  && envargs+=(AUDIO_BRIDGE=1)
     drm_conf_bool GPUFLOOR      && envargs+=(GPUFLOOR=1)
     drm_conf_bool PERFMAX       && envargs+=(PERFMAX=1)
+    # 必须把 LOG_DIR 显式传下去：脚本默认写"仓库同级 logs"，而用户在设置页改过目录的话，
+    # 不传就会各写各的，这边进度永远空白（"按了没反应"就是这么来的）。
+    envargs+=(LOG_DIR="${DRM_CONF[LOG_DIR]}")
 
     ( cd "$repo" && env "${envargs[@]}" bash "$repo/$script" ) &
     local child=$!
@@ -415,6 +527,10 @@ run_takeover() {
     stream_round_log "$logfile" "$child"
     wait "$child"
     local rc=$?
+    # 跑完一定要重新识别状态：主按钮是"进入接管/回到安卓"取反的，
+    # 只在启动时取一次的话，进完一轮回来按钮还写着"进入 DRM 接管"（点了就是二次接管=09-24 事故形态）。
+    detect_android_identity
+    detect_state >/dev/null
     say ""
     if (( rc == 0 )); then ok "$(msg '脚本正常结束' 'Script finished')"
     else warn "$(msg "脚本退出码 $rc——详情看 $logfile" 'Exit code '"$rc"'; see '"$logfile"'')"
@@ -607,12 +723,16 @@ uninstall() {
 
 # ---- 主菜单：按钮随状态取反（用户第 2 条里"最重要的功能"） ----
 main_menu() {
+    # 每帧重新识别：接管可能在桌面快捷方式那边已经跑起来了，TUI 不能拿启动那一刻的旧状态画按钮。
+    detect_android_identity
+    detect_state >/dev/null
     clear 2>/dev/null || true
     printf '%bdrm-tui v%s%b — Xiaomi Pad 8 Pro DRM 显示接管\n' "$COLOR_BOLD$COLOR_CYAN" "$VERSION" "$COLOR_RESET"
     printf '  %b设备%b %s (%s)   %b目标%b %s/%s\n' \
         "$COLOR_DIM" "$COLOR_RESET" "${DRM_MODEL:-未知}" "${DRM_PRODUCT:-?}" \
         "$COLOR_DIM" "$COLOR_RESET" "$(detect_distro)" "$(detect_desktop)"
     printf '  %b状态%b %s\n' "$COLOR_DIM" "$COLOR_RESET" "$(state_summary)"
+    render_check_line
     sanity_check_state || true
     say ""
 

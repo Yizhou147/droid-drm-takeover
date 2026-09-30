@@ -1,0 +1,91 @@
+# release.yml — 产出 drm-tui 安装要用的两样东西：
+#   1) drm-takeover-aarch64.tar.gz：脚本 + CI 交叉编译好的 bin/。
+#      用户端**不编译**：pad 上没有匹配的 libdrm-dev 工具链，而且为了跑一次桌面去装编译依赖不合理。
+#   2) 回填 installer/lib/components.lock.json 的 takeover.tag / takeover.sha256 ——
+#      必须用**刚算出来的**摘要回填，不能手填：镜像站会截断/损坏文件（工作总结 §21 与 §41.14 两次实锤）。
+#
+# 规矩（用户 09-23 定死）：**CI 永不自动公开**，所以 draft: true。
+# 而镜像站只认公开 URL ⇒ 流程是 CI 出 draft → 真机验一次 → 人工把 release 改成公开。
+# 谁把 draft 改成自动发布，等于绕过这条规矩。
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup multiarch apt sources
+        run: |
+          # 与 build.yml 保持同一套交叉环境（那份已验证能编出 kwinwrap/touchtest）
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list
+          printf 'deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe\ndeb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe\ndeb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe\n' \
+            | sudo tee /etc/apt/sources.list.d/amd64.list
+          printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main universe\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe\n' \
+            | sudo tee /etc/apt/sources.list.d/arm64.list
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config gcc-aarch64-linux-gnu \
+            libdrm-dev:arm64 libwayland-dev:arm64 libudev-dev:arm64 python3
+
+      - name: Cross build for aarch64
+        run: |
+          # Makefile 在解析期用 $(shell pkg-config ...)，必须走环境变量而不是 make 命令行变量
+          export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          make -j"$(nproc)" CC=aarch64-linux-gnu-gcc ci
+          # 编出来的必须是 ARM64；是 x86 就说明交叉环境没生效，宁可不发布
+          file bin/kwinwrap | grep -q 'ARM aarch64'
+          file bin/touchtest | grep -q 'ARM aarch64'
+
+      - name: Assemble tarball
+        run: |
+          set -euo pipefail
+          STAGE=drm-takeover
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp desk-takeover.sh drm-takeover.sh "$STAGE"/
+          cp -r scripts bin installer configs "$STAGE"/
+          cp README.md README_english.md LICENSE Makefile "$STAGE"/ 2>/dev/null || true
+          tar -czf drm-takeover-aarch64.tar.gz "$STAGE"
+          rm -rf "$STAGE"
+
+      - name: Fill components.lock.json
+        env:
+          # 通过环境变量传值，不把 ref 直接拼进 shell（tag 名来自推送方）
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag 形式不对：$RELEASE_TAG（要 vX.Y.Z）" >&2; exit 1 ;;
+          esac
+          # 用 python 而不是 sed：要改的是嵌套字段，sed 改坏了安装器只会静默拿到空值
+          ASSET_SHA="$(sha256sum drm-takeover-aarch64.tar.gz | awk '{print $1}')"
+          export ASSET_SHA
+          python3 <<'PY'
+          import json, os
+          lock_path = "installer/lib/components.lock.json"
+          with open(lock_path, encoding="utf-8") as f:
+              lock = json.load(f)
+          lock["takeover"]["tag"] = os.environ["RELEASE_TAG"]
+          lock["takeover"]["sha256"] = os.environ["ASSET_SHA"]
+          with open(lock_path, "w", encoding="utf-8") as f:
+              json.dump(lock, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+          print("lock 已回填：tag=%s sha256=%s" % (lock["takeover"]["tag"], lock["takeover"]["sha256"]))
+          PY
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            drm-takeover-aarch64.tar.gz
+            installer/lib/components.lock.json

@@ -43,9 +43,36 @@ scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keep
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
 docs/tools.md           全部编译产物的用法手册与新设备适配流程（英文版 docs/tools_english.md）
+installer/              一键安装器与运行期 TUI（drm-tui.sh / install-drm-tui.sh / lib/*.sh
+                        / lib/components.lock.json = 组件版本与 sha256 的唯一清单）
 Makefile                `make` 编全部（协议桩随仓库分发，无需 wayland-scanner）；
                         `make ci` 跳过 storage-rebind（那个必须 musl 静态编，见快速开始）
 ```
+
+## 一键安装与 drm-tui（安装器 / 运行期 TUI）
+
+新用户不必再手抄命令：**`installer/` 提供一键安装器，装完留下 `drm-tui` 这个命令**。
+
+```
+bash installer/install-drm-tui.sh          # 全新容器的第一条命令（机型闸门 → 取产物 → 校验）
+sudo bash installer/drm-tui.sh install     # 交互式安装（测速选源 → 勾选组件 → 装依赖 → 写快捷方式）
+drm-tui                                    # 日常：进/出 DRM 接管、补装、检查更新、改设置
+```
+
+`drm-tui` 的界面按当前状态取反：**识别到 DRM 接管态就只给「回到安卓」**，
+识别到 anland / 纯安卓才给「进入 DRM 接管」——**接管轮还活着时不会出现第二个接管入口**
+（中途重跑 desk-takeover 会把可用桌面杀掉，这是踩过的实锤事故）。
+跑接管时不再"一晃就没"：脚本自己的判据行会被翻成阶段清单（预检 → 节点/udev → 放倒安卓 →
+kwin 上屏 → Plasma → XWayland → WiFi），每步显示耗时，交还链另有一套阶段表。
+
+设置页可以事后补装：桌面快捷方式、输入法 droid-pc-keyboard、**它的子选项「X11 应用弹出虚拟键盘」
+（=换装打过补丁的 kwin，回退用 `install-anland-kde.sh --uninstall`）**、接管时是否由容器接管 WiFi、
+蓝牙桥、音频桥、返回安卓时是否自动复活 anland（默认开）、日志目录、界面语言、下载源。
+高级页放着 GPUFLOOR / PERFMAX 两个实验开关，**默认全关**（收益与代价写在页内）。
+
+> 状态说明：这套安装器与 TUI 的代码已就绪并通过静态检查，**但尚未在全新容器上完成真机验证**；
+> 主仓 release（`drm-takeover-aarch64.tar.gz` + 回填过 sha256 的 `components.lock.json`）
+> 也需要先打 tag 由 CI 产出，`extract_release()` 才能真正取到东西。
 
 ## 快速开始
 

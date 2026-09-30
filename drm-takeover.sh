@@ -5,6 +5,18 @@
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 DIR=$ROOT
 LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
+# ---- 用户与路径参数（09-30 参数化，为分发而做；本机没有 conf 时等价于原硬编码）----
+# 有 /etc/drm-takeover.conf 就读它（由 drm-tui 安装器生成）。
+# 这里**不猜"当前用户"**：接管必须以桌面用户身份跑（runuser / HOME / polkit subject / XDG_RUNTIME_DIR
+# 全都按它来）。root 终端里 id -un == root，猜错的结果是"kwin 以 root 起 → DRM Xwayland 拒绝连接
+# + polkit 规则对不上 → 亮度/NM 全拒"，比直接报错难查得多。
+DRM_CONF_FILE=${DRM_CONF_FILE:-/etc/drm-takeover.conf}
+[ -r "$DRM_CONF_FILE" ] && . "$DRM_CONF_FILE"
+DRM_USER=${DRM_USER:-xieyizhou}
+DRM_UID=${DRM_UID:-1000}
+DRM_HOME=${DRM_HOME:-/home/xieyizhou}
+DRM_RT=/run/user/$DRM_UID
+
 mkdir -p "$LOGD"
 LOG=$LOGD/drm-takeover.log
 exec >>"$LOG" 2>&1
@@ -139,7 +151,7 @@ except OSError as e:
     print('root SETMASTER FAIL', e)
 os.close(fd)
 EOF
-runuser -u xieyizhou -- python3 -c '
+runuser -u "$DRM_USER" -- python3 -c '
 import os, fcntl
 fd = os.open("/dev/dri/card0", os.O_RDWR)
 try:
@@ -152,13 +164,13 @@ os.close(fd)
 '
 
 # 对照：纯 uid1000 直接开 / root kwinwrap fd 劫持后的 uid1000 子进程
-runuser -u xieyizhou -- $DIR/bin/masterprobe; echo PURE-UID1000-PROBE=$?
+runuser -u "$DRM_USER" -- $DIR/bin/masterprobe; echo PURE-UID1000-PROBE=$?
 env KWINWRAP_HIJACK=1 KWINWRAP_UID=1000 KWINWRAP_GID=1000 \
     $DIR/bin/kwinwrap --out $LOGD/probe-hijack.log -- $DIR/bin/masterprobe
 echo HIJACK-PROBE=$?
 cat $LOGD/probe-hijack.log
 # addGpu 检查链回放：A=真实 fd 但共享 kwinwrap 的 master 对象（join 语义）
-runuser -u xieyizhou -- $DIR/bin/kwinwrap --out $LOGD/probe-a.log -- $DIR/bin/kwinprobe
+runuser -u "$DRM_USER" -- $DIR/bin/kwinwrap --out $LOGD/probe-a.log -- $DIR/bin/kwinprobe
 echo PROBE-A=$?
 # B=劫持 fd 250（与 kwinwrap 同一 file_priv，is_master=1）
 env KWINWRAP_HIJACK=1 KWINWRAP_UID=1000 KWINWRAP_GID=1000 \
@@ -175,9 +187,9 @@ if [ "${MODE:-touchdraw}" = kwin ]; then
     # 250 → kwin 手上的 fd 天生就是 master，无需任何 master ioctl。
     if [ "${STRACE:-0}" = 1 ]; then
         # 诊断轮：不加 ptrace 干预，纯 strace 看 kwin 枚举/打开 DRM 的全部文件动作
-        runuser -u xieyizhou -- env -u DISPLAY -u WAYLAND_DISPLAY HOME=/home/xieyizhou \
-            XDG_RUNTIME_DIR=/run/user/1000 \
-            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        runuser -u "$DRM_USER" -- env -u DISPLAY -u WAYLAND_DISPLAY HOME="$DRM_HOME" \
+            XDG_RUNTIME_DIR=$DRM_RT \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
             strace -f -qq -e trace=%file,%stat \
                 -o $LOGD/kwinstrace.log \
             kwin_wayland --socket=taketest \
@@ -186,13 +198,13 @@ if [ "${MODE:-touchdraw}" = kwin ]; then
     env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
         KWINWRAP_UID=1000 KWINWRAP_GID=1000 \
         $DIR/bin/kwinwrap --out $LOGD/kwinatomic.log -- \
-        env -u DISPLAY -u WAYLAND_DISPLAY HOME=/home/xieyizhou \
+        env -u DISPLAY -u WAYLAND_DISPLAY HOME="$DRM_HOME" \
             KWIN_DRM_DEVICES=/dev/dri/card0 \
             FD_MESA_DEBUG=noubwc \
             KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
             XDG_SESSION_ID=bogus \
-            XDG_RUNTIME_DIR=/run/user/1000 \
-            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+            XDG_RUNTIME_DIR=$DRM_RT \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
             kwin_wayland --socket=taketest \
         > $LOGD/kwin.log 2>&1 &
     fi
@@ -200,8 +212,8 @@ if [ "${MODE:-touchdraw}" = kwin ]; then
     sleep 5
     if kill -0 $KPID 2>/dev/null; then
         echo "kwin pid $KPID alive after 5 s"
-        runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
-            HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
+            HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
             QT_QPA_PLATFORM=wayland \
             timeout 5 wayland-info > $LOGD/wayland-info.log 2>&1
         echo "wayland-info exit=$?"
@@ -233,23 +245,23 @@ if [ "${MODE:-touchdraw}" = kwin ]; then
         ( for i in 1 2 3; do
               sleep 5
               echo "=== snap $i $(date +%T) ==="
-              runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
-                  HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+              runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
+                  HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
                   timeout 8 grim $LOGD/kwinframe_$i.png 2>&1
               run "mount -t debugfs none /sys/kernel/debug 2>/dev/null; echo '--- state ---'; cat /sys/kernel/debug/dri/0/state; echo '--- framebuffer ---'; cat /sys/kernel/debug/dri/0/framebuffer"
           done ) > $LOGD/kmssummary.log 2>&1 &
         SNAP=$!
-        runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
-            HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
+            HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
             timeout 25 es2gears_wayland > $LOGD/es2gears.log 2>&1 &
         ES=$!
-        runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
-            HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
+            HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
             timeout 25 $DIR/bin/touchtest > $LOGD/touchtest.log 2>&1 &
         TT=$!
         sleep 3
-        runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
-            HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
+            HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
             timeout 20 $DIR/bin/touchinj 18 > $LOGD/touchinj.log 2>&1 &
         wait $ES; echo "es2gears exit=$?"
         wait $TT; echo "touchtest exit=$?"

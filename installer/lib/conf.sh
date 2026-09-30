@@ -86,7 +86,11 @@ drm_conf_save() {
 # 用法（脚本顶部）： source "$DIR/installer/lib/conf.sh"; drm_conf_eval; 之后 $DRM_USER 等直接可用。
 drm_conf_eval() {
     local k
+    # UI_LANG 不参与导出：msg() 读的是运行变量 UI_LANG（zh/en），而 conf 里存的是 "auto"
+    # 这种**策略值**。一旦导出就会把 detect_language 的结果冲掉，界面变成中英混排
+    # （09-30 冒烟测试实锤："状态 anland mode" 配 "还没有配置文件"）。
     for k in "${!DRM_CONF[@]}"; do
+        [[ "$k" == "UI_LANG" ]] && continue
         printf -v "$k" '%s' "${DRM_CONF[$k]}"
         export "${k?}"
     done

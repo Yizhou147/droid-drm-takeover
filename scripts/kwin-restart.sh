@@ -4,6 +4,18 @@
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 DIR=$ROOT
 LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
+# ---- 用户与路径参数（09-30 参数化，为分发而做；本机没有 conf 时等价于原硬编码）----
+# 有 /etc/drm-takeover.conf 就读它（由 drm-tui 安装器生成）。
+# 这里**不猜"当前用户"**：接管必须以桌面用户身份跑（runuser / HOME / polkit subject / XDG_RUNTIME_DIR
+# 全都按它来）。root 终端里 id -un == root，猜错的结果是"kwin 以 root 起 → DRM Xwayland 拒绝连接
+# + polkit 规则对不上 → 亮度/NM 全拒"，比直接报错难查得多。
+DRM_CONF_FILE=${DRM_CONF_FILE:-/etc/drm-takeover.conf}
+[ -r "$DRM_CONF_FILE" ] && . "$DRM_CONF_FILE"
+DRM_USER=${DRM_USER:-xieyizhou}
+DRM_UID=${DRM_UID:-1000}
+DRM_HOME=${DRM_HOME:-/home/xieyizhou}
+DRM_RT=/run/user/$DRM_UID
+
 mkdir -p "$LOGD"
 pkill -9 -f "kwinwrap --out" 2>/dev/null
 pkill -9 -f "socket=taketest" 2>/dev/null
@@ -12,13 +24,13 @@ sleep 1
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     KWINWRAP_UID=1000 KWINWRAP_GID=1000 \
     "$DIR/bin/kwinwrap" --out $LOGD/kwinatomic.log -- \
-    env -u DISPLAY -u WAYLAND_DISPLAY HOME=/home/xieyizhou \
+    env -u DISPLAY -u WAYLAND_DISPLAY HOME="$DRM_HOME" \
         KWIN_DRM_DEVICES=/dev/dri/card0 \
         FD_MESA_DEBUG=noubwc \
         KWIN_WAYLAND_NO_PERMISSION_CHECKS=1 \
         XDG_SESSION_ID=bogus \
-        XDG_RUNTIME_DIR=/run/user/1000 \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        XDG_RUNTIME_DIR=$DRM_RT \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         kwin_wayland --socket=taketest --xwayland \
     > $LOGD/kwin.log 2>&1 &
 KPID=$!

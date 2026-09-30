@@ -7,6 +7,18 @@
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 DIR=$ROOT
 LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
+# ---- 用户与路径参数（09-30 参数化，为分发而做；本机没有 conf 时等价于原硬编码）----
+# 有 /etc/drm-takeover.conf 就读它（由 drm-tui 安装器生成）。
+# 这里**不猜"当前用户"**：接管必须以桌面用户身份跑（runuser / HOME / polkit subject / XDG_RUNTIME_DIR
+# 全都按它来）。root 终端里 id -un == root，猜错的结果是"kwin 以 root 起 → DRM Xwayland 拒绝连接
+# + polkit 规则对不上 → 亮度/NM 全拒"，比直接报错难查得多。
+DRM_CONF_FILE=${DRM_CONF_FILE:-/etc/drm-takeover.conf}
+[ -r "$DRM_CONF_FILE" ] && . "$DRM_CONF_FILE"
+DRM_USER=${DRM_USER:-xieyizhou}
+DRM_UID=${DRM_UID:-1000}
+DRM_HOME=${DRM_HOME:-/home/xieyizhou}
+DRM_RT=/run/user/$DRM_UID
+
 mkdir -p "$LOGD"
 LOG=$LOGD/desk-stop.log
 
@@ -269,11 +281,11 @@ rm -f $DIR/takeover.ok
 #          不补起来 Droid Spaces 打开就是白屏，只能重启容器——09-23 用户实测痛点） ----
 # ---- 4f) VKMARK-ASYNC 清理（desk-takeover 2d 段写入的 kwinrc AllowTearing；全局文件必须清，
 #          否则 anland 的 kwin 也带 tearing 许可。同样 chown 回用户，防 root 属主残留）----
-KRC=/home/xieyizhou/.config/kwinrc
+KRC="$DRM_HOME/.config/kwinrc"
 if [ -f "$KRC" ]; then
     kwriteconfig6 --file "$KRC" --group Compositing --key AllowTearing --delete
     # 座位 IM 无需恢复：09-29 起两模式统一 fcitx5，交还后 anland 自拉的会话继承同值。
-    chown xieyizhou:xieyizhou "$KRC"
+    chown "$DRM_USER:$DRM_USER" "$KRC"
     echo "TEARING-CONFIG CLEANED (kwinrc AllowTearing 已删)"
 fi
 unset KRC
@@ -285,9 +297,16 @@ unset KRC
 nohup bash $ROOT/scripts/storage-fix.sh 90 >>"$LOGD/storage-fix.log" 2>&1 </dev/null &
 echo "STORAGE-FIX launched bg pid=$! log=$LOGD/storage-fix.log"
 
-if [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-kde.sh ]; then
-    runuser -u xieyizhou -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
+# 4b) 复活 anland 会话。RELAUNCH_ANLAND 由 /etc/drm-takeover.conf 控制（drm-tui 设置页里那个开关）：
+#     默认 1＝交还后自动把 Linux 桌面放回安卓里（09-23 白屏坑的修法，绝大多数情况要留着）；
+#     设成 0＝交还后停在纯安卓，用户下次得从 drm-tui 里手动「重启 anland」。
+if [ "${RELAUNCH_ANLAND:-1}" != 1 ]; then
+    echo "ANLAND-SKIP $(date +%T)：RELAUNCH_ANLAND=0，交还后不自动拉起 anland（下次进 DRM 接管会重新按 conf 处理）"
+elif [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-kde.sh ]; then
+    runuser -u "$DRM_USER" -- bash -c 'nohup /usr/local/bin/startanland-kde.sh > /tmp/anland-restart.log 2>&1 &' \
         && echo "anland session relaunched"
+else
+    echo "ANLAND-MISS $(date +%T)：没有 /usr/local/bin/startanland-kde.sh，交还后不会有任何 Linux 桌面（这不是正常状态）"
 fi
 
 # ---- 4b2) 蓝牙交还确认：看门狗与桥都必须已经死干净（桥活着=容器还占着 hci0 的 tty，

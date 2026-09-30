@@ -52,9 +52,44 @@ scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keep
 src/                    kwinwrap (core) + KMS probe suite + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example (WiFi fallback config sample)
 docs/tools.md           Usage manual for all build artifacts + new-device adaptation flow
+installer/              One-command installer & runtime TUI (drm-tui.sh / install-drm-tui.sh /
+                        lib/*.sh / lib/components.lock.json = the single source of component
+                        versions and sha256 digests)
 Makefile                `make` builds everything (Wayland protocol stubs shipped in-repo, no wayland-scanner
                         needed); `make ci` skips storage-rebind, which must be built statically with musl
 ```
+
+## One-command install & `drm-tui` (installer / runtime TUI)
+
+New users no longer have to copy commands by hand: **`installer/` ships a one-command
+installer, and it leaves a `drm-tui` command behind**.
+
+```
+bash installer/install-drm-tui.sh          # first command on a fresh container (model gate -> fetch -> verify)
+sudo bash installer/drm-tui.sh install     # interactive install (mirror probe -> components -> deps -> shortcuts)
+drm-tui                                    # daily use: enter/leave takeover, repair, updates, settings
+```
+
+The menu inverts with the detected state: **when a DRM takeover round is live it only offers
+"Return to Android"**; "Enter DRM takeover" appears solely in anland / plain-Android states —
+**a second takeover entry never exists while a round is alive** (re-running desk-takeover
+mid-round kills the working desktop; that is a documented, real incident).
+Running a round is no longer "it flashed and I don't know where it stalled": the scripts' own
+judge lines are rendered as a stage list (precheck -> nodes/udev -> Android display down ->
+kwin on screen -> Plasma -> XWayland -> WiFi) with per-stage timing, and the hand-back chain
+gets its own stage table.
+
+Settings can install anything you skipped later: desktop shortcuts, the droid-pc-keyboard input
+method, **its sub-option "pop the VKB for X11 apps" (= install the patched kwin; roll back with
+`install-anland-kde.sh --uninstall`)**, whether the container takes over WiFi during takeover,
+the Bluetooth bridge, the audio bridge, whether handing back relaunches anland (default on),
+log directory, UI language and mirror source. The Advanced page holds the GPUFLOOR / PERFMAX
+experimental knobs, **all off by default** (their measured payoff and cost are shown inline).
+
+> Status: this installer/TUI code is complete and passes static checks, **but it has not been
+> verified end-to-end on a fresh container yet**; the main-repo release
+> (`drm-takeover-aarch64.tar.gz` plus a `components.lock.json` with the sha256 filled in by CI)
+> also has to be produced from a tag before `extract_release()` can actually fetch anything.
 
 ## Quick start
 
