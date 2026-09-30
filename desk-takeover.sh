@@ -547,6 +547,8 @@ kill_linux_stack
 rm -f $DIR/takeover.ok
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     KWINWRAP_UID=1000 KWINWRAP_GID=1000 KWINWRAP_BRIGHTNESS=2048 \
+    KWINWRAP_USER=xieyizhou \
+    KWINWRAP_GROUPS="$(id -G xieyizhou 2>/dev/null | tr ' ' ',')" \
     $DIR/bin/kwinwrap --out $LOGD/kwinatomic.log -- \
     env -u DISPLAY -u WAYLAND_DISPLAY ${DESK_ENV[@]+"${DESK_ENV[@]}"} HOME=/home/xieyizhou \
         KWIN_DRM_DEVICES=/dev/dri/card0 \

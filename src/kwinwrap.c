@@ -20,6 +20,8 @@
 #include <sys/uio.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <poll.h>
 #include <linux/elf.h>
 #include <drm/drm.h>
@@ -1323,7 +1325,59 @@ int main(int argc, char **argv) {
         }
         char *u = getenv("KWINWRAP_UID");
         char *g = getenv("KWINWRAP_GID");
-        if (u && g) { setgid(atoi(g)); setuid(atoi(u)); }
+        if (u && g) {
+            uid_t uid = (uid_t)atoi(u);
+            gid_t gid = (gid_t)atoi(g);
+            /* Rebuild the supplementary group list while still root. Without it
+             * kwin (and every child, incl. kscreenlocker_greet) keeps ROOT's
+             * groups, so pam_unix has no shadow group and cannot read
+             * /etc/shadow in-process; its sgid unix_chkpwd fallback is also
+             * useless because our seccomp install leaves NoNewPrivs=1, which
+             * makes execve drop the sgid bit. Result: the lock screen rejects
+             * every password and there is no way back to the desktop.
+             * KWINWRAP_GROUPS (comma list from `id -G`) avoids NSS entirely:
+             * getpwuid() may already be crippled behind our seccomp filter. */
+            char *grps = getenv("KWINWRAP_GROUPS");
+            char *un = getenv("KWINWRAP_USER");
+            int ngids = -1;
+            if (grps && *grps) {
+                gid_t list[64];
+                char *dup = strdup(grps);
+                char *tok = dup ? strtok(dup, ",") : NULL;
+                while (tok && ngids < 64) {
+                    if (*tok) list[ngids++] = (gid_t)atoi(tok);
+                    tok = strtok(NULL, ",");
+                }
+                if (setgroups(ngids, list) != 0)
+                    fprintf(stderr, "kwinwrap: setgroups(%d) failed: %s\n",
+                            ngids, strerror(errno));
+                free(dup);
+            } else {
+                struct passwd *pw = getpwuid(uid);
+                if (!pw)
+                    fprintf(stderr, "kwinwrap: getpwuid(%u) returned NULL (%s)\n",
+                            (unsigned)uid, strerror(errno));
+                else if (initgroups(pw->pw_name, gid) != 0)
+                    fprintf(stderr, "kwinwrap: initgroups(%s) failed: %s\n",
+                            pw->pw_name, strerror(errno));
+                else
+                    ngids = 0; /* initgroups did the job */
+            }
+            if (un && *un) {
+                setenv("USER", un, 1);
+                setenv("LOGNAME", un, 1);
+            }
+            if (setgid(gid) != 0)
+                fprintf(stderr, "kwinwrap: setgid(%u) failed: %s\n",
+                        (unsigned)gid, strerror(errno));
+            if (setuid(uid) != 0)
+                fprintf(stderr, "kwinwrap: setuid(%u) failed: %s\n",
+                        (unsigned)uid, strerror(errno));
+            fprintf(stderr, "kwinwrap: dropped to %s uid=%u gid=%u groups=%s\n",
+                    (un && *un) ? un : "?", (unsigned)uid, (unsigned)gid,
+                    (grps && *grps) ? grps : "initgroups");
+            fflush(stderr);
+        }
         execvp(argv[di], argv + di);
         perror("execvp");
         _exit(3);
