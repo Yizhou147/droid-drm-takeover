@@ -15,7 +15,9 @@ DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
 [ -n "$DEV" ] || { echo "NO-ADB（沿上就没法抓 logcat/dmesg 了）"; }
 R=${1:-1800}
 IV=${2:-2}
-OUT=${OUT:-/home/xieyizhou/Documents/XiaomiPad8Pro-drm-display/logs/bt-power-watch-$(date +%m%d-%H%M%S).log}
+# 自定位：仓库同级 logs（原来写死 /home/xieyizhou/…，换用户名就写不到地方）
+ROOT=${ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
+OUT=${OUT:-$(dirname "$ROOT")/logs/bt-power-watch-$(date +%m%d-%H%M%S).log}
 run() { [ -n "$DEV" ] && timeout 10 adb -s "$DEV" shell "su -c '$1'" 2>&1 | tr -d '\r'; }
 rf() {   # rf() <name> → soft/hard
     local f

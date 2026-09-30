@@ -22,7 +22,7 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 
 SELF=$(readlink -f "$0")
-BASE_DIR=/home/xieyizhou/Documents/XiaomiPad8Pro-drm-display
+BASE_DIR=${BASE_DIR:-$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)}   # 自定位到工作区根（原来写死用户名路径）
 LOG_DIR="${LOG_DIR:-$BASE_DIR/logs/log收集}"
 LOG="$LOG_DIR/forensics.log"
 TAKEOVER_LOG="${TAKEOVER_LOG:-$BASE_DIR/logs/desk-takeover.log}"

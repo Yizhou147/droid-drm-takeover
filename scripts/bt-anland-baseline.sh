@@ -6,7 +6,9 @@ DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
 [ -n "$DEV" ] || { echo "NO-ADB"; exit 1; }
 R=${1:-600}
 HEAVY=${HEAVY:-6}            # 每几次采样走一次 adb（见下面观测者效应注释）
-OUT=${OUT:-/home/xieyizhou/Documents/XiaomiPad8Pro-drm-display/logs/bt-anland-baseline-$(date +%m%d-%H%M%S).log}
+# 自定位：仓库同级 logs
+ROOT=${ROOT:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
+OUT=${OUT:-$(dirname "$ROOT")/logs/bt-anland-baseline-$(date +%m%d-%H%M%S).log}
 run() { timeout 10 adb -s "$DEV" shell "su -c '$1'" 2>&1 | tr -d '\r'; }
 rf_read() {
     for f in /sys/class/rfkill/rfkill*; do
