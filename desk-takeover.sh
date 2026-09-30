@@ -1157,7 +1157,8 @@ fi
 #   ③ desk-takeover 的 rollback 分支也 pkill（KDE 重启/回滚都不走 desk-stop）。
 # 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
 if [ "${BT_BRIDGE:-1}" = 1 ]; then
-BTBIN=/data/local/tmp/bthci-bridge
+BTBIN=${BT_BIN:-/data/local/tmp/bthci-bridge}
+echo "BT-BIN $BTBIN $(date +%T)（用 BT_BIN=/data/local/tmp/bthci-bridge-v2 可灰度新构建）"
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
 # 【开局遇到 bt_power soft=1 怎么办：等，不是跳过】09-30 实测两遍，第二遍把我的"定案"推翻了：
@@ -1269,7 +1270,7 @@ EOF
     #     到顶 BT-GIVEUP 收手并 dump logs/bt-wedge-*.txt 现场。猛拉 HAL 客户端是有害的，见脚本头注。
     # 它自带 surfaceflinger 熔断（交还即自退），desk-stop 与 rollback 还各杀一次，三重。
     pkill -f "bt-keepalive[.]sh" 2>/dev/null
-    SNAP_DIR=$LOGD nohup bash $DIR/scripts/bt-keepalive.sh >> $LOGD/bt-keepalive.log 2>&1 &
+    SNAP_DIR=$LOGD BT_BIN=$BTBIN nohup bash $DIR/scripts/bt-keepalive.sh >> $LOGD/bt-keepalive.log 2>&1 &
     KAPID=$!
     sleep 1
     # 判据必须打在它声称的那个对象上：`pgrep -f bt-keepalive.sh` 会匹配到**所有**同名实例

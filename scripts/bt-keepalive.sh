@@ -46,7 +46,7 @@ cleanup() { [ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"; }
 trap cleanup EXIT
 DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
 [ -n "$DEV" ] || { echo "BT-KEEPALIVE EXIT $(date +%T): 没有 adb 设备，无法观测安卓侧状态"; exit 0; }
-BTBIN=${BTBIN:-/data/local/tmp/bthci-bridge}
+BTBIN=${BTBIN:-${BT_BIN:-/data/local/tmp/bthci-bridge}}   # BT_BIN 可指向 -v2，用于灰度新二进制
 BTLOG=${BTLOG:-/data/local/tmp/bt-bridge.log}
 # 现场目录与接管轮日志同处 = <项目根>/logs（本脚本在 <项目根>/droid-drm-takeover/scripts/）
 SNAPD=${SNAP_DIR:-$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")/logs}
@@ -84,6 +84,26 @@ chip_blocked() {   # 芯片电源那颗 rfkill（name=bt_power，归 vendor HAL/
 }
 
 bridge_pid() { run "pgrep -x bthci-bridge" | tr -d '\r' | grep -E '^[0-9]+$' | head -1; }
+
+# ★ 通道是否已哑：**只看内核侧硬信号，不看 bluez 的 Powered**。
+#   09-30 19:2x 就是反例——`Powered: yes`、UI 一切正常，而内核每 2s 刷
+#   `hci0: command 0x0402 tx timeout`、`hciconfig` 连 local name 都读不出来（-110），
+#   表现却是"所有设备连不上 + 一个也搜不到"。上一版只盯 Powered，所以全程没报。
+#   两条同时成立才算哑（单看任一条都可能误判）：
+#     A. `hciconfig -a hci0` 读不出 local name —— 读名字本身就是一条 HCI 命令，哑了就超时
+#     B. `dmesg` 里 "tx timeout" 的总数比上一拍在涨（看增量，不看绝对值）
+#   注意内层不能再写单引号（run() 已经把它塞进 su -c '...'），所以用 `tx.timeout` 顶空格。
+TXTO_LAST=""
+DEAD_LAST=0
+channel_dead() {
+    hciconfig -a hci0 2>/dev/null | grep -q "Can't read local name" || return 1
+    local now
+    now=$(run "dmesg 2>/dev/null | grep -c tx.timeout" | tr -d '\r' | tail -1)
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+    if [ -n "$TXTO_LAST" ] && [ "$now" -gt "$TXTO_LAST" ]; then TXTO_LAST=$now; return 0; fi
+    TXTO_LAST=$now
+    return 1
+}
 
 counters() {   # 桥自己的计数（**必须按行取**：日志已 500MB+，`tail -c` 会把整行切成半截，
     # 于是 sed 匹配不到 → 显示 NOREAD，那是探针的假象不是"冻结"。行数上界 = 成本上界。）
@@ -177,7 +197,18 @@ while :; do
     SHOW=$(ctl show)
     HASCTRL=$(echo "$SHOW" | grep -c '^Controller')
 
-    if [ "$HASCTRL" = 1 ] && echo "$SHOW" | grep -q 'Powered: yes'; then
+    # 先判"通道哑"：只有适配器在位时才值得花一次 hciconfig+dmesg（否则本来就读不出）
+    DEAD=0
+    if [ "$HASCTRL" = 1 ] && channel_dead; then
+        DEAD=1
+        # 哑会持续存在（今天从 19:1x 一直到重拉前），所以 60s 报一次就够，别冲掉日志
+        if [ $(( $(date +%s) - DEAD_LAST )) -ge 60 ]; then
+            DEAD_LAST=$(date +%s)
+            echo "BT-DEADCHANNEL $(now): bluez 说 $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')但内核侧读不出 local name 且 tx timeout 在涨；hci=[$(hci_state)] 计数=${CNT:-NOREAD} 桥=${BP:-安卓侧查不到} ⇒ 命令通道已哑（不是没上电）。同状态 60s 内不重复"
+        fi
+    fi
+
+    if [ "$HASCTRL" = 1 ] && [ "$DEAD" = 0 ] && echo "$SHOW" | grep -q 'Powered: yes'; then
         # 交叉核对：bluez 说上电了，内核侧 hci0 却不在 UP RUNNING ⇒ 明报不一致，但仍按健康处理
         # （只报不动作——上一版就是因为把 sysfs 读不到当"卡死"才疯狂重拉）
         hci_state | grep -q "UP RUNNING" || echo "BT-KEEPALIVE INCONSISTENT $(now): bluez Powered: yes 但 hci: $(hci_state)"
@@ -199,15 +230,17 @@ while :; do
     #   ⇒ 唯一真正要管的情形是"**睡了叫不醒**"；目前还没有一次证据出现过。
     #   ⇒ 正确动作是**等 + 到位后 power on 一次**；重拉桥反而是伤害（每次重拉注销 hci0，
     #     把正在逼近的电源窗口又吹掉 —— 09-30 前 17 次重拉一次都没治好，就是这个机制）。
+    # 通道已经哑（DEAD=1）时不能再算"芯片在睡"——睡是叫得醒的，哑不是；今天 19:2x 就是
+    # soft=0、Powered=yes 的哑，被上一版误判成"等它醒"，于是一直不动作。
     CB=$(chip_blocked)
-    if [ "${CB%%:*}" = 1 ] && [ $(( $(date +%s) - CB_LAST )) -ge 300 ]; then
+    if [ "$DEAD" = 0 ] && [ "${CB%%:*}" = 1 ] && [ $(( $(date +%s) - CB_LAST )) -ge 300 ]; then
         CB_LAST=$(date +%s)
         BV=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1)
         echo "BT-CHIP-BLOCKED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} hci: $(hci_state) 桥=${BP:-安卓侧查不到} ${CB#*:}(bt_power) soft=1 persist.vendor.bluetooth.state=${BV:-查不到}"
         echo "          ⇒ 芯片在正常休眠（HAL 的 IBS 电源管理，健康期也这样）。本进程**等**它醒（soft 回 0）后自动 power on（root，一次即可），期间不重拉桥（重拉会注销 hci0、把醒来窗口吹掉）。绝不手动解这颗 rfkill：电源归 btpower/HAL 协调，是红线。只有'叫不醒'才算故障"
         PREV=$CNT; sleep "$INTERVAL"; continue
     fi
-    [ "${CB%%:*}" = 1 ] && { PREV=$CNT; sleep "$INTERVAL"; continue; }
+    [ "$DEAD" = 0 ] && [ "${CB%%:*}" = 1 ] && { PREV=$CNT; sleep "$INTERVAL"; continue; }
 
     # 掉电/无适配器：整行证据先落日志。每个数都必须是被读到的，读不到写 NOREAD——
     # 否则"没测到"会伪装成"没发生"（见 工作总结 §探针自证纪律）
@@ -228,9 +261,13 @@ while :; do
     fi
     PREV_FWD=$FWD
 
-    # 要不要动手：无适配器（hci0 已被注销）／ power on 要不来 ／ 转发连轮冻住
+    # 要不要动手：无适配器（hci0 已被注销）／通道已哑／ power on 要不来 ／ 转发连轮冻住
     WEDGE=0
-    if [ "$HASCTRL" != 1 ]; then
+    if [ "$DEAD" = 1 ]; then
+        # 哑的时候别再做 power on：那条调用自己也走不通（今天实测 bluez 侧 25s 超时），
+        # 只会白占一拍
+        WEDGE=1
+    elif [ "$HASCTRL" != 1 ]; then
         WEDGE=1
     else
         bluetoothctl power on >/dev/null 2>&1
@@ -246,8 +283,10 @@ while :; do
         PREV=$CNT; sleep "$INTERVAL"; continue
     fi
 
-    # ① 内核侧重踢（每段只踢一次）：比动 HAL 客户端便宜一个量级
-    if [ -z "$KICKED" ] && [ "$HASCTRL" = 1 ]; then
+    # ① 内核侧重踢（每段只踢一次）：比动 HAL 客户端便宜一个量级。
+    #    但**通道已哑时不踢**——`hciconfig hci0 reset` 自己就是一条 HCI 命令，
+    #    今天实测它同样 `Connection timed out`，白等 12 秒而已。
+    if [ -z "$KICKED" ] && [ "$HASCTRL" = 1 ] && [ "$DEAD" = 0 ]; then
         KICKED=1
         hciconfig hci0 up >/dev/null 2>&1
         echo "BT-KICK $(now): 已 hciconfig hci0 up（桥没动），下一轮看是否恢复"

@@ -67,7 +67,8 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | 开关 | 默认 | 说明 |
 |---|---|---|
 | `LOG_DIR` | 仓库同级 `logs/` | 日志目录（不入库） |
-| `BT_BRIDGE` | `1`（开） | 蓝牙桥（见相关项目）+ 配套的 `scripts/bt-keepalive.sh`（默认上电、掉电回开、桥卡死重拉）。置 `0` 经 `/run/drm-round.conf` 或环境变量关闭；桥与看门狗都带自熔断，Android 框架复活时立即退场 |
+| `BT_BRIDGE` | `1`（开） | 蓝牙桥（见相关项目）+ 配套的 `scripts/bt-keepalive.sh`（默认上电、掉电回开、卡死按硬信号才重拉）。置 `0` 经 `/run/drm-round.conf` 或环境变量关闭；桥与看门狗都带自熔断，Android 框架复活时立即退场 |
+| `BT_BIN` | `/data/local/tmp/bthci-bridge` | 用哪座桥二进制。灰度新构建时指到 `-v2`（例：`echo 'BT_BIN=/data/local/tmp/bthci-bridge-v2' > /run/drm-round.conf`）；回滚只要删掉这行，旧二进制始终原地保留 |
 | `AUDIO_BRIDGE` | `0`（**09-30 起默认关**） | 接管轮 A 路板载外放。默认关的原因：它与蓝牙 A2DP 抢同一套输出路由（A 路停掉 audioserver 并独占 deep_buffer/speaker 端口，实测会让耳机没声）。要外放：`echo 'AUDIO_BRIDGE=1' > /run/drm-round.conf` 后重跑一轮。失败仅告警，**绝不触发回滚** |
 | `AUDIO_ROUTE` | `a` | `a` = 直连 vendor AIDL HAL（`argsloop` SINK + `aa-feeder`，已实测外放）；`b` = 回退的 AAudio 路线 |
 
@@ -78,7 +79,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | 显示 | kwinwrap 交接 + kwin DRM backend | 稳定；piano 需 split_commit 将单管虚拟 plane 改写为成对平面（对象 ID 随 boot 漂移，见已知问题） |
 | 触摸 | udev 属性合成 + libinput 校准矩阵，kwin 为唯一读者 | 可用（十指） |
 | 网络 | NetworkManager 裸进程直管 wlan0；SSID/PSK 接管前自 Android 现读；`ip rule` 备份/恢复标准三表；polkit 规则放行，plasma-nm 桌面 UI 可连可改密 | 可用；关联/出口失败仅告警，不连坐桌面 |
-| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ）；`scripts/bt-keepalive.sh` 轮内常驻 | 鼠标/HID 可用，A2DP 出声已验证；轮内与 WiFi 同政策「默认开 + 关不掉」：判到适配器后显式上电并实测 `Powered: yes`（BT-POWER）、装一条 dbus 总线策略拒桌面用户写适配器属性并每轮自检（BT-LOCK，蓝牙侧没有 polkit 可用）、掉电与卡死由看门狗按「内核重踢 → 重拉桥(先杀旧，整轮上限 2 次) → 收手留现场 `logs/bt-wedge-*.txt`」三级台阶处理（BT-KICK/BT-RESTART/BT-GIVEUP）。开局若见 `bt_power` rfkill soft=1（芯片电源还没被 vendor HAL 拉起来）只标 `BT-POWER-PENDING`/`BT-CHIP-BLOCKED` 并**等待**——实测这是接管开局暂态，自己会回 0，到位后 root `power on` 一次即通，同一座从未重拉的桥计数立刻从 `转发=50` 走到 150+；**不**手动解这颗 rfkill，也**不**在等待期重拉桥（重拉会注销 hci0、把恢复窗口吹掉） |
+| 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ）；`scripts/bt-keepalive.sh` 轮内常驻 | 鼠标/HID 可用，A2DP 出声已验证；轮内与 WiFi 同政策「默认开 + 关不掉」：判到适配器后显式上电并实测 `Powered: yes`（BT-POWER）、装一条 dbus 总线策略拒桌面用户写适配器属性并每轮自检（BT-LOCK，蓝牙侧没有 polkit 可用）、掉电与卡死由看门狗按「内核重踢 → 重拉桥(先杀旧，整轮上限 2 次) → 收手留现场 `logs/bt-wedge-*.txt`」三级台阶处理（BT-KICK/BT-RESTART/BT-GIVEUP）；**判据是内核侧硬信号**（`hciconfig` 读不出 local name + `dmesg` 的 `tx timeout` 在涨 → BT-DEADCHANNEL），不看 bluez 的 `Powered`——实测哑掉时它仍是 `yes`。开局若见 `bt_power` rfkill soft=1（芯片电源还没被 vendor HAL 拉起来）只标 `BT-POWER-PENDING`/`BT-CHIP-BLOCKED` 并**等待**——实测这是接管开局暂态，自己会回 0，到位后 root `power on` 一次即通，同一座从未重拉的桥计数立刻从 `转发=50` 走到 150+；**不**手动解这颗 rfkill，也**不**在等待期重拉桥（重拉会注销 hci0、把恢复窗口吹掉） |
 | 音频 | A 路：直连 vendor AIDL HAL（`argsloop` SINK 经 FMQ 喂数 + `aa-feeder` 抓 PipeWire monitor） | 接管轮内板载扬声器外放已实测；**09-30 起默认关**——它与蓝牙 A2DP 抢同一套输出路由，同开时耳机没声（共存方案是待办，见 工作总结 §58 ⑤） |
 | 输入法 | 轮内定稿（09-29）：座位=plasma-keyboard，kwin 以 `KWIN_IM_SHOW_ALWAYS=1` 窗口激活时弹出（X11/Wayland 均覆盖）；旁观 fcitx5 守护（`FCITX5-BYST` 段，带 WAYLAND_DISPLAY 但晚于座位、只当 XIM 前端，默认英文态）负责 X11 应用组词；PC 页 Ctrl+Space 由 pc-keyd 特判 `fcitx5-remote -T` DBus 直达；两模式各自入场归一 kwinrc（轮=plasma-keyboard / anland=fcitx5） | 可用 |
 | 组合键 | pc-keyd v2（XTEST/EIS 主通道；通道 C 经 kwin pkeyd 补丁，uinput 仅兜底） | X11 应用已验证；Wayland 应用待通道 C 真轮验证 |
