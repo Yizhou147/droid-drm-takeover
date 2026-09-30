@@ -606,13 +606,20 @@ runuser -u xieyizhou -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bu
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
-nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
-    -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
-    WAYLAND_DISPLAY=taketest \
-    HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
-    QT_QPA_PLATFORM=wayland \
-    /usr/bin/plasmashell --replace > $LOGD/plasma.log 2>&1 &
+# plasmashell 的启动命令必须是**可重入**的：蓝牙适配器出现得比壳晚（实测 20:32:33 起壳、
+# 20:33:22 才有 Powered: yes），bluedevil 的托盘 applet 与系统设置页在"根本没有适配器"的时刻
+# 做完判断就不会自己回读 ⇒ 托盘无图标 + 设置显示"已禁用"，而鼠标其实照连。
+# 所以 5c 里蓝牙上电后要再拉一次同一个壳（`--replace` 自带替换旧实例，不需要 kill）。
+start_plasmashell() {
+    nohup runuser -u xieyizhou -- env -u QT_IM_MODULE -u GTK_IM_MODULE \
+        -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 "${XWARGS[@]}" ${DESK_ENV[@]+"${DESK_ENV[@]}"} \
+        WAYLAND_DISPLAY=taketest \
+        HOME=/home/xieyizhou XDG_RUNTIME_DIR=/run/user/1000 \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        QT_QPA_PLATFORM=wayland \
+        /usr/bin/plasmashell --replace >> $LOGD/plasma.log 2>&1 &
+}
+start_plasmashell
 # plasmashell 起没起必须亲眼看到（09-24 黑屏事故的直接教训：`env` 参数顺序写错
 # → plasmashell 压根没启动，而收尾那行照旧写 "plasma up"，连着三轮黑屏白猜）。
 PSHELL=""
@@ -1207,6 +1214,16 @@ if [ "$BTCUP" = 1 ]; then
     done
     if [ "$BTPOW" = 1 ]; then
         echo "BT-POWER OK $(date +%T): Powered: yes（第 $i 次）"
+        # 壳比适配器早起 ⇒ 重载一次，让 bluedevil 的托盘 applet / 系统设置页重新枚举适配器
+        # （判据：`grep -c plasma.bluetooth /proc/<plasmashell>/maps` 从 0 变 5 即已载入）
+        start_plasmashell
+        sleep 3
+        PMPID=$(pgrep -x plasmashell | head -1)
+        if [ -n "$PMPID" ] && grep -qc "plasma.bluetooth" /proc/$PMPID/maps 2>/dev/null; then
+            echo "BT-UI-REFRESH OK $(date +%T): plasmashell pid=$PMPID 已载入蓝牙 applet"
+        else
+            echo "BT-UI-REFRESH FAIL $(date +%T): pid=${PMPID:-没起来} 里看不到 org.kde.plasma.bluetooth（看 $LOGD/plasma.log）"
+        fi
     else
         echo "BT-POWER FAIL $(date +%T): 6 次 power on 后仍不是 Powered: yes —— $(bluetoothctl show 2>/dev/null | grep -E 'Powered|PowerState' | tr '\n' ' ') bt_power.soft=$( { for x in /sys/class/rfkill/rfkill*; do [ "$(cat $x/name 2>/dev/null)" = bt_power ] && cat $x/soft; done; } ) ⇒ 交给看门狗：它在 soft 归 0 后自动补 power on，不会重拉桥"
     fi
