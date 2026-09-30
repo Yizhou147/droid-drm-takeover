@@ -108,3 +108,26 @@ github_api() {
     local path="$1" out="$2"
     dl_curl 30 "$out" "$GITHUB_API_BASE$path"
 }
+
+# release_asset_digest <release-json> <资产名> —— **按名字**取该资产的 sha256。
+# 别再写 .assets[0]：数组顺序不保证（我们的 release 里第一个是 components.lock.json），
+# 拿错 digest 会把完好的包判成"镜像截断"，是 10-01 真实测试第一跑就撞上的假阳性。
+release_asset_digest() {
+    local file="$1" asset="$2"
+    [[ -r "$file" ]] || return 1
+    if command -v jq >/dev/null 2>&1; then
+        jq -r --arg n "$asset" '[.assets[]?|select(.name==$n)][0].digest // "" | sub("^sha256:"; "")' "$file" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for a in d.get("assets", []):
+    if a.get("name") == sys.argv[2]:
+        print((a.get("digest") or "").split(":")[-1])
+        break
+' "$file" "$asset" 2>/dev/null
+    fi
+}

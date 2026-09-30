@@ -297,7 +297,22 @@ extract_release() {
     out="$(mktemp -t drm-tar.XXXXXX.tar.gz)"
     fetch_verified "$REPO_SLUG" "$tag" "$asset" "$want" "$out" "${DRM_CONF[DOWNLOAD_SOURCE]}" || { rm -f -- "$out"; return 1; }
     info "$(msg "解包到 $dest" 'Extracting to '"$dest")"
-    tar -xzf "$out" -C "$(dirname "$dest")" || rc=1
+    # 不假设 tar 根目录名 == dest 名（同 install-drm-tui.sh 的教训）：先解到临时目录再按内容铺
+    local work inner
+    work="$(mktemp -d -t drm-unpack.XXXXXXXX)"
+    if tar -xzf "$out" -C "$work"; then
+        inner="$work/drm-takeover"
+        [[ -d "$inner" ]] || inner="$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1)"
+        if [[ -d "$inner" ]]; then
+            mkdir -p "$dest" || rc=1
+            cp -a "$inner"/. "$dest"/ || rc=1
+        else
+            rc=1; warn "$(msg 'tar 里没有预期目录' 'tar has no expected directory')"
+        fi
+    else
+        rc=1
+    fi
+    rm -rf -- "$work"
     chmod +x "$dest"/*.sh "$dest"/scripts/*.sh 2>/dev/null || true
     rm -f -- "$out"
     [[ "$lock" != "$COMPONENTS_LOCK" ]] && rm -f -- "$lock"
@@ -317,7 +332,10 @@ install_keyboard_if_chosen() {
     deb="droid-pc-keyboard_${tag#v}_arm64.deb"
     want=""
     out="$(mktemp -t drm-kb2.XXXXXX.json)"
-    github_api "/repos/$KEYBOARD_REPO_SLUG/releases/tags/$tag" "$out" && want=$(json_get "$out" '.assets[0].digest' | sed 's/^sha256://')
+    # 按资产名取 digest（.assets[0] 在双架构 deb 的 release 里完全可能是 amd64 那份）
+    if github_api "/repos/$KEYBOARD_REPO_SLUG/releases/tags/$tag" "$out"; then
+        want="$(release_asset_digest "$out" "$deb")"
+    fi
     rm -f -- "$out"
     local tmpdir; tmpdir="$(mktemp -d -t drm-kb.XXXXXXXX)"
     fetch_verified "$KEYBOARD_REPO_SLUG" "$tag" "$deb" "$want" "$tmpdir/$deb" "${DRM_CONF[DOWNLOAD_SOURCE]}" || { rm -rf -- "$tmpdir"; return 1; }

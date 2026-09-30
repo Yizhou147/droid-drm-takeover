@@ -45,12 +45,33 @@ bases=(
 want_release_json="$(mktemp -t drm-bootstrap.XXXXXX.json)"
 curl --http1.1 -fsSL --connect-timeout 8 --max-time 40 \
     "https://api.github.com/repos/$REPO/releases/${TAG/#latest/latest}" -o "$want_release_json" 2>/dev/null || true
-want=$(sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"sha256:\([0-9a-fA-F]\{64\}\)".*/\1/p' "$want_release_json" | head -1)
-tag=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$want_release_json" | head -1)
+# digest 必须**按资产名选**。release 的 assets 数组里第一个是 components.lock.json，
+# 拿"JSON 里出现的第一个 digest"去比 tar，会把完好的包判成镜像截断
+# （10-01 真实测试第一跑就栽在这：gh-proxy 下回来的文件 sha 与 CI digest 逐字相等，
+# 却被假阳性拒掉，最后报"所有源都取不到"）。
+want=""
+tag=""
+if [[ -s "$want_release_json" ]] && command -v python3 >/dev/null 2>&1; then
+    tag=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("tag_name",""))' "$want_release_json" 2>/dev/null)
+    want=$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+for a in d.get("assets", []):
+    if a.get("name") == sys.argv[2]:
+        print((a.get("digest") or "").split(":")[-1])
+        break
+' "$want_release_json" "$ASSET" 2>/dev/null)
+else
+    # 没有 python3 时宁可"不校验但明说"，也绝不拿别的资产的 digest 当好包的判据
+    tag=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$want_release_json" | head -1)
+fi
 rm -f -- "$want_release_json"
 [[ -n "$tag" ]] && TAG="$tag"
-[[ -n "$want" ]] || m "警告：取不到 release digest，只能装完再手工比对 sha256" \
-                    "Warning: no release digest available; verify sha256 manually after download"
+[[ -n "$want" ]] || m "警告：取不到该资产的 release digest，装完请手工比对 sha256" \
+                    "Warning: no digest for this asset; verify sha256 manually after download"
 
 tmp="$(mktemp -t drm-tar.XXXXXX.tar.gz)"
 ok=0
@@ -71,9 +92,18 @@ for base in "${bases[@]}"; do
 done
 (( ok )) || { rm -f -- "$tmp"; die "所有源都取不到 $ASSET / no source served $ASSET"; }
 
-mkdir -p "$(dirname "$DEST")" 2>/dev/null
-tar -xzf "$tmp" -C "$(dirname "$DEST")" || die "解包失败 / extraction failed"
+# 解包不能假设 tar 的根目录名等于 DEST 名：产物根叫 drm-takeover，
+# 而目标目录按仓库名是 droid-drm-takeover —— 直接 -C 到父目录会解到别处，
+# 表现为"下载校验都过了， DEST 却是空的"（10-01 真实测试第二跑撞上的）。
+work="$(mktemp -d -t drm-unpack.XXXXXXXX)"
+tar -xzf "$tmp" -C "$work" || { rm -rf -- "$work"; die "解包失败 / extraction failed"; }
 rm -f -- "$tmp"
+inner="$work/drm-takeover"
+[[ -d "$inner" ]] || inner="$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -1)"
+[[ -d "$inner" ]] || { rm -rf -- "$work"; die "tar 里没有预期目录 / tar has no expected directory"; }
+mkdir -p "$DEST" || die "建不了 $DEST / cannot create $DEST"
+cp -a "$inner"/. "$DEST"/ || die "铺文件失败 / copy failed"
+rm -rf -- "$work"
 chmod +x "$DEST"/*.sh "$DEST"/scripts/*.sh "$DEST"/installer/*.sh 2>/dev/null || true
 
 m "已就位：$DEST" "Installed to: $DEST"
