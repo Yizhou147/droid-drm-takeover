@@ -43,13 +43,16 @@ scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keep
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
 docs/tools.md           全部编译产物的用法手册与新设备适配流程（英文版 docs/tools_english.md）
-Makefile                一次 make 编全部（协议桩随仓库分发，无需 wayland-scanner）
+Makefile                `make` 编全部（协议桩随仓库分发，无需 wayland-scanner）；
+                        `make ci` 跳过 storage-rebind（那个必须 musl 静态编，见快速开始）
 ```
 
 ## 快速开始
 
 ```
 make                     # 编译 bin/ 下全部工具
+                           # storage-rebind 必须 musl 静态编（安卓侧无 glibc）：缺 musl-gcc 会直接报错并提示
+make ci                  # 只编其余工具：交叉编译/CI 用这个（runner 上的 musl-gcc 只会产出 runner 架构）
 # 可选：WiFi 兜底配置。主路径会接管前从 Android 动态读取当前 SSID/PSK，无此文件也能连网
 cp configs/desk-wifi.conf.example /root/desk-wifi.conf
 sudo bash desk-takeover.sh       # 全自动接管，直至 Plasma 桌面上屏

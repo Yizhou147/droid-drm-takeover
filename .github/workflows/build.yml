@@ -25,7 +25,7 @@ jobs:
         run: |
           # Makefile 在解析期用 $(shell pkg-config ...)，必须走环境变量而不是 make 命令行变量
           export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-          make -j"$(nproc)" CC=aarch64-linux-gnu-gcc
+          make -j"$(nproc)" CC=aarch64-linux-gnu-gcc ci
           file bin/kwinwrap bin/touchdraw bin/touchtest bin/atomicspy.so
       - uses: actions/upload-artifact@v4
         with:

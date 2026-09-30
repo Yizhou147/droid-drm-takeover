@@ -52,13 +52,18 @@ scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keep
 src/                    kwinwrap (core) + KMS probe suite + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example (WiFi fallback config sample)
 docs/tools.md           Usage manual for all build artifacts + new-device adaptation flow
-Makefile                One `make` builds everything (Wayland protocol stubs shipped in-repo, no wayland-scanner needed)
+Makefile                `make` builds everything (Wayland protocol stubs shipped in-repo, no wayland-scanner
+                        needed); `make ci` skips storage-rebind, which must be built statically with musl
 ```
 
 ## Quick start
 
 ```
 make                     # build all tools under bin/
+                           # storage-rebind must be linked statically with musl (Android has no glibc);
+                           # the build aborts with a hint when musl-gcc is missing
+make ci                  # everything except storage-rebind: use this for cross builds / CI
+                           # (musl-gcc on a runner would emit runner-arch binaries)
 # Optional WiFi fallback config. The main path reads the current SSID/PSK dynamically from
 # Android before takeover, so networking works even without this file
 cp configs/desk-wifi.conf.example /root/desk-wifi.conf

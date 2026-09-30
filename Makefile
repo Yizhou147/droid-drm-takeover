@@ -22,14 +22,21 @@ REBIND_CC ?= musl-gcc
 
 PROT_OBJS := $(BLD)/xdg-shell-protocol.o $(BLD)/fake-input-protocol.o
 
-all: $(addprefix $(BIN)/,$(DRM_TOOLS)) $(addprefix $(BIN)/,$(UDEV_TOOLS)) \
-     $(addprefix $(BIN)/,$(WAYLAND_TOOLS)) $(BIN)/atomicspy.so $(BIN)/storage-rebind
+TOOLS := $(addprefix $(BIN)/,$(DRM_TOOLS) $(UDEV_TOOLS) $(WAYLAND_TOOLS)) $(BIN)/atomicspy.so
+
+# CI 只编 TOOLS：storage-rebind 必须用 musl 静态编（安卓 init mount ns 里没有 glibc），
+# 而 runner 上的 musl-gcc 只会产出 runner 架构的产物，跨编出来是错的东西。
+all: $(TOOLS) $(BIN)/storage-rebind
+ci: $(TOOLS)
 
 $(BIN) $(BLD):
 	mkdir -p $@
 
 # 显式规则优先于下面的通用规则：静态、不链 libdrm
 $(BIN)/storage-rebind: $(SRC)/storage-rebind.c | $(BIN)
+	@command -v $(REBIND_CC) >/dev/null 2>&1 || { \
+	  echo "storage-rebind 需要 $(REBIND_CC)（必须静态：安卓侧没有 glibc）。"; \
+	  echo "装它：sudo apt install musl-tools ；只要其余工具就跑：make ci"; exit 127; }
 	$(REBIND_CC) -static -O2 -Wall -o $@ $<
 
 $(BLD)/%.o: $(SRC)/%.c | $(BLD)
@@ -51,4 +58,4 @@ clean:
 	rm -rf $(BLD)
 	rm -f $(addprefix $(BIN)/,$(DRM_TOOLS) $(UDEV_TOOLS) $(WAYLAND_TOOLS)) $(BIN)/atomicspy.so
 
-.PHONY: all clean
+.PHONY: all ci clean
