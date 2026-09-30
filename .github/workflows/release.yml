@@ -86,6 +86,9 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+          # bootstrap 脚本必须是资产之一：新用户的第一条命令是"从 release 取它"，
+          # 只有仓库里有、release 里没有的话，就只能先 git clone 才能安装（10-01 补的缺口）。
           files: |
             drm-takeover-aarch64.tar.gz
             installer/lib/components.lock.json
+            installer/install-drm-tui.sh
