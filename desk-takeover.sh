@@ -1214,15 +1214,24 @@ if [ "$BTCUP" = 1 ]; then
     done
     if [ "$BTPOW" = 1 ]; then
         echo "BT-POWER OK $(date +%T): Powered: yes（第 $i 次）"
-        # 壳比适配器早起 ⇒ 重载一次，让 bluedevil 的托盘 applet / 系统设置页重新枚举适配器
-        # （判据：`grep -c plasma.bluetooth /proc/<plasmashell>/maps` 从 0 变 5 即已载入）
-        start_plasmashell
-        sleep 3
-        PMPID=$(pgrep -x plasmashell | head -1)
-        if [ -n "$PMPID" ] && grep -qc "plasma.bluetooth" /proc/$PMPID/maps 2>/dev/null; then
-            echo "BT-UI-REFRESH OK $(date +%T): plasmashell pid=$PMPID 已载入蓝牙 applet"
-        else
-            echo "BT-UI-REFRESH FAIL $(date +%T): pid=${PMPID:-没起来} 里看不到 org.kde.plasma.bluetooth（看 $LOGD/plasma.log）"
+        # 【显示修正·必做】class 级 rfkill 只要有一颗 type=bluetooth 是 soft-blocked，
+        # bluedevil 的托盘/设置页就显示"蓝牙已禁用"（它看的是 BluezQt::isBluetoothBlocked，
+        # 不是 Adapter1.Powered），而鼠标照连 —— 功能和显示分家。本机那颗是 vendor 的
+        # `bt_power`（接管轮里常年 soft=1）。用户平时的"手动开一下开关"其实就是解这个阻塞，
+        # 这里自动做掉。写的是 /dev/rfkill 的标准 RFKILL_OP_CHANGE，**不是** btpower 电源 ioctl
+        # （§蓝牙红线禁的是后者）；实测做完 `soft 1→0`，桥与已连接鼠标都不掉。
+        bash $DIR/scripts/bt-rfkill-unblock.sh || echo "BT-UNBLOCK FAIL $(date +%T): 没解成，托盘可能仍显示已禁用"
+        # 兜底：万一 applet 没响应 bluetoothBlockedChanged（旧版本/异常），可手动重载壳。
+        # 默认**不**自动重载 —— 那会让面板闪没一下，而且现在已知真正的原因是 rfkill 阻塞。
+        if [ "${BT_UI_REFRESH:-0}" = 1 ]; then
+            start_plasmashell
+            sleep 3
+            PMPID=$(pgrep -x plasmashell | head -1)
+            if [ -n "$PMPID" ] && grep -qc "plasma.bluetooth" /proc/$PMPID/maps 2>/dev/null; then
+                echo "BT-UI-REFRESH OK $(date +%T): plasmashell pid=$PMPID 已载入蓝牙 applet"
+            else
+                echo "BT-UI-REFRESH FAIL $(date +%T): pid=${PMPID:-没起来} 里看不到 org.kde.plasma.bluetooth（看 $LOGD/plasma.log）"
+            fi
         fi
     else
         echo "BT-POWER FAIL $(date +%T): 6 次 power on 后仍不是 Powered: yes —— $(bluetoothctl show 2>/dev/null | grep -E 'Powered|PowerState' | tr '\n' ' ') bt_power.soft=$( { for x in /sys/class/rfkill/rfkill*; do [ "$(cat $x/name 2>/dev/null)" = bt_power ] && cat $x/soft; done; } ) ⇒ 交给看门狗：它在 soft 归 0 后自动补 power on，不会重拉桥"
