@@ -440,6 +440,9 @@ run "stop"
 # kwin 拿不到屏 → 黑屏（09-21 的坑，drm-takeover 同款处理）
 run "setprop ctl.stop vendor.qti.hardware.display.composer"
 sleep 5
+# 阶段边界判据（09-30 给 drm-tui 的进度视图用）：这一段之后安卓显示栈整体下线、
+# 网会掉 10~40s 属预期；用户在这一段看到"没画面"是**正常过程**，不是失败。
+echo "ANDROID-STOP 安卓显示栈已放倒 $(date +%T)（接下来 10~40s 内网络会掉、屏幕暂时无画面，均属预期）"
 
 # ---- 2b) 音频桥开关（09-26 起默认开 → **09-30 改默认关**；要开用 AUDIO_BRIDGE=1）----
 # 为什么关：A 路 = 停掉 audioserver、我们的 argsloop SINK 直连 vendor AIDL HAL 独占喇叭输出端口
@@ -587,6 +590,10 @@ runuser -u xieyizhou -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
     QT_QPA_PLATFORM=wayland \
     timeout 5 wayland-info > $LOGD/wayland-info.log 2>&1
 [ $? = 0 ] || rollback "wayland-info self-check failed"
+# 第二处阶段边界：kwin 已持住 card0 且 wayland 协议自检通过 = **画面此刻已经上屏**
+# （此后才是起 Plasma 组件；drm-tui 用它把"kwin 上屏"和"桌面就绪"分开显示）。
+# 注意与既有教训一致：这条只代表"kwin 活着且能应答"，**不代表 plasmashell 起来了**（§7 判据纪律）。
+echo "KWIN-UP kwin 已接管显示并通过 wayland 自检 $(date +%T)（画面此刻应已上屏，正在起桌面组件）"
 # ---- 3a) XWayland（09-24：DRM 桌面缺它，X11-only 应用全打不开——星火商店/ZCode 是
 #      Electron 默认 x11 ozone，报 "Missing X server or $DISPLAY"；usb-manager 的 PyQt5
 #      源码里硬把 QT_QPA_PLATFORM=wayland 改写成 xcb，连退路都没有）。

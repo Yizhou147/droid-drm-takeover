@@ -1,0 +1,71 @@
+{
+  "_comment": [
+    "drm-tui 的唯一组件版本清单。安装器读它来决定「装什么、从哪个 tag、校验哪个 sha256」。",
+    "sha256 一律取 GitHub Release 资产 digest（CI 产出），不要手填本地算出来的值：",
+    "镜像站会截断/损坏文件，只有 digest 对上才允许装（工作总结 §21 / §41.14 两次实锤）。",
+    "注意 draft release 不进镜像站、也不会被 latest 认成最新，发 release 必须公开。"
+  ],
+
+  "schema": 1,
+
+  "target": {
+    "device": "piano",
+    "model_match": "Xiaomi Pad 8 Pro",
+    "distro": "ubuntu2604",
+    "desktop": "kde",
+    "_note": "接口位：以后适配别的发行版/桌面就在这里加条目，安装器 supported_target() 是唯一闸门点。"
+  },
+
+  "takeover": {
+    "repo": "Yizhou147/droid-drm-takeover",
+    "tag": "",
+    "asset": "drm-takeover-aarch64.tar.gz",
+    "sha256": "",
+    "contains": [
+      "desk-takeover.sh",
+      "drm-takeover.sh",
+      "scripts/",
+      "bin/  ← CI 交叉编译好的 aarch64 产物；用户端不编译（pad 上没有匹配的 libdrm-dev 工具链）"
+    ],
+    "_todo": "CI 的 release 作业产出上面这个 tar 后，把 tag/sha256 填进来（或由 publish 脚本自动写）。"
+  },
+
+  "keyboard": {
+    "repo": "Yizhou147/droid-pc-keyboard",
+    "tag": "v1.1.1",
+    "asset_template": "droid-pc-keyboard_{VERSION}_arm64.deb",
+    "requires_dry_run": true,
+    "_note": "装前必须 apt --dry-run 看有没有 Remv 行：初版 Breaks 曾把 plasma-keyboard→plasma-workspace→plasma-desktop 整串拆掉（工作总结 §21）。"
+  },
+
+  "patched_kwin": {
+    "repo": "Yizhou147/droidspaces-package",
+    "rolling_tag": "anland-kde-packages",
+    "asset": "anland-kde-ubuntu2604-kwin-6.6.6-arm64.tar.gz",
+    "installer": "install-anland-kde.sh",
+    "pinned_kwin_version": "6.6.6",
+    "verify_by": "manifest 比对 / strings 找 PCKEYD_INPUT_SOCKET / 读 /var/lib/anland-kde/apt-holds",
+    "verify_by_NOT": ["dpkg -V", "dpkg 记录的 md5sums", "apt changelog"],
+    "_note": "定制 deb 复用了 Ubuntu 版本串 4:6.6.6-0ubuntu0.1，并把自己那份抄自原厂的 md5sums 写进了 /var/lib/dpkg/info —— 三条常规校验全部失效（工作总结 §12.3）。它同时是 anland 会话在用的二进制，回退后 anland 可能起不来。"
+  },
+
+  "audio_bridge": {
+    "repo": "Yizhou147/droid-audio-bridge",
+    "tag": "",
+    "asset": "",
+    "_note": "孵化期；默认开但取不到产物时只降级不阻塞接管。"
+  },
+
+  "bluetooth_bridge": {
+    "repo": "Yizhou147/droid-bluetooth-bridge",
+    "tag": "",
+    "asset": "",
+    "_note": "孵化期；桥名截断到 15 字符（Linux comm 上限），进程匹配一律按 comm。"
+  },
+
+  "apt": {
+    "install_flags": ["-y", "--no-install-recommends"],
+    "post_install_audit": "systemctl list-unit-files --state=enabled 必须审计并 disable 新增自启单元",
+    "_note": "Recommends 带进 modemmanager 并 enable，plasmashell 查它的 D-Bus 干等 25 秒（工作总结 §41）；deb 自启单元暗雷另见 §09-23。"
+  }
+}
