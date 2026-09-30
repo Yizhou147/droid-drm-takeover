@@ -1,57 +1,68 @@
 #!/bin/bash
-# bt-power-watcher.sh — 只读取证：谁在收蓝牙芯片的电源。跑法：bash bt-power-watcher.sh [秒=180]
+# bt-power-watcher.sh — 抓"谁在收蓝牙芯片电源"的沿触发取证器（只读）。
+# 跑法：bash bt-power-watcher.sh [总秒=1800] [本地采样间隔秒=2]
 #
-# 采样对齐到同一时间轴的四路独立信号：
-#   A. 内核 rfkill：`bt_power`（vendor 电源域）与 `hci0`（每设备）各自的 soft/hard
-#   B. 内核侧适配器真实状态：`hciconfig hci0` 的 flags + TX commands/errors
-#   C. 安卓侧：`persist.vendor.bluetooth.state`、framework BT 服务与 app 进程是否活着
-#   D. 桥自己的计数（转发=内核→HAL 命令方向）
-# 一旦 A 的 bt_power soft **发生翻转**（0↔1），立刻打一条沿触发行并把那一刻的 logcat 尾部
-# 整段抓下来 —— 只有沿上才有"是谁做的"证据，定期采样是抓不到的。
-#
-# 三条探针纪律（都是 09-30 实测踩出来的，别再犯）：
-#   · 查进程用 `ps -A -o PID,NAME` 比对**进程名**，绝不用 `pgrep -f <包含点的字符串>`：
-#     那条字符串会出现在我自己 adb 命令的 cmdline 里 → 每轮 pid 都在变 = 纯假象；
-#   · 大文件计数用 `tail -n N` 按行取，`tail -c` 会切半行导致"读不到"被当成"冻住"；
-#   · `/sys/class/bluetooth/hci0/{address,flags}` 本机不存在（root 也读不到），不能当健康判据。
-# 全程零写入、不碰 rfkill、不动桥、不重启任何服务。
+# 设计要点（都是这两晚踩出来的）：
+#   1. **本地高频采样，不走 adb**：`/sys/class/rfkill/*/soft`（bt_power 与 hci0）从容器里直接可读，
+#      2s 一拍零成本。反过来若每拍都 adb 轮询，adb 自身的 binder/网络活动会把安卓从 idle 里
+#      拎出来 —— 我们想看的"HAL 空闲收电源"就永远不发生（观测者效应，09-30 差点栽在这）。
+#   2. **贵的东西只在沿上做**：soft 一翻转，才去抓 logcat/dmesg/dumpsys 那一刻的现场。
+#      事后 `logcat -d` 拿的是缓冲区尾部，所以沿后要**立刻**抓，晚几秒就被后续日志挤出窗口。
+#   3. hciconfig/bluez 也进同一时间轴：分清"芯片断电(bt_power)"、"适配器 DOWN(hci0)"、
+#      "bluez Powered: no"这三件事的先后顺序 —— 上一版把三者混成一句话，误判了一整晚。
+#   4. 绝不动作：不写 rfkill、不 unblock、不重启服务、不碰桥（电源协调归 btpower/HAL，红线）。
 DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
-[ -n "$DEV" ] || { echo "NO-ADB"; exit 1; }
-R=${1:-180}
-BTLOG=/data/local/tmp/bt-bridge.log
-PREV_SOFT=""
-PREV_LC=""
-run() { timeout 10 adb -s "$DEV" shell "su -c '$1'" 2>&1 | tr -d '\r'; }
-read_soft() {
+[ -n "$DEV" ] || { echo "NO-ADB（沿上就没法抓 logcat/dmesg 了）"; }
+R=${1:-1800}
+IV=${2:-2}
+OUT=${OUT:-/home/xieyizhou/Documents/XiaomiPad8Pro-drm-display/logs/bt-power-watch-$(date +%m%d-%H%M%S).log}
+run() { [ -n "$DEV" ] && timeout 10 adb -s "$DEV" shell "su -c '$1'" 2>&1 | tr -d '\r'; }
+rf() {   # rf() <name> → soft/hard
+    local f
     for f in /sys/class/rfkill/rfkill*; do
-        [ "$(cat $f/name 2>/dev/null)" = "$1" ] && { cat $f/soft 2>/dev/null; return; }
+        [ "$(cat $f/name 2>/dev/null)" = "$1" ] && { echo "$(cat $f/soft 2>/dev/null)-$(cat $f/hard 2>/dev/null)"; return; }
     done
     echo NOREAD
 }
+hci() { hciconfig hci0 2>/dev/null | awk 'NR==3' | tr -d '\n'; }
+pow() { bluetoothctl show 2>/dev/null | awk '/^\tPowered/{print $2}'; }
 
-echo "=== BT-POWER-WATCHER START $(date +%F_%T) 时长=${R}s ==="
-echo "时刻 | bt_power soft/hard | hci0 soft/hard | hciconfig flags | TX cmd/err | persist.state | svc.bluetooth | BT进程数 | 桥计数"
+dump_edge() {   # $1=old $2=new
+    {
+        echo ">>> 沿 $(date +%T): bt_power soft $1 → $2"
+        echo "    同一瞬间：hci0 rfkill=$(rf hci0) hci0-flags=[$(hci)] bluez.Powered=$(pow)"
+        echo "    桥计数（安卓侧日志尾，取整行）:"
+        run "tail -n 400 /data/local/tmp/bt-bridge.log | grep -a 转发= | tail -3" | sed 's/^/      /'
+        echo "    dmesg Δ:"
+        run "dmesg 2>/dev/null | grep -i -e btpower -e bt_power -e bluetooth -e hci -e cnss -e glink -e ttyHS | tail -10" | sed 's/^/      /'
+        echo "    logcat Δ（HAL/电源/rfkill 相关）:"
+        run "logcat -d -t 800 2>/dev/null | grep -i -e ibs_handler -e SerialClockVote -e wake_lock -e btpower -e rfkill -e DataHandler -e PowerManager -e bluetooth@ | grep -v -e adbd -e ShellService | tail -25" | sed 's/^/      /'
+        echo "    安卓侧状态:"
+        run "getprop bluetooth.status; getprop persist.vendor.bluetooth.state; getprop init.svc.bluetooth; dumpsys power 2>/dev/null | grep -m1 -e mWakefulness=; dumpsys deviceidle 2>/dev/null | grep -m1 -e mState=" | sed 's/^/      /'
+        echo "<<< 沿现场结束"
+    } 2>&1 | tee -a "$OUT"
+}
+
+PREV=""
+EDGES=0
+echo "=== BT-POWER-WATCHER START $(date +%F_%T) 时长=${R}s 本地间隔=${IV}s 输出=$OUT ===" | tee -a "$OUT"
+echo "时刻 | bt_power | hci0 rfkill | hci0 flags | bluez.Powered" | tee -a "$OUT"
 end=$(( $(date +%s) + R ))
+N=0
 while [ "$(date +%s)" -lt "$end" ]; do
+    S=$(rf bt_power)
     TS=$(date +%T)
-    S1=$(read_soft bt_power); H1=$(cat /sys/class/rfkill/rfkill*/hard 2>/dev/null | head -1)
-    S2=$(read_soft hci0)
-    HCI=$(hciconfig hci0 2>/dev/null | awk 'NR==3' | sed 's/^ *//')
-    TXE=$(hciconfig -a hci0 2>/dev/null | grep -o "TX bytes.*" | head -1)
-    # 注意：run() 会把整条命令塞进 su -c '...'，所以**内部不能再出现单引号**
-    # （上一版里的 awk '...' 和 grep -a '...' 都被打断，报错行还会把后面的列挤位）
-    A=$(run "getprop persist.vendor.bluetooth.state; getprop init.svc.bluetooth; ps -A -o NAME= | grep -cx com.android.bluetooth; tail -n 400 $BTLOG | grep -a 转发= | tail -1")
-    PS=$(echo "$A" | sed -n 1p); SVC=$(echo "$A" | sed -n 2p); NPI=$(echo "$A" | sed -n 3p)
-    CNT=$(echo "$A" | sed -n 4p | sed -n 's/.*转发=\([0-9]*\) 收回=\([0-9]*\) 回调=\([0-9]*\).*/\1 \2 \3/p')
-    echo "$TS | bt_power=$S1 | hci0=$S2 | [$HCI] | ${TXE:-无} | persist=${PS:-NOREAD} | svc=${SVC:-空} | btdApp=${NPI:-NOREAD} | ${CNT:-NOREAD}"
-
-    if [ -n "$PREV_SOFT" ] && [ "$S1" != "$PREV_SOFT" ]; then
-        echo ">>> 沿触发 $(date +%T): bt_power soft $PREV_SOFT → $S1 —— 抓这一秒的现场 <<<"
-        echo "    hciconfig: $(hciconfig -a hci0 2>&1 | head -4 | tr '\n' ' ')"
-        echo "    dmesg Δ:"; run "dmesg 2>/dev/null | grep -iE btpower -e bt_power -e bluetooth -e hci -e cnss -e glink | tail -8" | sed 's/^/      /'
-        echo "    logcat Δ:"; run "logcat -d -t 300 2>/dev/null | grep -iE bluetooth -e btpower -e rfkill -e ibs_ -e DataHandler -e PowerManager -e suspend | grep -viE adbd -e ShellService | tail -18" | sed 's/^/      /'
+    if [ -n "$PREV" ] && [ "$S" != "$PREV" ]; then
+        EDGES=$((EDGES+1))
+        dump_edge "$PREV" "$S"
     fi
-    PREV_SOFT=$S1
-    sleep 5
+    # 稳态每 30 拍（≈1 分钟）落一行摘要，日志不会被 2s 一拍撑爆
+    if [ "$((N % 30))" = 0 ]; then
+        printf "%s | bt_power=%s | hci0=%s | [%s] | Powered=%s\n" \
+            "$TS" "$S" "$(rf hci0)" "$(hci)" "$(pow)" | tee -a "$OUT"
+    fi
+    PREV=$S
+    N=$((N+1))
+    sleep "$IV"
 done
-echo "=== BT-POWER-WATCHER DONE $(date +%T) 期间沿次数见上面 >>> 行 ==="
+echo "=== BT-POWER-WATCHER DONE $(date +%T)：$N 拍，捕获沿 $EDGES 次（沿现场见上面 >>> 行 / $OUT）===" | tee -a "$OUT"

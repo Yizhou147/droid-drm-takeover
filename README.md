@@ -39,7 +39,7 @@
 desk-takeover.sh        全自动接管入口：显示 + 桌面 + WiFi + 蓝牙 + 音频（推荐）
 drm-takeover.sh         单轮/常驻接管（无完整桌面），带回滚；常驻用 PERSIST=1 MODE=kwin
 scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
-                        / vkb-show / aa-feeder / bt-keepalive / input-node-sync / power-state-sync / log收集
+                        / vkb-show / aa-feeder / bt-keepalive / bt-power-watcher / bt-anland-baseline / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
 docs/tools.md           全部编译产物的用法手册与新设备适配流程（英文版 docs/tools_english.md）

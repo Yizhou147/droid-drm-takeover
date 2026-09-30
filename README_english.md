@@ -48,7 +48,7 @@ The hard part is not the userspace GPU driver (the rendering stack is untouched)
 desk-takeover.sh        Fully automatic takeover entry: display + desktop + WiFi + Bluetooth + audio (recommended)
 drm-takeover.sh         Single-round/persistent takeover (no full desktop), with rollback; use PERSIST=1 MODE=kwin for persistent
 scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
-                        / vkb-show / aa-feeder / bt-keepalive / input-node-sync / power-state-sync / log收集
+                        / vkb-show / aa-feeder / bt-keepalive / bt-power-watcher / bt-anland-baseline / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap (core) + KMS probe suite + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example (WiFi fallback config sample)
 docs/tools.md           Usage manual for all build artifacts + new-device adaptation flow
