@@ -46,7 +46,7 @@ cleanup() { [ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"; }
 trap cleanup EXIT
 DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
 [ -n "$DEV" ] || { echo "BT-KEEPALIVE EXIT $(date +%T): 没有 adb 设备，无法观测安卓侧状态"; exit 0; }
-BTBIN=${BTBIN:-${BT_BIN:-/data/local/tmp/bthci-bridge}}   # BT_BIN 可指向 -v2，用于灰度新二进制
+BTBIN=${BTBIN:-${BT_BIN:-/data/local/tmp/bthci-bridge-v2}}   # 默认跟着 desk-takeover 走 v2；BT_BIN 可指回旧构建
 BTLOG=${BTLOG:-/data/local/tmp/bt-bridge.log}
 # 现场目录与接管轮日志同处 = <项目根>/logs（本脚本在 <项目根>/droid-drm-takeover/scripts/）
 SNAPD=${SNAP_DIR:-$(dirname "$(dirname "$(dirname "$(readlink -f "$0")")")")/logs}
@@ -83,7 +83,10 @@ chip_blocked() {   # 芯片电源那颗 rfkill（name=bt_power，归 vendor HAL/
     echo "0:-"
 }
 
-bridge_pid() { run "pgrep -x bthci-bridge" | tr -d '\r' | grep -E '^[0-9]+$' | head -1; }
+# 按 **comm** 匹配：不带 -x（部署名 bthci-bridge-v2 会被 -x 整体漏掉 → 本进程把在跑的桥当"没有桥"，
+# 重拉时直接再起一个 = 两个 HAL 客户端抢芯片），不带 -f（`su -c` 的包装壳 cmdline 里带着桥路径，
+# 会自匹配：实测 6 个"命中"里 5 个是壳）。返回**全部** pid，多实例要看得见，别 head -1 藏起来。
+bridge_pid() { run "pgrep bthci-bridge" | tr -d '\r' | grep -E '^[0-9]+$' | tr '\n' ' '; }
 
 # ★ 通道是否已哑：**只看内核侧硬信号，不看 bluez 的 Powered**。
 #   09-30 19:2x 就是反例——`Powered: yes`、UI 一切正常，而内核每 2s 刷
@@ -154,7 +157,7 @@ launch_bridge() {   # ② 重拉桥：**所有**重拉路径都必须走这里�
     if [ "$RESTARTS" -ge "$RESTART_MAX" ]; then
         snapshot "$1（重拉已达上限 $RESTART_MAX）"
         echo "BT-GIVEUP $(now): 已重拉 $RESTARTS 次仍不可用 ⇒ 停止再动 HAL（猛拉只会多造残留客户端）。"
-        echo "          人工恢复：adb shell su -c 'pkill -x bthci-bridge' 后重跑一轮，或交还安卓让 framework 自己复位"
+        echo "          人工恢复：adb shell su -c 'for p in \$(pgrep bthci-bridge); do kill -9 \$p; done' 后重跑一轮，或交还安卓让 framework 自己复位"
         GAVEUP=1
         return
     fi
@@ -164,7 +167,7 @@ launch_bridge() {   # ② 重拉桥：**所有**重拉路径都必须走这里�
     # `</dev/null`：detached 进程别占着 adb 的 pty。这行历史上每次吃满超时（真因未定，
     # 实测单独 launch 一个 detached sleep 只要 0.1s）⇒ 不把超时当失败，发出后另行实证。
     OLD=$(bridge_pid)
-    run "pkill -x bthci-bridge"
+    run 'for p in $(pgrep bthci-bridge); do kill $p; done'
     sleep 2
     run "nohup $BTBIN --keep 0 </dev/null >>$BTLOG 2>&1 &"
     RESTARTS=$(( RESTARTS + 1 ))
@@ -172,7 +175,7 @@ launch_bridge() {   # ② 重拉桥：**所有**重拉路径都必须走这里�
     PREV_FWD=""; FWD_FROZEN=0; FAILS=0; KICKED=""
     sleep 2
     NEW=$(bridge_pid)
-    N=$(run "pgrep -x bthci-bridge | wc -l" | tr -d '\r' | grep -E '^[0-9]+$' | tail -1)
+    N=$(printf '%s' "$NEW" | grep -o '[0-9]\+' | wc -l)
     echo "BT-RESTART #$RESTARTS $(now): 旧桥=[${OLD:-无}] → 新桥=[${NEW:-查不到}] 进程数=$N（本轮上限 $RESTART_MAX，${GRACE}s 内不判定）"
     [ "$N" != 1 ] && echo "BT-RESTART WARN: 桥上进程数不是 1 ⇒ 多客户端风险，停止后续重拉" && GAVEUP=1
 }

@@ -50,7 +50,11 @@ rm -f $STARTED_FLAG
     pkill -9 -f "kwinwrap --out"; pkill -9 -f "socket=taketest"
     pkill -9 -f "kwin_wayland --"; pkill -9 -f "plasmashell"
     pkill -9 -f "bt-keepalive[.]sh" 2>/dev/null   # 必须先于杀桥：否则桥一被杀，看门狗立刻把它当"没在跑"重拉
-    pkill -9 -x bthci-bridge   # 放掉容器侧 HCI 接管（进程退→tty 关→内核自动注销 hci0）
+    # 桥在**安卓的 PID ns**里（它是 adb shell 起起来的），容器侧 pgrep/pkill 永远看不见它 ——
+    # 老写法 `pkill -9 -x bthci-bridge` 在这条保命路径上是彻底的空操作（09-30 实测：容器侧
+    # pgrep 为空、/proc/5751 不存在，而安卓侧同一个 pid 活得好好的）。必须走 run 到安卓侧，
+    # 并且按 comm 匹配（不带 -x：部署名 bthci-bridge-v2 会漏；不带 -f：su -c 的壳会自匹配）。
+    run 'for p in $(pgrep bthci-bridge); do kill -9 $p; done'   # 进程退→tty 关→内核自动注销 hci0
     pkill -9 -f "aa-feeder.sh" 2>/dev/null    # A 路音频：容器 feeder + 安卓 argsloop sink
     pkill -9 -f "pc-keyd.py" 2>/dev/null         # pc-keyd 的 uinput 键盘会令安卓常驻物理键盘通知（09-27）；轮内没起它则无操作
     WDEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
@@ -167,7 +171,9 @@ fi
 # 顺序：先停看门狗（它会替桥"复活"），再杀桥。
 # 看门狗是容器侧常驻进程，交还后若还活着就会跟安卓自己的蓝牙栈抢 HAL 客户端位（5.30 事故家族）。
 pkill -f "bt-keepalive[.]sh" 2>/dev/null
-pkill -x bthci-bridge 2>/dev/null
+# 桥在安卓 PID ns：容器侧 pkill 是空操作，一律走 run（见上面保命看门狗那条注释）
+run 'for p in $(pgrep bthci-bridge); do kill $p; done'
+sleep 2
 # 轮内"蓝牙关不掉"的总线策略只对本轮有效，交还即撤（轮外桌面就该能自己关蓝牙）。
 # 实测过这条 deny 不 ReloadConfig 也会随文件消失而失效，但那是"碰巧"，这里显式 Reload 一次。
 if [ -f /etc/dbus-1/system.d/61-bluez-drm-lock.conf ]; then
@@ -291,12 +297,17 @@ if [ -n "$KALEFT" ]; then
     pkill -9 -f "bt-keepalive[.]sh"; sleep 1
     echo "BT-LEAK: 看门狗没死($KALEFT) → 已强杀（不先杀它，下面的重桥会立刻把桥再拉起来）"
 fi
-BTLEFT=$(pgrep -x bthci-bridge | tr '\n' ' ')
-if [ -n "$BTLEFT" ]; then
-    pkill -9 -x bthci-bridge; sleep 1
-    echo "BT-LEAK: 桥没死干净($BTLEFT) → 已强杀（hci0 随 tty 关闭自动注销）"
+BTLEFT=$(run 'pgrep bthci-bridge' | tr -d '\r' | grep -E '^[0-9]+$' | tr '\n' ' ')
+if [ -n "${BTLEFT// /}" ]; then
+    run 'for p in $(pgrep bthci-bridge); do kill -9 $p; done'; sleep 1
+    BTSTILL=$(run 'pgrep bthci-bridge' | tr -d '\r' | grep -E '^[0-9]+$' | tr '\n' ' ')
+    if [ -n "${BTSTILL// /}" ]; then
+        echo "BT-LEAK-STILL $(date +%T): 强杀后安卓侧仍有桥 pids=${BTSTILL}（hci0 还被容器占着，安卓蓝牙栈起不来；手杀：adb shell su -c 'kill -9 ${BTSTILL// /}'）"
+    else
+        echo "BT-LEAK: 桥没死干净($BTLEFT) → 已强杀（hci0 随 tty 关闭自动注销）"
+    fi
 elif [ -z "$KALEFT" ]; then
-    echo "BT-HANDOVER OK $(date +%T): 容器侧无残留桥、无残留看门狗"
+    echo "BT-HANDOVER OK $(date +%T): 安卓侧无残留桥、容器侧无残留看门狗"
 fi
 [ -e /sys/class/bluetooth/hci0 ] && echo "BT-WARN: /sys/class/bluetooth/hci0 还在（注销慢一拍或另有持有者）"
 

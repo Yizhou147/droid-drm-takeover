@@ -44,6 +44,22 @@ run() {
     printf '%s\n' "$out"
     return $rc
 }
+# 蓝牙桥的进程匹配：一律按 **comm** 匹配（`pgrep bthci-bridge`，不带 -f 也不带 -x）。
+# 两个方向都踩过坑（09-30 灰度 bthci-bridge-v2 时全部现形）：
+#   · `-x bthci-bridge` 精确匹配 → 改名的桥全体失配：交还/回滚杀不掉它（HAL 客户端位不还安卓）、
+#     开局单实例判据看不出已有桥（会再起一个 = 两个 HAL 客户端，正是 §63 那个卡死机制）、
+#     desk-stop 的 BT-HANDOVER 判据查不到残留 → 明明活着却报 OK。
+#   · `-f` 按 cmdline 匹配 → 更糟：`su -c` 的包装 sh 的 cmdline 里带着桥的路径，会自匹配
+#     （实测 6 个"命中"里 5 个是壳），既误判"已有桥"从而不启动，也可能当场杀死自己的壳。
+# 桥名截断到 15 字符（Linux comm 上限），所以灰度命名别超过 bthci-bridge-vNNN。
+bridge_pids() { run "pgrep bthci-bridge" | tr -d '\r' | grep -E '^[0-9]+$'; }
+bridge_kill() {
+    local pids
+    pids=$(bridge_pids | tr '\n' ' ')
+    [ -n "${pids// /}" ] || return 0
+    run "kill $pids"
+    echo "BT-BRIDGE KILL $(date +%T): pids=${pids}"
+}
 # supplicant 收尾先优雅退出、超时才 -9（机制上站得住：cfg80211 的 scheduled-scan `Match`
 # 只有它自己退出时才注销，被 SIGKILL 就没人清）。
 # **但别把它当"第二轮 WiFi 炸"的解药** —— 历史日志里可比的是"自拉 supplicant + WIFI-ASSOC 探针
@@ -116,7 +132,9 @@ rollback() {
     # rollback 不走 desk-stop，所以这里也得自己杀（见工作总结 5.30）。
     # 顺序要紧：先停看门狗，再杀桥 —— 反过来桥被杀的那一瞬间看门狗会把它当"桥没在跑"重新拉起。
     pkill -f "bt-keepalive[.]sh" 2>/dev/null
-    run "pkill -x bthci-bridge"
+    bridge_kill
+    # 交还/回滚路径杀完必须确认杀干净（历史坑见上：漏网 = 安卓 framework 拿不到 HAL）
+    echo "BT-BRIDGE-AFTER-ROLLBACK left=$(bridge_pids | tr '\n' ' ') $(date +%T)"
     # 总线策略也不能泄漏给轮外（rollback 不走 desk-stop，得自己撤）
     if [ -f /etc/dbus-1/system.d/61-bluez-drm-lock.conf ]; then
         rm -f /etc/dbus-1/system.d/61-bluez-drm-lock.conf
@@ -1160,12 +1178,14 @@ fi
 # 三道护栏（都是被实测逼出来的，缺一不可）：
 #   ① 桥自熔断：每 10s 查 init.svc.surfaceflinger，一旦 running 就自退
 #      （曾抓到 surfaceflinger=running 时桥还活着 = 安卓蓝牙栈与我们同时持有 HAL 客户端位）；
-#   ② desk-stop 的 kill_desktop 与 50s 看门狗都 pkill -x bthci-bridge；
-#   ③ desk-takeover 的 rollback 分支也 pkill（KDE 重启/回滚都不走 desk-stop）。
-# 交还时 desk-stop 先 pkill -x bthci-bridge：进程一退 tty 就关 → 内核自动注销 hci0。
+#   ② desk-stop 的 kill_desktop 与 50s 看门狗都杀桥（**必须走 run 到安卓侧**：桥在安卓 PID ns，
+#      容器侧 pgrep 看不见它，09-30 之前那两行容器侧 pkill 一直是空操作 = 假护栏）；
+#   ③ desk-takeover 的 rollback 分支也杀（KDE 重启/回滚都不走 desk-stop）。
+# 交还时 desk-stop 先杀桥：进程一退 tty 就关 → 内核自动注销 hci0。
+# 匹配一律 `pgrep bthci-bridge`（按 comm）：-x 会漏掉改名的桥，-f 会自匹配 su -c 的壳，见 bridge_pids()
 if [ "${BT_BRIDGE:-1}" = 1 ]; then
-BTBIN=${BT_BIN:-/data/local/tmp/bthci-bridge}
-echo "BT-BIN $BTBIN $(date +%T)（用 BT_BIN=/data/local/tmp/bthci-bridge-v2 可灰度新构建）"
+BTBIN=${BT_BIN:-/data/local/tmp/bthci-bridge-v2}
+echo "BT-BIN $BTBIN $(date +%T)（v2 已实测一轮：转发 240 命令、内核侧 errors=0、鼠标 96% 电量在线、在途命令=[无]、写pty 全 full 无丢包；退回旧构建用 BT_BIN=/data/local/tmp/bthci-bridge）"
 # 桥的 kickHci 是"借容器 bluetoothd 的 ns 跑 hciconfig hci0 up"，bluetoothd 不在就没内核侧 init
 systemctl start bluetooth 2>/dev/null
 # 【开局遇到 bt_power soft=1 怎么办：等，不是跳过】09-30 实测两遍，第二遍把我的"定案"推翻了：
@@ -1188,7 +1208,15 @@ fi
 # `</dev/null`：detached 进程别占着 adb 的 pty。注意历史上这行每次吃满 12s 超时
 # （logs/desk-takeover.log 里 RUN-TIMEOUT 118 条全是它），但实测单独 launch 一个 detached
 # sleep 只花 0.1s ⇒ 超时真因未定，别把加这行说成"修好了超时"，它只是卫生写法。
-run "test -x $BTBIN || echo BT-NO-BIN; pgrep -x bthci-bridge || nohup $BTBIN --keep 0 </dev/null >>/data/local/tmp/bt-bridge.log 2>&1 &"
+run "test -x $BTBIN || echo BT-NO-BIN; pgrep bthci-bridge || nohup $BTBIN --keep 0 </dev/null >>/data/local/tmp/bt-bridge.log 2>&1 &"
+# 开局就要确认"只有一个桥"：两个桥 = 两个 HAL 客户端抢同一颗芯片（§63 那个卡死就是这么来的）
+sleep 2
+BPIDS=$(bridge_pids)
+BCOUNT=$(printf '%s\n' "$BPIDS" | grep -c '^[0-9]')
+if [ "$BCOUNT" != 1 ]; then
+    echo "BT-BRIDGE MULTI $(date +%T): 进程数=$BCOUNT pids=$(echo $BPIDS | tr '\n' ' ') ⇒ 本轮蓝牙不可信（多半是上一个交还轮的桥没被杀掉），先 desk-stop 再重跑"
+fi
+[ "$BCOUNT" = 1 ] && echo "BT-BRIDGE ONLY $(date +%T): pid=$BPIDS name=$(run "cat /proc/$BPIDS/comm" | tr -d '\r' | tail -1)"
 # 判据要重试：桥的 initialize→initializationComplete→内核 init 60 命令→bluetoothd 认领
 # 整串要在 WiFi 关联同窗口排队，+8s 单发经常赶不上（16:59 轮实测：报 FAIL 时桥其实活着，
 # bt-bridge.log 里 hciEventReceived 一直有——FAIL 是判据太早，不是功能坏）。

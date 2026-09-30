@@ -48,7 +48,7 @@ collector() {
   # 一次 adb 拿全设备视角数据（pid/状态/wchan 必须同 ns）。
   # 顺序教训（09-25 16:05 轮实锤）：rtnl 冻结时 `ip -o link`/`iw dev` 会挂死并被 12s timeout
   # 连坐截掉后面的 dmesg/计数段（那段才是找死因的关键）⇒ counts/dmesg 在前，ip/iw 垫底。
-  local PAY_MAIN='echo IP-PROCS:; for p in /proc/[0-9]*; do [ -f $p/cmdline ] || continue; c=$(tr "\0" " " 2>/dev/null < $p/cmdline); case " $c" in " ip "*) echo IPPID $(basename $p) "$c";; esac; done; echo D-R-PROCS:; ps -eo pid,stat,wchan:40,args | grep -E "^[[:space:]]*[0-9]+ [DR]"; echo SF=$(getprop init.svc.surfaceflinger); echo BRIDGE=$(pgrep -x bthci-bridge | tr "\n" " "); echo HCI=$(ls /sys/class/bluetooth 2>/dev/null | tr "\n" " "); echo REC_COUNT=$(dmesg | grep -c is_driver_recovering); echo TIMEDOUT_COUNT=$(dmesg | grep -c "Driver Loading Timed-out"); dmesg | tail -400 | grep -iE "cnss|wlan|peach|btpower|cfg80211|blk: " | tail -25; echo WLAN-LINK:; ip -o -br link show wlan0; iw dev'
+  local PAY_MAIN='echo IP-PROCS:; for p in /proc/[0-9]*; do [ -f $p/cmdline ] || continue; c=$(tr "\0" " " 2>/dev/null < $p/cmdline); case " $c" in " ip "*) echo IPPID $(basename $p) "$c";; esac; done; echo D-R-PROCS:; ps -eo pid,stat,wchan:40,args | grep -E "^[[:space:]]*[0-9]+ [DR]"; echo SF=$(getprop init.svc.surfaceflinger); echo BRIDGE=$(pgrep bthci-bridge | tr "\n" " "); echo HCI=$(ls /sys/class/bluetooth 2>/dev/null | tr "\n" " "); echo REC_COUNT=$(dmesg | grep -c is_driver_recovering); echo TIMEDOUT_COUNT=$(dmesg | grep -c "Driver Loading Timed-out"); dmesg | tail -400 | grep -iE "cnss|wlan|peach|btpower|cfg80211|blk: " | tail -25; echo WLAN-LINK:; ip -o -br link show wlan0; iw dev'
   while :; do
     local T=$(date '+%m%d-%H%M%S')
     local SNAP
