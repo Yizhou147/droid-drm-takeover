@@ -13,6 +13,12 @@
 # ★ 一条把设计打穿过的实测事实：**桥跑在安卓的 PID ns 里，容器侧 pgrep 看不见它**
 #   （同一时刻安卓侧 pid=23637，容器侧 `pgrep -x bthci-bridge` 为空）。
 #   所以桥的存活/计数一律经 adb 问安卓侧；任何"本地 pgrep 说桥死了"都不能当证据。
+# ★ 两条探针陷阱（09-30 都栽过，写死）：
+#   · `/sys/class/bluetooth/hci0/{address,flags}` 在本机**不存在**（root 读也 No such file）
+#     ⇒ "address 读不到"完全不能当卡死签名；要看 `hciconfig hci0` 的 flags
+#     （`DOWN` vs `UP RUNNING`）与 TX `commands/errors`——那才是内核侧真实状态；
+#   · 桥日志已 500MB+，计数**必须 `tail -n` 按行取**：`tail -c` 会切出半行让 sed 落空，
+#     显示成 `NOREAD`——那是探针自己坏了，不是"通道冻结"。上一版据此误判过。
 #
 # 三级台阶（判据以桥自己的计数为准——那是 HCI 通道的地表事实，bluetoothd 的 Powered 只是下游表象）：
 #   ① `hciconfig hci0 up`：内核侧重踢，零成本（桥 setup 时自己也是这么干的）
@@ -79,9 +85,18 @@ chip_blocked() {   # 芯片电源那颗 rfkill（name=bt_power，归 vendor HAL/
 
 bridge_pid() { run "pgrep -x bthci-bridge" | tr -d '\r' | grep -E '^[0-9]+$' | head -1; }
 
-counters() {   # 桥自己的计数（tail -c 限量：日志已 270 万行，绝不整读）
-    run "tail -c 4000 $BTLOG | grep -a '转发=' | tail -1" | tr -d '\r' \
+counters() {   # 桥自己的计数（**必须按行取**：日志已 500MB+，`tail -c` 会把整行切成半截，
+    # 于是 sed 匹配不到 → 显示 NOREAD，那是探针的假象不是"冻结"。行数上界 = 成本上界。）
+    run "tail -n 400 $BTLOG | grep -a '转发=' | tail -1" | tr -d '\r' \
         | sed -n 's/.*转发=\([0-9]*\) 收回=\([0-9]*\) 回调=\([0-9]*\).*/\1 \2 \3/p' | tail -1
+}
+
+hci_state() {  # 内核侧 hci0 的真实状态
+    # ⚠ 不要用 /sys/class/bluetooth/hci0/{address,flags}：本机（vendor 内核 + UART/pty 注册的 hci0）
+    #   **这些属性根本不存在**，root 读也是 `No such file or directory`（09-30 实测）。
+    #   我昨晚把"address 读不到"当过"空壳/卡死"签名，那条判据不成立，别再引用。
+    # hciconfig 走 HCI socket，给的是真东西：flags（DOWN / UP RUNNING …）+ RX/TX 与 errors 计数。
+    hciconfig hci0 2>/dev/null | awk 'NR<=3' | tr '\n' ' ' | sed 's/  */ /g'
 }
 
 snapshot() {   # 留一份事后能定位的现场：判定依据 + 两侧进程状态 + 内核/安卓最近日志
@@ -92,7 +107,7 @@ snapshot() {   # 留一份事后能定位的现场：判定依据 + 两侧进程
         echo "=== BT-WEDGE-SNAPSHOT $(date +%F_%T) 触发原因: $1 ==="
         echo "--- bluez 侧 ---"
         ctl show | grep -E 'Controller|Powered|PowerState'
-        echo "hci0.flags=$(cat /sys/class/bluetooth/hci0/flags 2>&1) address=$(cat /sys/class/bluetooth/hci0/address 2>&1)"
+        echo "hci0: $(hci_state)"
         for r in /sys/class/rfkill/rfkill*; do
             [ "$(cat $r/type 2>/dev/null)" = bluetooth ] || continue
             echo "  $(basename $r) soft=$(cat $r/soft 2>/dev/null) hard=$(cat $r/hard 2>/dev/null) name=$(cat $r/name 2>/dev/null)"
@@ -100,13 +115,17 @@ snapshot() {   # 留一份事后能定位的现场：判定依据 + 两侧进程
         echo "--- 判定用的原始证据 ---"
         echo "prev=[$PREV] 本轮=[${CNT:-NOREAD}] fwd_frozen=$FWD_FROZEN powfail=$FAILS restarts=$RESTARTS"
         echo "--- 桥日志（去掉事件洪水）---"
-        run "tail -c 3000 $BTLOG | grep -av hciEventReceived" | tr -d '\r' | tail -20
+        run "tail -n 1200 $BTLOG | grep -av hciEventReceived" | tr -d '\r' | tail -20
         echo "--- 桥与 HAL 的线程状态（安卓侧，桥就在那边）---"
-        run "for t in /proc/${BP:-0}/task/*; do echo \$(basename \$t) \$(awk '{print \$3}' \$t/stat 2>/dev/null) \$(cat \$t/wchan 2>/dev/null); done; pidof android.hardware.bluetooth@aidl-service-qti" | tr -d '\r'
+        # 解析放在本地做：su -c '...' 里塞 awk '…' 会被引号拼接打断（09-30 实测同类坑）
+        run "cat /proc/${BP:-0}/task/*/stat 2>/dev/null" | tr -d '\r' \
+            | awk -v me="$BP" '$1==me || $1 ~ /^[0-9]+$/ {printf "  tid=%s state=%s comm=%s\n", $1, $3, $2}' | head -8
+        run "cat /proc/${BP:-0}/task/*/wchan 2>/dev/null; echo ---" | tr -d '\r' | head -8
+        run "pidof android.hardware.bluetooth@aidl-service-qti" | tr -d '\r'
         echo "--- HAL logcat ---"
-        run "logcat -d -t 200 2>/dev/null | grep -iE 'bluetooth@|DataHandler|ibs_handler|INITIALIZATION' | tail -12" | tr -d '\r'
+        run "logcat -d -t 300 2>/dev/null | grep -i -e bluetooth@ -e DataHandler -e ibs_handler -e INITIALIZATION | grep -v -e adbd -e ShellService | tail -12" | tr -d '\r'
         echo "--- 内核侧（容器读不到 dmesg，走安卓）---"
-        run "dmesg 2>/dev/null | grep -iE 'bluetooth|hci|btpower|ttyHS|glink' | tail -15" | tr -d '\r'
+        run "dmesg 2>/dev/null | grep -i -e bluetooth -e hci -e btpower -e ttyHS -e glink | tail -15" | tr -d '\r'
     } > "$f" 2>&1
     echo "BT-SNAPSHOT $(now): 现场已存 $f"
 }
@@ -159,6 +178,9 @@ while :; do
     HASCTRL=$(echo "$SHOW" | grep -c '^Controller')
 
     if [ "$HASCTRL" = 1 ] && echo "$SHOW" | grep -q 'Powered: yes'; then
+        # 交叉核对：bluez 说上电了，内核侧 hci0 却不在 UP RUNNING ⇒ 明报不一致，但仍按健康处理
+        # （只报不动作——上一版就是因为把 sysfs 读不到当"卡死"才疯狂重拉）
+        hci_state | grep -q "UP RUNNING" || echo "BT-KEEPALIVE INCONSISTENT $(now): bluez Powered: yes 但 hci: $(hci_state)"
         [ "$FAILS" != 0 ] && echo "BT-KEEPALIVE RECOVERED $(now): Powered: yes（此前连轮 $FAILS）"
         # 被别人救活（人工 pkill 后重跑、或安卓自己复位）就重新开始守，别抱着 GAVEUP 不放
         [ -n "$GAVEUP" ] && { echo "BT-GIVEUP CLEAR $(now): 蓝牙已可用，恢复守门"; GAVEUP=""; RESTARTS=0; }
@@ -166,26 +188,30 @@ while :; do
         sleep "$INTERVAL"; continue
     fi
 
-    # ★ `bt_power soft=1` 是**暂态**，不是死局（09-30 实测两次，第二次把我自己的"定案"推翻了）：
-    #   芯片电源由 vendor HAL/btpower 协调，接管开局那几分钟常是 soft=1；它自己会回 0，
-    #   一回 0，同一个桥（**不重拉**）就通：00:52:15 还卡在 `转发=50 收回=50 回调=51`，
-    #   00:54:54 soft 归 0 → root `bluetoothctl power on` 一次 → 00:54:57 `Powered: yes`，
-    #   同一进程计数直接走到 `转发=152 收回=1257`。
+    # ★ `bt_power soft=1` 是**正常休眠，不是故障**（09-30 用户提出、实测支持，我此前的"定案"过重）：
+    #   这就是 vendor HAL 的带内休眠(IBS)电源管理 —— logcat 里 `IBS_WAKE_IND/IBS_SLEEP_IND` +
+    #   `SerialClockVote: UART CLK ON/OFF` + `Release wakelock` 在**健康期也在打**；
+    #   而且 `system_suspend=stopped`、wake_lock 持有 `hal_bluetooth_lock qoderdbg`、
+    #   安卓 BT app 进程数=0 —— 三个"嫌疑犯"都排除了。
+    #   实测证据：同一座**从未重拉**的桥，soft 回 0 后计数从 152 直接走到 651/659、
+    #   `hciconfig` = `UP RUNNING`、`TX errors=0`（"睡了叫得醒、醒了继续跑"）；
+    #   00:52:15 卡在 `转发=50` → 00:54:54 soft 归 0 → root power on 一次 → `Powered: yes`。
+    #   ⇒ 唯一真正要管的情形是"**睡了叫不醒**"；目前还没有一次证据出现过。
     #   ⇒ 正确动作是**等 + 到位后 power on 一次**；重拉桥反而是伤害（每次重拉注销 hci0，
     #     把正在逼近的电源窗口又吹掉 —— 09-30 前 17 次重拉一次都没治好，就是这个机制）。
     CB=$(chip_blocked)
     if [ "${CB%%:*}" = 1 ] && [ $(( $(date +%s) - CB_LAST )) -ge 300 ]; then
         CB_LAST=$(date +%s)
         BV=$(run "getprop persist.vendor.bluetooth.state" | tr -d '\r' | tail -1)
-        echo "BT-CHIP-BLOCKED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} 桥=${BP:-安卓侧查不到} ${CB#*:}(bt_power) soft=1 persist.vendor.bluetooth.state=${BV:-查不到}"
-        echo "          ⇒ 芯片电源暂未被 HAL 拉起来（实测是开局暂态，会自己回 0）。本进程**等**它回 0 后自动 power on（root，一次即可），期间不重拉桥（重拉会注销 hci0、把恢复窗口吹掉）。绝不手动解这颗 rfkill：电源协调归 btpower/HAL，是红线"
+        echo "BT-CHIP-BLOCKED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} hci: $(hci_state) 桥=${BP:-安卓侧查不到} ${CB#*:}(bt_power) soft=1 persist.vendor.bluetooth.state=${BV:-查不到}"
+        echo "          ⇒ 芯片在正常休眠（HAL 的 IBS 电源管理，健康期也这样）。本进程**等**它醒（soft 回 0）后自动 power on（root，一次即可），期间不重拉桥（重拉会注销 hci0、把醒来窗口吹掉）。绝不手动解这颗 rfkill：电源归 btpower/HAL 协调，是红线。只有'叫不醒'才算故障"
         PREV=$CNT; sleep "$INTERVAL"; continue
     fi
     [ "${CB%%:*}" = 1 ] && { PREV=$CNT; sleep "$INTERVAL"; continue; }
 
     # 掉电/无适配器：整行证据先落日志。每个数都必须是被读到的，读不到写 NOREAD——
     # 否则"没测到"会伪装成"没发生"（见 工作总结 §探针自证纪律）
-    echo "BT-KEEPALIVE NOT-POWERED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} 桥=${BP:-安卓侧查不到} 重拉=$RESTARTS 冻轮=$FWD_FROZEN"
+    echo "BT-KEEPALIVE NOT-POWERED $(now): $(echo "$SHOW" | grep -E 'Powered|PowerState' | tr '\n' ' ')[ctl=$HASCTRL] 计数=${CNT:-NOREAD} hci: $(hci_state) 桥=${BP:-安卓侧查不到} 重拉=$RESTARTS 冻轮=$FWD_FROZEN"
     if [ -n "$GAVEUP" ]; then
         PREV=$CNT; sleep "$INTERVAL"; continue
     fi
