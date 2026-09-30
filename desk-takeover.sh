@@ -656,6 +656,22 @@ if [ -n "$KDED" ]; then
 else
     echo "KDED-SKIP 容器里找不到 kded5（装 kde-cli-tools/plasma-workspace 哪个包带的？）"
 fi
+# ---- 4b') 物理音量键（09-30 定案）----
+# 取证：音量+/-的事件链本身是通的——按键由内核 virtual 设备 "Xiaomi Consumer"(event10)
+# 报 KEY_VOLUMEUP/DOWN(115/114)，kwin 经 libinput 已把它当 seat0 键盘收到；
+# kglobshortcutsrc 里 [kmix] increase/decrease_volume 也绑着。断点=接管轮里 kded6 **不会自动加载**
+# audioshortcutsservice（音量快捷键处理者，注册名 kmix）⇒ kwin /component/kmix isActive=false，
+# 按键到达后无人处理（物理键和 xdotool 注入一起哑）。显式 loadModule 修复，实测音量随按键变化。
+if [ -n "$KDPID" ]; then
+    sleep 2
+    AK=$(XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+        runuser -u xieyizhou -- busctl --user call org.kde.kded6 /kded org.kde.kded6 \
+        loadModule s audioshortcutsservice 2>&1)
+    case "$AK" in
+        *"b true"*) echo "AUDIOKEY-OK audioshortcutsservice 已加载 $(date +%T)";;
+        *) echo "AUDIOKEY-FAIL loadModule 返回: $AK（音量键大概率无效，见 §4b' 注释）";;
+    esac
+fi
 # ---- 4c) 虚拟键盘原生弹出（09-27 §41.7）----
 # kwin env 已加 KWIN_IM_SHOW_ALWAYS=1（官方开关，inputmethod.cpp shouldShowOnActive）：
 # 每次窗口激活（含 X11/XWayland 应用——它们没有 text-input 协议，之前 VKB 永不弹出）
