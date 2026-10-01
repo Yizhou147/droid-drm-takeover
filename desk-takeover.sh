@@ -4,7 +4,7 @@
 # 任一关键步失败 → 自动回滚（恢复安卓全家，含 system_suspend 显式拉起，防 Scout 重启）。
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 DIR=$ROOT
-LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
+LOGD=${LOG_DIR:-$ROOT/logs}   # 兜底也在仓库自己目录里，不假设父目录叫什么
 mkdir -p "$LOGD"
 # ---- 用户与路径参数（09-30 参数化，为分发而做；本机没有 conf 时等价于原硬编码）----
 # 有 /etc/drm-takeover.conf 就读它（由 drm-tui 安装器生成）。

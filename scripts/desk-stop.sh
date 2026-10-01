@@ -6,7 +6,7 @@
 # 拉起安卓后轮询 init.svc，不达标就补刀再 start。
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 DIR=$ROOT
-LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
+LOGD=${LOG_DIR:-$ROOT/logs}   # 兜底也在仓库自己目录里，不假设父目录叫什么
 # ---- 用户与路径参数（09-30 参数化，为分发而做；本机没有 conf 时等价于原硬编码）----
 # 有 /etc/drm-takeover.conf 就读它（由 drm-tui 安装器生成）。
 # 这里**不猜"当前用户"**：接管必须以桌面用户身份跑（runuser / HOME / polkit subject / XDG_RUNTIME_DIR

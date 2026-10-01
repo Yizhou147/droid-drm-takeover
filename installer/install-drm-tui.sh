@@ -21,7 +21,14 @@ _target_home() {
     h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
     [[ -n "$h" ]] && printf '%s' "$h" || printf '/home/%s' "$u"
 }
-DEST="${DRM_INSTALL_DIR:-$(_target_home)/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}"
+# 已经装过就别换地方：/etc/drm-takeover.conf 里的 REPO_DIR 是唯一的权威位置（sudo 升级装到别处
+# 只会留下两份仓库）。没装过才用默认单目录 ~/drm-takeover。
+_existing_repo() {
+    local r
+    r=$(sed -n 's/^REPO_DIR="\(.*\)"$/\1/p' /etc/drm-takeover.conf 2>/dev/null | head -1)
+    [[ -n "$r" ]] && printf '%s' "$r" || return 1
+}
+DEST="${DRM_INSTALL_DIR:-$(_existing_repo 2>/dev/null || printf '%s' "$(_target_home)/drm-takeover")}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf '✘ %s\n' "$*" >&2; exit 1; }

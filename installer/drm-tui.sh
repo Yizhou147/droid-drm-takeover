@@ -38,6 +38,16 @@ source "$LIB_DIR/precheck.sh"
 source "$LIB_DIR/adbroute.sh"
 source "$LIB_DIR/baseline.sh"
 
+# 仓库位置以"这个脚本自己住在哪"为准：装机布局是安装器定的一个目录，开发机的树形不是。
+# 不这么做的后果是实测到的误判——没有 /etc/drm-takeover.conf 时，默认值指向一个根本不存在
+# 的 ~/drm-takeover，「检查安装/修复」就把好好的仓库判成缺 binaries/takeover-script，
+# 还会提议重新下载一份，装出第二棵仓库树。
+REPO_HINT=""
+if [[ -f "$SCRIPT_DIR/../desk-takeover.sh" ]]; then
+    REPO_HINT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+fi
+export REPO_DIR="${REPO_DIR:-$REPO_HINT}"
+
 readonly REPO_SLUG="${DRM_REPO_SLUG:-Yizhou147/droid-drm-takeover}"
 readonly KEYBOARD_REPO_SLUG="${DRM_KEYBOARD_REPO_SLUG:-Yizhou147/droid-pc-keyboard}"
 readonly KWIN_REPO_SLUG="${DRM_KWIN_REPO_SLUG:-Yizhou147/droidspaces-package}"
@@ -315,6 +325,9 @@ install_flow() {
 # 接管产物：aarch64 tarball（脚本 + 已交叉编译好的 bin/）。用户端不编译。
 # tar 的 sha 不可能写进 tar 里那份清单（自指），所以这个组件的 tag 与 digest
 # 一律现问 release API —— 与 install-drm-tui.sh 用的是同一套判据。
+# 取回产物。仓库目录常常是当初 `sudo … install` 铺的、属主 root：普通用户覆盖不动，
+# 会把几十个 cp 全报成"权限不够"（10-01 实测），而且中途失败 = 半新半旧的仓库。
+# 所以判据放在**动手之前**：目标目录写不下去就先用 sudo 重入自己，别边下载边报错。
 extract_release() {
     local tag asset want out rc=0
     detect_json_parser || { warn "$(msg '需要 jq 或 python3 才能读 release' 'jq or python3 needed to read release info')"; return 1; }
@@ -331,6 +344,19 @@ extract_release() {
 
     local dest="${DRM_CONF[REPO_DIR]}"
     mkdir -p "$dest" 2>/dev/null || true
+    if [[ ! -w "$dest" || ( -e "$dest/desk-takeover.sh" && ! -w "$dest/desk-takeover.sh" ) ]]; then
+        if [[ "$(id -u)" == "0" ]]; then
+            fail "$(msg "  $dest 写不下去（root 也写不了？）" '  Cannot write '"$dest"' even as root')"
+            return 1
+        fi
+        say ""
+        say "$(msg "  仓库目录属主不是当前用户（多半当初用 sudo 装的），现在用 sudo 取回：" \
+                   '  The repo is not owned by this user (installed via sudo); re-running with sudo:')"
+        printf '  sudo %s --update-artifacts\n' "$SCRIPT_SRC"
+        say ""
+        sudo "$SCRIPT_SRC" --update-artifacts
+        return $?
+    fi
     out="$(mktemp -t drm-tar.XXXXXX.tar.gz)"
     fetch_verified "$REPO_SLUG" "$tag" "$asset" "$want" "$out" "${DRM_CONF[DOWNLOAD_SOURCE]}" || { rm -f -- "$out"; return 1; }
     info "$(msg "解包到 $dest" 'Extracting to '"$dest")"
@@ -351,6 +377,12 @@ extract_release() {
     fi
     rm -rf -- "$work"
     chmod +x "$dest"/*.sh "$dest"/scripts/*.sh 2>/dev/null || true
+    # root 铺完必须把属主还给真正的使用者，否则下次更新又会整批"权限不够"（同一个坑不再留两轮）
+    if [[ "$(id -u)" == "0" && -n "${DRM_CONF[DRM_USER]:-}" && "${DRM_CONF[DRM_USER]}" != "root" ]]; then
+        chown -R "${DRM_CONF[DRM_USER]}:${DRM_CONF[DRM_USER]}" "$dest" 2>/dev/null \
+            || warn "$(msg "  仓库属主没能改回 ${DRM_CONF[DRM_USER]}：手工执行 sudo chown -R ${DRM_CONF[DRM_USER]}: \"$dest\"" \
+                           "  Ownership not restored; run sudo chown -R ${DRM_CONF[DRM_USER]} on the repo dir")"
+    fi
     rm -f -- "$out"
     DRM_CONF[INSTALLED_VERSION]="$tag"
     return $rc
@@ -718,7 +750,6 @@ show_tail_log() {
     say "$(msg "最近 60 行：$f" 'Last 60 lines: '"$f")"
     tail -n 60 "$f"
     say ""
-    pause
 }
 
 toggle_key() {
@@ -902,7 +933,6 @@ check_updates() {
     say ""
     say "$(msg '定制 kwin 的更新看 anland-kde-packages 的 manifest，不要用 dpkg 判断：' 'For patched kwin use the anland-kde-packages manifest, not dpkg:')"
     say "  $(msg 'bash installer/drm-tui.sh --check-kwin' 'bash installer/drm-tui.sh --check-kwin')"
-    pause
 }
 
 uninstall() {
@@ -948,7 +978,7 @@ main_menu() {
             case "$MENU_CHOICE" in
                 1) run_takeover "$STOP_SCRIPT" "$(msg '结束接管、把屏幕和网络交还给安卓' 'Ending takeover, handing display & network back')" ;;
                 2) show_tail_log ;;
-                3) settings_page ;; 4) check_and_repair; pause ;; 5) check_updates ;;
+                3) settings_page ;; 4) check_and_repair ;; 5) check_updates ;;
                 6) advanced_page ;; 7|0) exit 0 ;;
             esac ;;
         half-dead)
@@ -992,10 +1022,13 @@ main_menu() {
                 3) show_tail_log ;;
                 4) if establish_adb_bridge 1; then ok "$(msg "通道已就绪：$DRM_ADB_DEV" 'Channel ready: '"$DRM_ADB_DEV")"
                    else [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy; fi ;;
-                5) settings_page ;; 6) check_and_repair; pause ;;
-                7) check_updates; pause ;; 8) advanced_page ;; 9) uninstall ;; 10|0) exit 0 ;;
+                5) settings_page ;; 6) check_and_repair ;;
+                7) check_updates ;; 8) advanced_page ;; 9) uninstall ;; 10|0) exit 0 ;;
             esac ;;
     esac
+    # 每一屏读完都要停住：主菜单下一帧就 clear 重绘，之前"字闪一下就没"全因这里没停
+    # （检查更新 / 检查修复 / 本轮日志 / 建通道 / 一轮跑完，用户在每一处都提过同一条意见）。
+    pause
     sleep 0.4
 }
 
@@ -1028,6 +1061,7 @@ main() {
         install) shift; install_flow "$@" ;;
         --version) say "drm-tui $VERSION" ;;
         --check-kwin) load_state; check_kwin_patch ;;
+        --update-artifacts) load_state; extract_release; drm_conf_save; exit $? ;;
         --run-round) shift; load_state; run_round "$1" ;;
         --check) load_state; check_and_repair ;;
         *) load_state

@@ -16,3 +16,5 @@ desk-wifi.conf
 # 编辑器/工具本地目录
 .qoder/
 .vscode/
+typescript
+installer/typescript

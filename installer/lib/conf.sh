@@ -27,8 +27,11 @@ drm_conf_defaults() {
     DRM_CONF[DRM_USER]="$user"
     DRM_CONF[DRM_UID]="$uid"
     DRM_CONF[DRM_HOME]="$home"
-    DRM_CONF[REPO_DIR]="${REPO_DIR:-$home/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}"
-    DRM_CONF[LOG_DIR]="${LOG_DIR:-$(dirname "${REPO_DIR:-$home/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}")/logs}"
+    # 装机布局由安装器自己定：**一个目录**，日志在它里面。不要照抄开发机的仓库树
+    # （~/Documents/XiaomiPad8Pro-drm-display/… 那层父目录是给工作总结与多个子仓共用的，
+    #  新用户没有那棵树，套上去只会多出一层没意义的嵌套）。
+    DRM_CONF[REPO_DIR]="${REPO_DIR:-$home/drm-takeover}"
+    DRM_CONF[LOG_DIR]="${DRM_CONF[REPO_DIR]}/logs"
     DRM_CONF[DOWNLOAD_SOURCE]="auto"
     # 无线 adb 的地址列表（空格分隔）。端口每次重连都会变，所以要能配置而不是写死在脚本里。
     DRM_CONF[ADB_ENDPOINTS]="${ADB_ENDPOINTS:-}"
