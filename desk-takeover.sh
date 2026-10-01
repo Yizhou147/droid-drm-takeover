@@ -773,10 +773,21 @@ if [ -n "$KDPID" ]; then
     AK=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         runuser -u "$DRM_USER" -- busctl --user call org.kde.kded6 /kded org.kde.kded6 \
         loadModule s audioshortcutsservice 2>&1)
-    case "$AK" in
-        *"b true"*) echo "AUDIOKEY-OK audioshortcutsservice 已加载 $(date +%T)";;
-        *) echo "AUDIOKEY-FAIL loadModule 返回: $AK（音量键大概率无效，见 §4b' 注释）";;
-    esac
+    # ⚠ loadModule 的返回值不能当判据（10-01 在同一批里撞到的同类假阳性）：
+    #   它在模块根本没装好、甚至 kded 不认这个名字时也回 "b true"。
+    #   硬判据 = 那个 .so 真的映射进了 kded 的地址空间（与 kwin 补丁同一路数：只看实测，不看措辞）。
+    AHITS=0
+    for _ak in 1 2 3 4 5 6; do
+        AHITS=$(grep -c "audioshortcutsservice" /proc/$KDPID/maps 2>/dev/null)
+        AHITS=${AHITS:-0}
+        [ "$AHITS" -gt 0 ] && break
+        sleep 1
+    done
+    if [ "$AHITS" -gt 0 ]; then
+        echo "AUDIOKEY-OK audioshortcutsservice 已映射进 kded(pid=$KDPID)，maps 命中 $AHITS 条 $(date +%T)"
+    else
+        echo "AUDIOKEY-FAIL $(date +%T): kded(pid=$KDPID) 的 maps 里没有 audioshortcutsservice（loadModule 返回: $AK）⇒ 音量键大概率无效"
+    fi
 fi
 # ---- 4c) 虚拟键盘原生弹出（09-27 §41.7）----
 # kwin env 已加 KWIN_IM_SHOW_ALWAYS=1（官方开关，inputmethod.cpp shouldShowOnActive）：
@@ -808,6 +819,24 @@ PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
     DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
     QT_QPA_PLATFORM=wayland \
     "$PDEV" > $LOGD/powerdevil.log 2>&1 &
+# 亮度滑条/电池的宿主是 powerdevil：起没起必须有硬判据。
+# 09-24 那三条根因（/sys ro、polkit 无 logind 默认拒、没人拉 powerdevil）里，
+# 前两条脚本自己有回显，唯独"没拉起来"过去是静默的 ⇒ 轮里亮度拖不动只能靠猜。
+# 10-01 用户报"接管模式右下角调不了亮度"，日志里确实一条 powerdevil 判据都没有。
+PDALIVE=""
+for _pd in 1 2 3 4 5 6; do
+    PDALIVE=$(pgrep -f "org_kde_powerdevil" | head -1)
+    [ -n "$PDALIVE" ] && break
+    sleep 1
+done
+if [ -z "$PDEV" ]; then
+    echo "POWERDEVIL-FAIL $(date +%T): 找不到 /usr/lib/*/libexec/org_kde_powerdevil（powerdevil 包没装？）⇒ 托盘亮度与电池不可用"
+elif [ -n "$PDALIVE" ]; then
+    echo "POWERDEVIL-OK pid=$PDALIVE $(date +%T)（托盘亮度/电池的宿主）"
+else
+    echo "POWERDEVIL-FAIL $(date +%T): 拉起了但 6 秒内不在了，powerdevil.log 尾部："
+    tail -n 6 $LOGD/powerdevil.log 2>&1
+fi
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
 nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \

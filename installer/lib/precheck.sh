@@ -171,8 +171,12 @@ missing_packages() {
     # rfkill / runuser / wpa_supplicant / dhcpcd 报成"缺失"（10-01 实测）。
     # 查找命令时显式补上这两段；判定仍只看可执行文件是否存在，不依赖当前 PATH。
     local search_path="$PATH:/usr/sbin:/sbin"
-    for cmd in "${!DEP_PACKAGE_MAP[@]}"; do
-        pkg="${DEP_PACKAGE_MAP[$cmd]}"
+    # 两张表都要遍历：DEP_PACKAGE_ONLY 原来从来没被循环到过，后果是
+    # **powerdevil（org_kde_powerdevil，亮度/电池托盘的宿主）与 pipewire 永远不会被检查**，
+    # 换一台不带它们的 rootfs 就装不出来（10-01 实测到 powerdevil 这条）。
+    for cmd in "${!DEP_PACKAGE_MAP[@]}" "${!DEP_PACKAGE_ONLY[@]}"; do
+        pkg="${DEP_PACKAGE_MAP[$cmd]:-${DEP_PACKAGE_ONLY[$cmd]:-}}"
+        [[ -n "$pkg" ]] || continue
         if [[ "$cmd" == "$pkg" || -n "${DEP_PACKAGE_ONLY[$cmd]:-}" ]]; then
             # dpkg -l 的状态在**第 1 列**（"ii  包名  版本"），写成 $2=="ii" 会永远判成缺失
             dpkg -l "$pkg" 2>/dev/null | awk '/^ii /{f=1} END{exit f?0:1}' && continue
@@ -232,8 +236,9 @@ install_debs_with_audit() {
 _packages_for_missing() {
     local cmd pkg seen=" "
     for cmd in "$@"; do
-        pkg="${DEP_PACKAGE_MAP[$cmd]:-}"
-        [[ -n "$pkg" ]] || continue
+        # 键可能只存在于 DEP_PACKAGE_ONLY（org_kde_powerdevil→powerdevil），
+        # 也可能已经被上面还原成包名本身 —— 两种都要认，否则"报了缺却装不上"。
+        pkg="${DEP_PACKAGE_MAP[$cmd]:-${DEP_PACKAGE_ONLY[$cmd]:-$cmd}}"
         # 按**包名**去重，不是按命令名：bluetoothctl 与 hciconfig 都是 bluez、
         # wpa_supplicant 与 wpa_passphrase 都是 wpasupplicant。
         # 原来按命令去重 ⇒ apt 参数里同一个包出现两遍（10-01 新容器实测）。
