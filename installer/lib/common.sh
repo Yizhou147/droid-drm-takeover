@@ -96,6 +96,14 @@ ask() {
     printf '%s' "${reply:-$default}"
 }
 
+# ask_yes <中文> <English> <默认 Y/N> —— 一次只问一件事，回车走默认值。
+ask_yes() {
+    local reply
+    # 默认值标记由 ask() 自己渲染成 "[Y]"，这里不要再拼 [Y/n]（否则提示会出现两遍后缀）
+    reply=$(ask "$(msg "$1" "$2")" "${3:-Y}")
+    [[ "${reply,,}" != "n" && "${reply,,}" != "no" ]]
+}
+
 confirm() {
     local prompt="$1"
     [[ "${DRM_ASSUME_YES:-0}" == "1" ]] && return 0

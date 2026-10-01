@@ -183,42 +183,32 @@ render_check_line() {
 # ---------------------------------------------------------------- 安装流程 ----
 
 ask_components() {
-    # 循环而不是递归：递归调用会丢掉外层菜单状态，选一次就"跳回上一层"。
-    local again=1
-    while (( again )); do
-        local -a marks=()
-        local k
-        for k in SHORTCUTS INSTALL_KEYBOARD KWIN_X11_IM TAKEOVER_WIFI BT_BRIDGE AUDIO_BRIDGE; do
-            [[ "${DRM_CONF[$k]}" == "1" ]] && marks+=("[x]") || marks+=("[ ]")
-        done
-        menu "$(msg '要装什么（勾选后选"完成"）' 'Choose components (toggle, then Done)')
-${marks[0]} $(msg '1. 桌面快捷方式（不装则只能用终端）' 'Desktop shortcuts (otherwise terminal only)')
-${marks[1]} $(msg '2. 输入法 droid-pc-keyboard（不装则需外接键鼠）' 'droid-pc-keyboard (otherwise external keyboard)')
-${marks[2]} $(msg '3.   ↳ 子选项：X11 应用弹出虚拟键盘＝换装打过补丁的 kwin' '   sub-option: patched kwin so X11 apps pop the VKB')
-${marks[3]} $(msg '4. 接管时由容器接管 WiFi（关掉则进无网桌面）' 'Container takes over WiFi (off = desktop without network)')
-${marks[4]} $(msg '5. 蓝牙桥（BLE 鼠标/手柄）' 'Bluetooth bridge (BLE mice/pads)')
-${marks[5]} $(msg '6. 音频桥（外放/耳机）' 'Audio bridge (speaker/headset)')
-$(msg '7. 完成' 'Done')"
-        case "$MENU_CHOICE" in
-            1) [[ "${DRM_CONF[SHORTCUTS]}" == 1 ]] && DRM_CONF[SHORTCUTS]=0 || DRM_CONF[SHORTCUTS]=1 ;;
-            2) [[ "${DRM_CONF[INSTALL_KEYBOARD]}" == 1 ]] && DRM_CONF[INSTALL_KEYBOARD]=0 || DRM_CONF[INSTALL_KEYBOARD]=1 ;;
-            3) [[ "${DRM_CONF[KWIN_X11_IM]}" == 1 ]] && DRM_CONF[KWIN_X11_IM]=0 || DRM_CONF[KWIN_X11_IM]=1 ;;
-            4) [[ "${DRM_CONF[TAKEOVER_WIFI]}" == 1 ]] && DRM_CONF[TAKEOVER_WIFI]=0 || DRM_CONF[TAKEOVER_WIFI]=1 ;;
-            5) [[ "${DRM_CONF[BT_BRIDGE]}" == 1 ]] && DRM_CONF[BT_BRIDGE]=0 || DRM_CONF[BT_BRIDGE]=1 ;;
-            6) [[ "${DRM_CONF[AUDIO_BRIDGE]}" == 1 ]] && DRM_CONF[AUDIO_BRIDGE]=0 || DRM_CONF[AUDIO_BRIDGE]=1 ;;
-            7|0) again=0 ;;
-        esac
-    done
-    # 键盘不装则它的子选项必须跟着关（否则会出现"装了补丁 kwin 却没有键盘"的怪状态）
-    [[ "${DRM_CONF[INSTALL_KEYBOARD]}" == "0" ]] && DRM_CONF[KWIN_X11_IM]="0"
-    if [[ "${DRM_CONF[KWIN_X11_IM]}" == "1" ]]; then
-        warn "$(msg '将换装打过补丁的 kwin：它**同时是 anland 会话在用的那个二进制**。' \
-               'A patched kwin will be installed — it is the SAME binary the anland session uses.')"
-        warn "$(msg '  回退请用 install-anland-kde.sh --uninstall；回退后 anland 可能起不来（原厂 kwin 没有 anland 后端）。' \
-               '  Roll back with install-anland-kde.sh --uninstall; anland may not start afterwards (stock kwin has no anland backend).')"
-        warn "$(msg '  另外 dpkg 校验对它无效（定制 deb 复用了 Ubuntu 版本串并抄了原厂 md5sums），别用 dpkg -V 判断补丁在不在。' \
-               "  dpkg -V cannot verify it: the custom deb reuses the Ubuntu version string and md5sums.")"
+    # 一步只问一件事。WiFi / 蓝牙 / 音频固定默认开启，不给开关（用户 10-01 明确要求）。
+    say ""
+    if ask_yes "生成桌面快捷方式（进入DRM接管 / 返回安卓）？" "Create desktop shortcuts?"; then
+        DRM_CONF[SHORTCUTS]=1
+    else
+        DRM_CONF[SHORTCUTS]=0
     fi
+
+    if ask_yes "安装输入法 droid-pc-keyboard？" "Install the droid-pc-keyboard input method?"; then
+        DRM_CONF[INSTALL_KEYBOARD]=1
+        if ask_yes "X11 应用也弹出虚拟键盘？（需换装打过补丁的 kwin）" \
+                   "Also pop the VKB in X11 apps? (needs the patched kwin)"; then
+            DRM_CONF[KWIN_X11_IM]=1
+            warn "$(msg '  副作用：这台机器上 anland 用的就是这个 kwin 二进制，回退后 anland 可能起不来。' \
+                        '  Side effect: anland uses this same kwin binary; rolling back may stop anland from starting.')"
+        else
+            DRM_CONF[KWIN_X11_IM]=0
+        fi
+    else
+        DRM_CONF[INSTALL_KEYBOARD]=0
+        DRM_CONF[KWIN_X11_IM]=0
+    fi
+
+    DRM_CONF[TAKEOVER_WIFI]=1
+    DRM_CONF[BT_BRIDGE]=1
+    DRM_CONF[AUDIO_BRIDGE]=1
 }
 
 install_flow() {
@@ -226,16 +216,11 @@ install_flow() {
     head2 "$(msg 'drm-tui 安装' 'Install drm-tui')"
     load_state
 
-    step 1 8 '建立 Android 调试通道（adb 桥）' 'Establish the Android debug channel (adb bridge)'
-    say "$(msg '  接管与交还的每一个动作都要经 adb 驱动 Android（停 surfaceflinger、读当前 WiFi 凭据、写背光），' \
-               '  Every takeover/hand-back action drives Android over adb (stopping surfaceflinger, reading WiFi credentials, setting backlight)','')"
-    say "$(msg '  本机通道(emulator-5554 一类)优先——它不经 WiFi 射频；尚未被信任时才需要用无线调试配对建立信任。' \
-               '  The local channel (emulator-5554 style) is preferred because it does not depend on WiFi; wireless adb is the fallback.')"
+    step 1 8 '建立 Android 调试通道' 'Establish the Android debug channel'
     if ! establish_adb_bridge 1; then
         [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
-        [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
-        die "$(msg 'adb 通道未能建立：设备校验与接管都无法进行。请在平板上开启无线调试并完成配对（adb pair + adb connect）后重跑本安装。' \
-              'The adb channel could not be established, so device verification and takeover are impossible. Enable wireless debugging on the tablet, complete pairing (adb pair + adb connect), then re-run.')"
+        die "$(msg 'adb 通道未建立，无法继续。开启无线调试并完成配对后重跑。' \
+              'adb channel unavailable. Enable wireless debugging, pair, then re-run.')"
     fi
 
     step 2 8 '识别设备与发行版' 'Identify device and distribution'
@@ -285,8 +270,8 @@ install_flow() {
     head2 "$(msg '安装完成' 'Done')"
     say "$(msg '以后在终端输入一行即可：' 'From now on, run this single line:')"
     printf '  %bdrm-tui%b\n' "$COLOR_BOLD" "$COLOR_RESET"
-    [[ "${DRM_CONF[SHORTCUTS]}" == "1" ]] && say "$(msg '桌面上也有「进入DRM接管」「返回安卓」两个图标。' 'Desktop shortcuts are installed too.')"
-    say "$(msg '说明：接管期间 Android 桌面会完全停止数十秒；关键步骤失败时脚本自动恢复 Android。请勿长按电源键。' 'Note: the Android UI stops completely for tens of seconds during takeover; critical failures roll back automatically. Do not press and hold the power button.')"
+    say "$(msg '接管时屏幕会熄灭数十秒，失败自动恢复，不要长按电源键。' \
+               'During takeover the screen goes dark for tens of seconds; failures roll back. Do not hold the power button.')"
 }
 
 # 接管产物：aarch64 tarball（脚本 + 已交叉编译好的 bin/）。用户端不编译。
@@ -531,11 +516,9 @@ run_takeover() {
 
     say ""
     head2 "$action"
-    msg "  即将运行：$script" "  About to run: $script"
-    msg "  · 过程中 Android 桌面会完全停止、屏幕可能短暂熄灭数十秒，这是停止显示栈的预期阶段。" \
-        "  · The Android UI stops completely and the screen may go dark for tens of seconds; this is the expected display-stack stop phase."
-    msg "  · 任一关键步骤失败时，脚本会自动恢复 Android；也可先执行一次交还再进入接管。" \
-        "  · If any critical step fails, the script restores Android automatically. You may also hand back before entering takeover."
+    msg "  $script" "  $script"
+    msg "  · 屏幕会熄灭数十秒；失败时自动恢复 Android。" \
+        "  · The screen goes dark for tens of seconds; failures roll back automatically."
     say ""
     confirm "$(msg '确认开始？' 'Proceed?')" || { say "$(msg '已取消。' 'Cancelled.')"; return 0; }
 
@@ -656,32 +639,24 @@ pick_language() {
 
 settings_page() {
     while :; do
-        local -a cur=()
-        cur+=("$(msg '快捷方式' 'Shortcuts'):$(drm_conf_get SHORTCUTS)")
-        cur+=("$(msg '输入法' 'Keyboard'):$(drm_conf_get INSTALL_KEYBOARD)")
-        cur+=("$(msg '补丁kwin' 'PatchedKwin'):$(drm_conf_get KWIN_X11_IM)")
-        cur+=("WiFi:$(drm_conf_get TAKEOVER_WIFI)")
-        cur+=("$(msg '拉起anland' 'Relaunch anland'):$(drm_conf_get RELAUNCH_ANLAND)")
-        menu "$(msg '设置' 'Settings') —— ${cur[*]}" \
-            "$(msg "切换：桌面快捷方式（当前 $(drm_conf_get SHORTCUTS)）" 'Toggle desktop shortcuts')" \
-            "$(msg "切换：接管时容器接管 WiFi（当前 $(drm_conf_get TAKEOVER_WIFI)）——关掉则进无网桌面" 'Toggle WiFi takeover')" \
-            "$(msg "切换：返回安卓时自动拉起 anland（当前 $(drm_conf_get RELAUNCH_ANLAND)）" 'Toggle anland relaunch on hand-back')" \
-            "$(msg "补装：输入法 / 定制 kwin（当前 $(drm_conf_get INSTALL_KEYBOARD)/$(drm_conf_get KWIN_X11_IM)）" 'Install keyboard / patched kwin now')" \
-            "$(msg "改下载源（当前 $(drm_conf_get DOWNLOAD_SOURCE)）" 'Change mirror source')" \
-            "$(msg "日志目录（当前 $(drm_conf_get LOG_DIR)）" 'Log directory')" \
-            "$(msg "语言（当前 $(drm_conf_get UI_LANG)）" 'Language')" \
-            "$(msg "无线 adb 地址列表（当前 $(drm_conf_get ADB_ENDPOINTS)）" 'Wireless adb endpoints (current: '"$(drm_conf_get ADB_ENDPOINTS)"')')" \
+        menu "$(msg '设置' 'Settings')  $(msg '快捷方式' 'shortcuts'):$(drm_conf_get SHORTCUTS) $(msg '输入法' 'keyboard'):$(drm_conf_get INSTALL_KEYBOARD)/$(drm_conf_get KWIN_X11_IM) anland:$(drm_conf_get RELAUNCH_ANLAND)" \
+            "$(msg '桌面快捷方式：装 / 撤' 'Desktop shortcuts: install / remove')" \
+            "$(msg '输入法与 X11 虚拟键盘支持（定制 kwin）' 'Keyboard and X11 VKB support (patched kwin)')" \
+            "$(msg '返回安卓时拉起 anland：当前 $(drm_conf_get RELAUNCH_ANLAND)' 'Relaunch anland on hand-back: currently '"$(drm_conf_get RELAUNCH_ANLAND)")" \
+            "$(msg '下载源' 'Download source')" \
+            "$(msg '日志目录' 'Log directory')" \
+            "$(msg '语言' 'Language')" \
+            "$(msg '无线 adb 地址' 'Wireless adb address')" \
             "$(msg '返回' 'Back')"
         case "$MENU_CHOICE" in
             1) toggle_key SHORTCUTS; [[ "${DRM_CONF[SHORTCUTS]}" == "1" ]] && install_shortcuts ;;
-            2) toggle_key TAKEOVER_WIFI ;;
+            2) toggle_key INSTALL_KEYBOARD; install_keyboard_if_chosen ;;
             3) toggle_key RELAUNCH_ANLAND ;;
-            4) toggle_key INSTALL_KEYBOARD; install_keyboard_if_chosen ;;
-            5) pick_mirror ;;
-            6) set_log_dir ;;
-            7) pick_language ;;
-            8) set_adb_endpoints ;;
-            9|0) return 0 ;;
+            4) pick_mirror ;;
+            5) set_log_dir ;;
+            6) pick_language ;;
+            7) set_adb_endpoints ;;
+            8|0) return 0 ;;
         esac
     done
 }
