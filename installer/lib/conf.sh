@@ -42,6 +42,8 @@ drm_conf_defaults() {
     DRM_CONF[RELAUNCH_ANLAND]="1"      # 返回安卓时自动拉起 anland（默认开；关掉它 anland 就不会自己回来）
     DRM_CONF[GPUFLOOR]="0"             # 高级页，默认关（实测只值 6~16%，噪声就有 8.7%）
     DRM_CONF[PERFMAX]="0"              # 高级页，默认关（die 能到 69°C，只作跑分）
+    # 装/更新时写回的 release tag（如 v0.1.0）。TUI 主界面靠它判断有没有新版可更。
+    DRM_CONF[INSTALLED_VERSION]=""
 }
 
 # 从 conf 文件恢复（只认 KEY=VALUE，值里的引号按 shell 规则剥掉）
@@ -74,7 +76,7 @@ drm_conf_save() {
         printf '# 生成时间：%s\n\n' "$(date '+%F %T')"
         for key in DRM_USER DRM_UID DRM_HOME REPO_DIR LOG_DIR DOWNLOAD_SOURCE UI_LANG ADB_ENDPOINTS \
                    SHORTCUTS INSTALL_KEYBOARD KWIN_X11_IM TAKEOVER_WIFI BT_BRIDGE AUDIO_BRIDGE \
-                   RELAUNCH_ANLAND GPUFLOOR PERFMAX; do
+                   RELAUNCH_ANLAND GPUFLOOR PERFMAX INSTALLED_VERSION; do
             [[ -n "${DRM_CONF[$key]:-}" ]] || continue
             printf '%s="%s"\n' "$key" "${DRM_CONF[$key]}"
         done

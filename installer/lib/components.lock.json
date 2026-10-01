@@ -18,16 +18,14 @@
 
   "takeover": {
     "repo": "Yizhou147/droid-drm-takeover",
-    "tag": "",
     "asset": "drm-takeover-aarch64.tar.gz",
-    "sha256": "",
     "contains": [
       "desk-takeover.sh",
       "drm-takeover.sh",
       "scripts/",
       "bin/  ← CI 交叉编译好的 aarch64 产物；用户端不编译（pad 上没有匹配的 libdrm-dev 工具链）"
     ],
-    "_todo": "CI 的 release 作业产出上面这个 tar 后，把 tag/sha256 填进来（或由 publish 脚本自动写）。"
+    "_note": "tag/sha256 由 CI 回填，但只回填到 release 里那份**独立**的 components.lock.json：tar 内嵌这份必然是空的（tar 算完 sha 才轮得到改清单）。所以本组件的 tag 与 digest 一律现问 releases/latest 并按资产名取，不能读仓库里这份本地清单（10-01 实测：读本地那份拿到空值，自检直接报「缺少 takeover 条目」）。"
   },
 
   "keyboard": {

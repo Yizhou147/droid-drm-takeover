@@ -313,25 +313,21 @@ install_flow() {
 }
 
 # 接管产物：aarch64 tarball（脚本 + 已交叉编译好的 bin/）。用户端不编译。
+# tar 的 sha 不可能写进 tar 里那份清单（自指），所以这个组件的 tag 与 digest
+# 一律现问 release API —— 与 install-drm-tui.sh 用的是同一套判据。
 extract_release() {
-    local lock="$COMPONENTS_LOCK" tag asset want out rc=0
-    if [[ ! -r "$lock" ]]; then
-        # 没有本地清单就直接问 GitHub：清单本身也在 release 里
-        detect_json_parser || { warn "$(msg '需要 jq 或 python3 才能读组件清单' 'jq or python3 needed to read the component lock')"; return 1; }
-        out="$(mktemp -t drm-lock.XXXXXX.json)"
-        github_api "/repos/$REPO_SLUG/releases/latest" "$out" || { rm -f -- "$out"; warn "$(msg '取不到 release 信息' 'Cannot reach release info')"; return 1; }
-        tag=$(json_get "$out" ".tag_name"); rm -f -- "$out"
-        [[ -n "$tag" ]] || return 1
-        out="$(mktemp -t drm-lock.XXXXXX)"
-        fetch_verified "$REPO_SLUG" "$tag" "components.lock.json" "" "$out" "${DRM_CONF[DOWNLOAD_SOURCE]}" || return 1
-        lock="$out"
-    else
-        detect_json_parser || return 1
-    fi
-    tag=$(json_get "$lock" ".takeover.tag")
-    asset=$(json_get "$lock" ".takeover.asset")
-    want=$(json_get "$lock" ".takeover.sha256")
-    [[ -n "$tag" && -n "$asset" ]] || { warn "$(msg '组件清单缺少 takeover 条目' 'Component lock has no takeover entry')"; [[ "$lock" == "$COMPONENTS_LOCK" ]] || rm -f -- "$lock"; return 1; }
+    local tag asset want out rc=0
+    detect_json_parser || { warn "$(msg '需要 jq 或 python3 才能读 release' 'jq or python3 needed to read release info')"; return 1; }
+    asset="drm-takeover-aarch64.tar.gz"
+    [[ -r "$COMPONENTS_LOCK" ]] && asset="$(json_get "$COMPONENTS_LOCK" ".takeover.asset")"
+    [[ -n "$asset" ]] || asset="drm-takeover-aarch64.tar.gz"
+    out="$(mktemp -t drm-rel.XXXXXX.json)"
+    github_api "/repos/$REPO_SLUG/releases/latest" "$out" || { rm -f -- "$out"; warn "$(msg '取不到 release 信息' 'Cannot reach release info')"; return 1; }
+    tag=$(json_get "$out" ".tag_name")
+    want="$(release_asset_digest "$out" "$asset")"
+    rm -f -- "$out"
+    [[ -n "$tag" ]] || { warn "$(msg '没有公开的 release（draft 走 latest 读不到）' 'No public release; drafts are invisible via latest')"; return 1; }
+    [[ -n "$want" ]] || warn "$(msg '取不到该资产的 digest，本次下载不校验' 'No digest for this asset; downloading unverified')"
 
     local dest="${DRM_CONF[REPO_DIR]}"
     mkdir -p "$dest" 2>/dev/null || true
@@ -356,7 +352,6 @@ extract_release() {
     rm -rf -- "$work"
     chmod +x "$dest"/*.sh "$dest"/scripts/*.sh 2>/dev/null || true
     rm -f -- "$out"
-    [[ "$lock" != "$COMPONENTS_LOCK" ]] && rm -f -- "$lock"
     DRM_CONF[INSTALLED_VERSION]="$tag"
     return $rc
 }
@@ -714,12 +709,9 @@ pick_mirror() {
     # 探测必须用**真实 tag**：release 的下载 URL 不支持 "latest" 这个字面量，
     # 拿它去拼地址会三源全 404（10-01 实测）。
     local tag="" winner
-    [[ -r "$COMPONENTS_LOCK" ]] && tag=$(json_get "$COMPONENTS_LOCK" ".takeover.tag")
-    if [[ -z "$tag" ]]; then
-        local j; j="$(mktemp -t drm-tag.XXXXXX.json)"
-        github_api "/repos/$REPO_SLUG/releases/latest" "$j" && tag=$(json_get "$j" ".tag_name")
-        rm -f -- "$j"
-    fi
+    local j; j="$(mktemp -t drm-tag.XXXXXX.json)"
+    github_api "/repos/$REPO_SLUG/releases/latest" "$j" && tag=$(json_get "$j" ".tag_name")
+    rm -f -- "$j"
     if [[ -z "$tag" ]]; then
         warn "$(msg '取不到 release tag，跳过测速（稍后可在设置页重选下载源）' 'Cannot resolve the release tag; skipping the probe')"
         return 1
