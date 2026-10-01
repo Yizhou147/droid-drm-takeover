@@ -134,3 +134,69 @@ apply_desktop_baseline() {
     apply_systemd_baseline
     verify_baseline
 }
+
+
+# ---------------------------------------------------------------- 安卓侧桥产物 ----
+# 为什么必须装：音频桥与蓝牙桥的设备侧二进制/模板过去**只存在于开发机的 /data/local/tmp**
+# （我早期手动 push 的），两个容器共用同一份所以新容器"碰巧能用"，换一台设备就是空的：
+# 表现是接管轮里没声音、蓝牙鼠标连上不动。halsink.sh 自己会检查并 exit 3。
+# 现在由各自的仓库发 release 资产，安装器负责取包 + push + 复检。
+
+BRIDGE_DEPLOY_FAILED=""
+
+# deploy_android_bridges —— 成功返回 0；失败时把失败的组件名留在 BRIDGE_DEPLOY_FAILED
+deploy_android_bridges() {
+    local lock="$COMPONENTS_LOCK" key
+    detect_json_parser || { warn "$(msg '需要 jq 或 python3 才能读组件清单' 'jq or python3 required')"; return 1; }
+    [[ -r "$lock" ]] || { warn "$(msg '缺组件清单，跳过安卓侧产物部署' 'Component lock missing; skipping device bridge deploy')"; return 1; }
+    BRIDGE_DEPLOY_FAILED=""
+    for key in audio_bridge bluetooth_bridge; do
+        deploy_one_bridge "$key" "$(json_get "$lock" ".$key.repo")" "$(json_get "$lock" ".$key.tag")" \
+            "$(json_get "$lock" ".$key.asset")" "$(json_get "$lock" ".$key.sha256")" \
+            || BRIDGE_DEPLOY_FAILED="$BRIDGE_DEPLOY_FAILED $key"
+    done
+    [[ -z "$BRIDGE_DEPLOY_FAILED" ]]
+}
+
+deploy_one_bridge() {
+    local name="$1" repo="$2" tag="$3" asset="$4" sha="$5"
+    [[ -n "$repo" && -n "$tag" && -n "$asset" ]] || { warn "$(msg "清单里 $name 条目不完整，跳过" "$name entry incomplete; skipping")"; return 1; }
+    say "$(msg "部署安卓侧产物：$name（$repo@$tag）" "Deploying device artifacts: $name ($repo@$tag)")"
+    local tmp dir
+    tmp="$(mktemp -t drm-bridge.XXXXXX.tar.gz)"; dir="$(mktemp -d -t drm-bridge.XXXXXXXX)"
+    if ! fetch_verified "$repo" "$tag" "$asset" "$sha" "$tmp" "${DRM_CONF[DOWNLOAD_SOURCE]}"; then
+        warn "$(msg "$name 产物取不到（源不可达或 sha256 不匹配）" "$name artifact unavailable")"
+        rm -rf -- "$dir" "$tmp"; return 1
+    fi
+    tar -xzf "$tmp" -C "$dir" || { warn "$(msg "$name 解包失败" "$name extract failed")"; rm -rf -- "$dir" "$tmp"; return 1; }
+    local root="$dir/$name"
+    [[ -d "$root" ]] || root="$(find "$dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    local f base pushed=0
+    for f in "$root"/*; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        timeout 30 adb push "$f" "/data/local/tmp/$base" >/dev/null 2>&1 \
+            && { timeout 20 adb shell "su -c 'chmod 755 /data/local/tmp/$base'" >/dev/null 2>&1; pushed=$((pushed + 1)); } \
+            || warn "$(msg "  push 失败：$base" '  push failed: '"$base")"
+    done
+    rm -rf -- "$dir" "$tmp"
+    say "$(msg "  已推送 $pushed 个文件到 /data/local/tmp" "  Pushed $pushed files")"
+    verify_bridge_files "$name"
+}
+
+# 复检只认"文件真的在设备上且可执行"，不认措辞
+verify_bridge_files() {
+    local name="$1" out
+    case "$name" in
+        audio_bridge)
+            out=$(timeout 25 adb shell "su -c 'for f in argsloop halsink.sh mix2.bin dev23.bin patch0.bin; do test -e /data/local/tmp/\$f || echo MISS-\$f; done; test -x /data/local/tmp/argsloop || echo NOTEXEC-argsloop'" 2>/dev/null | tr -d '\r') ;;
+        bluetooth_bridge)
+            out=$(timeout 25 adb shell "su -c 'test -e /data/local/tmp/bthci-bridge-v2 || echo MISS-bthci-bridge-v2; test -x /data/local/tmp/bthci-bridge-v2 || echo NOTEXEC'" 2>/dev/null | tr -d '\r') ;;
+    esac
+    if [[ -z "${out// }" ]]; then
+        ok "$(msg "  $name 设备侧复检通过" "  $name device-side check passed")"
+        return 0
+    fi
+    fail "$(msg "  $name 设备侧缺文件：$out" "  $name missing on device: $out")"
+    return 1
+}

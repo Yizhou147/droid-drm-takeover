@@ -51,20 +51,35 @@
 
   "audio_bridge": {
     "repo": "Yizhou147/droid-audio-bridge",
-    "tag": "",
-    "asset": "",
-    "_note": "孵化期；默认开但取不到产物时只降级不阻塞接管。"
+    "tag": "v0.1.0",
+    "asset": "audio-bridge-piano-aarch64.tar.gz",
+    "sha256": "cfe9b081ab93108254cc1193ca6544481e24ff39e904084d4ae5d8d8bc42fa47",
+    "device_paths": [
+      "/data/local/tmp/argsloop",
+      "/data/local/tmp/halsink.sh",
+      "/data/local/tmp/mix2.bin",
+      "/data/local/tmp/dev23.bin",
+      "/data/local/tmp/patch0.bin"
+    ],
+    "_note": "argsloop 由 CI 交叉编译；三个 .bin 是 piano 的 AudioPortConfig/AudioPatch 线节模板，换机型必须重抓。过去只存在于开发机的 /data/local/tmp，新设备因此没声音。"
   },
 
   "bluetooth_bridge": {
     "repo": "Yizhou147/droid-bluetooth-bridge",
-    "tag": "",
-    "asset": "",
-    "_note": "孵化期；桥名截断到 15 字符（Linux comm 上限），进程匹配一律按 comm。"
+    "tag": "v0.1.1",
+    "asset": "bt-bridge-aarch64.tar.gz",
+    "sha256": "4eb1223f288a0bb02b5ab708fd865aeb0fa43f5611701a1ce3710e6c595bf7c4",
+    "device_paths": [
+      "/data/local/tmp/bthci-bridge-v2"
+    ],
+    "_note": "包内已按设备侧名 bthci-bridge-v2 命名（接管脚本默认 BT_BIN 就是它）。"
   },
 
   "apt": {
-    "install_flags": ["-y", "--no-install-recommends"],
+    "install_flags": [
+      "-y",
+      "--no-install-recommends"
+    ],
     "post_install_audit": "systemctl list-unit-files --state=enabled 必须审计并 disable 新增自启单元",
     "_note": "Recommends 带进 modemmanager 并 enable，plasmashell 查它的 D-Bus 干等 25 秒（工作总结 §41）；deb 自启单元暗雷另见 §09-23。"
   }

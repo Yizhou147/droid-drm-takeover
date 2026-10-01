@@ -224,14 +224,14 @@ install_flow() {
     head2 "$(msg 'drm-tui 安装' 'Install drm-tui')"
     load_state
 
-    step 1 9 '建立 Android 调试通道' 'Establish the Android debug channel'
+    step 1 10 '建立 Android 调试通道' 'Establish the Android debug channel'
     if ! establish_adb_bridge 1; then
         [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
         die "$(msg 'adb 通道未建立，无法继续。开启无线调试并完成配对后重跑。' \
               'adb channel unavailable. Enable wireless debugging, pair, then re-run.')"
     fi
 
-    step 2 9 '识别设备与发行版' 'Identify device and distribution'
+    step 2 10 '识别设备与发行版' 'Identify device and distribution'
     detect_android_identity
     is_target_model
     case "$?" in
@@ -245,7 +245,7 @@ install_flow() {
               'Unsupported distribution or desktop environment: verified only on Ubuntu 26.04 + KDE.')"
     ok "$(msg "运行环境确认：$(detect_distro) / $(detect_desktop)" 'Runtime environment verified')"
 
-    step 3 9 '安装前环境检查' 'Pre-install environment checks'
+    step 3 10 '安装前环境检查' 'Pre-install environment checks'
     # 原来写 `fails=$(run_precheck | tail -1)`：只留最后一行数字，
     # 于是所有 ✔/✘ 明细都被吞掉，用户在第 3 步什么也看不见（10-01 实测第 3 步是空的）。
     local fails pre_out
@@ -256,13 +256,13 @@ install_flow() {
     rm -f -- "$pre_out"
     (( ${fails:-1} == 0 )) || die "$(msg "预检未通过 $fails 项——按上面每条的单行命令补救后重跑安装" 'Precheck failed '"$fails"' item(s); fix with the single-line hints, then re-run')"
 
-    step 4 9 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
+    step 4 10 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
     pick_mirror
 
-    step 5 9 '选择要安装的组件' 'Select components'
+    step 5 10 '选择要安装的组件' 'Select components'
     ask_components
 
-    step 6 9 '安装 apt 依赖' 'Install apt dependencies'
+    step 6 10 '安装 apt 依赖' 'Install apt dependencies'
     local -a miss=()
     mapfile -t miss < <(missing_packages)
     # 基线额外需要的包（命令名与包名同名，missing_packages 查不到）：
@@ -278,20 +278,34 @@ install_flow() {
         ok "$(msg '依赖已齐全' 'Dependencies already present')"
     fi
 
-    step 7 9 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
+    step 7 10 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
     extract_release || warn "$(msg '产物取回不完整——可用"检查安装/修复"重试' 'Artifacts incomplete; retry from Check installation / repair')"
     install_keyboard_if_chosen
 
-    step 8 9 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
+    step 8 10 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
     drm_conf_save || warn "$(msg '配置写入失败（需要 root）' 'Cannot write config (needs root)')"
     install_shortcuts
     install_sudoers
     install_tui_entry
 
-    step 9 9 '写入桌面基线（kwinrc / 输入法 / 运行期脚本 / systemd）' 'Apply the desktop baseline'
+    step 9 10 '写入桌面基线（kwinrc / 输入法 / 运行期脚本 / systemd）' 'Apply the desktop baseline'
     apply_desktop_baseline
 
-    head2 "$(msg '安装完成' 'Done')"
+    step 10 10 '部署安卓侧桥产物（音频 sink 与蓝牙桥）' 'Deploy Android-side bridge artifacts'
+    deploy_android_bridges || warn "$(msg "桥产物未全部就位：${BRIDGE_DEPLOY_FAILED# } —— 接管轮里声音/蓝牙会不可用，可用「检查安装 / 修复」重试" \
+        'Some bridge artifacts are missing: '"${BRIDGE_DEPLOY_FAILED# }"' — audio/Bluetooth will not work; retry from Check installation / repair')"
+
+    local -a gaps=()
+    (( ${DRM_KWIN_FAILED:-0} == 1 )) && gaps+=("$(msg '定制 kwin' 'patched kwin')")
+    [[ -n "${BRIDGE_DEPLOY_FAILED:-}" ]] && gaps+=("$(msg '安卓侧桥产物' 'device bridges'):${BRIDGE_DEPLOY_FAILED# }")
+    if (( ${#gaps[@]} )); then
+        head2 "$(msg '安装完成，但有未齐项' 'Installed, with gaps')"
+        say "$(msg "  未齐：${gaps[*]}" '  Missing: '"${gaps[*]}")"
+        say "$(msg '  处理：设置 → 补装，或重跑「检查安装 / 修复」。接管本身仍可用。' \
+                   '  Fix from Settings → install now, or re-run Check installation / repair. Takeover still works.')"
+    else
+        head2 "$(msg '安装完成' 'Done')"
+    fi
     say "$(msg '以后在终端输入一行即可：' 'From now on, run this single line:')"
     printf '  %bdrm-tui%b\n' "$COLOR_BOLD" "$COLOR_RESET"
     say "$(msg '接管时屏幕会熄灭数十秒，失败自动恢复，不要长按电源键。' \
@@ -417,13 +431,36 @@ install_patched_kwin() {
     # 这个脚本自带 --uninstall（回发行版 kwin），把入口透出给用户
     local chosen="${srcidx:-3}"
     step 1 1 "$(msg '换装打过补丁的 kwin（含 anland 后端与 pc-keyd 通道 C）' 'Installing patched kwin')"
-    if bash "$tmp" "--$chosen"; then
-        ok "$(msg '定制 kwin 已安装' 'Patched kwin installed')"
-    else
-        warn "$(msg '定制 kwin 安装失败：X11 应用弹键盘这项功能没有，接管与 anland 都不受影响'                'Patched kwin failed: X11 VKB popup unavailable; takeover and anland unaffected')"
-    fi
+    local attempt rc
+    for attempt in 1 2; do
+        bash "$tmp" "--$chosen"; rc=$?
+        # 判据只看实测：libkwin 里有没有本项目自造的符号。
+        # 不能用 dpkg -V / md5sums —— 定制 deb 复用 Ubuntu 版本串并抄了原厂 md5sums，三条校验全废。
+        if (( rc == 0 )) && kwin_patch_present; then
+            ok "$(msg '定制 kwin 已安装并复检通过' 'Patched kwin installed and verified')"
+            DRM_KWIN_FAILED=0
+            rm -f -- "$tmp"
+            return 0
+        fi
+        if (( attempt == 1 )); then
+            if kwin_patch_present; then local v=通过; else local v=未通过; fi
+            warn "$(msg "  第 1 次未成功（退出码 $rc / 复检$v），重试一次" "  Attempt 1 failed (rc $rc / verify $v); retrying")"
+        fi
+    done
+    DRM_KWIN_FAILED=1
+    fail "$(msg '定制 kwin 未装上：X11 应用不会弹虚拟键盘、组合键通道 C 不可用（接管与 anland 本身不受影响）' \
+               'Patched kwin not installed: X11 apps will not pop the VKB and channel C is unavailable')"
     rm -f -- "$tmp"
-    check_kwin_patch
+    return 1
+}
+
+# kwin_patch_present —— 实测判据：libkwin 里有没有本项目自造的符号
+kwin_patch_present() {
+    local lib hits
+    lib="$(ls /usr/lib/*/libkwin.so.6* 2>/dev/null | grep -v '\.so\.6$' | head -1)"
+    [[ -n "$lib" && -r "$lib" ]] || return 1
+    hits=$(strings -a "$lib" 2>/dev/null | grep -c '^PCKEYD_INPUT_SOCKET$')
+    (( ${hits:-0} > 0 ))
 }
 
 # ---- 桌面快捷方式 ----
@@ -768,6 +805,7 @@ check_and_repair() {
     [[ -f "$SUDOERS_FILE" ]]                         || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("sudoers")
     [[ -f /usr/local/bin/startanland-kde.sh ]]         || todo+=("runtime-scripts")
     [[ -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf ]] || todo+=("systemd-baseline")
+    [[ -n "$(timeout 20 adb shell "su -c 'test -e /data/local/tmp/argsloop && echo Y'" 2>/dev/null | tr -d '\r')" ]] || todo+=("bridges")
     local -a miss=(); mapfile -t miss < <(missing_packages)
     (( ${#miss[@]} )) && todo+=("deps(${miss[*]})")
     check_android_root || todo+=("android-root")
@@ -789,6 +827,7 @@ check_and_repair() {
             runtime-scripts) install_runtime_scripts ;;
             systemd-baseline) apply_systemd_baseline ;;
             baseline) apply_desktop_baseline ;;
+            bridges) deploy_android_bridges ;;
             deps*) install_debs_with_audit $(missing_packages) ;;
             android-root) warn "$(msg '安卓侧 root 仍未授权：在 KernelSU 里同意后重跑检查' 'Android root not authorized yet: approve in KernelSU, then re-check')" ;;
         esac
