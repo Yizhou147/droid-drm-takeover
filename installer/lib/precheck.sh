@@ -178,15 +178,35 @@ install_debs_with_audit() {
     #   ① 一律 --no-install-recommends：Recommends 把 modemmanager 带进来并 enable，
     #      plasmashell 启动查它的 D-Bus 干等 25 秒（工作总结 §41）。
     #   ② 装完必须审计新增 enabled 单元（09-23「deb 自启单元暗雷三连」）。
-    local before="$DRM_STATE_DIR/enabled-units.before" now unit
+    local before="$DRM_STATE_DIR/enabled-units.before" now unit audit=1
     mkdir -p "$DRM_STATE_DIR" 2>/dev/null
-    systemctl list-unit-files --state=enabled 2>/dev/null | awk '{print $1}' >"$before" || true
+    # 基线写不下去就必须喊出来：这条审计是 modemmanager 那类"apt 顺手 enable 的自启单元"的唯一防线，
+    # 静默跳过等于没装（10-01 非 root 试跑时它就是悄悄空转的）。
+    if ! systemctl list-unit-files --state=enabled 2>/dev/null | awk '{print $1}' >"$before" 2>/dev/null; then
+        audit=0
+        warn "$(msg "无法记录自启单元基线（$DRM_STATE_DIR 不可写）：装完请手工核对 systemctl list-unit-files --state=enabled" \
+                    "Cannot record the enabled-unit baseline ($DRM_STATE_DIR not writable): verify manually after install")"
+    fi
     local -a pkgs=()
-    mapfile -t pkgs < <(_packages_for_missing "$@")
+    mapfile -t pkgs < <(_packages_for_missing "$@" | sort -u)
     (( ${#pkgs[@]} )) || { say "$(msg '依赖已齐全' 'All dependencies present')"; return 0; }
+    # 新容器的 apt 列表常常是空的：不先 update 就会 "Unable to locate package" /
+    # "没有可安装候选"（10-01 实测：10 个包全部报找不到）。
+    say "$(msg '刷新软件包索引：apt-get update' 'Refreshing package lists: apt-get update')"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq || warn "$(msg 'apt-get update 未全部成功，继续尝试安装' 'apt-get update partially failed; continuing')"
     say "$(msg "将安装 ${#pkgs[@]} 个包：${pkgs[*]}" "Installing ${#pkgs[@]} packages: ${pkgs[*]}")"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}" || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}" || {
+        # 失败时把"到底哪个包找不到"说清楚，不要只留一句"apt 安装失败"
+        local missing="" q
+        for q in "${pkgs[@]}"; do
+            apt-cache show "$q" >/dev/null 2>&1 || missing="$missing $q"
+        done
+        [[ -n "$missing" ]] && fail "$(msg "这些包在当前源里找不到：$missing —— 检查 /etc/apt/sources.list 是否可用、是否需要同步镜像源" \
+                                       'Not available from the configured sources:'"$missing")"
+        return 1
+    }
     now="$DRM_STATE_DIR/enabled-units.after"
+    (( audit )) || return 0
     systemctl list-unit-files --state=enabled 2>/dev/null | awk '{print $1}' >"$now"
     while IFS= read -r unit; do
         grep -qx -- "$unit" "$before" 2>/dev/null && continue
@@ -198,12 +218,16 @@ install_debs_with_audit() {
 }
 
 _packages_for_missing() {
-    local cmd pkg seen=""
+    local cmd pkg seen=" "
     for cmd in "$@"; do
-        case " $seen " in *" $cmd "*) continue ;; esac
-        seen="$seen $cmd"
         pkg="${DEP_PACKAGE_MAP[$cmd]:-}"
-        [[ -n "$pkg" ]] && printf '%s\n' "$pkg"
+        [[ -n "$pkg" ]] || continue
+        # 按**包名**去重，不是按命令名：bluetoothctl 与 hciconfig 都是 bluez、
+        # wpa_supplicant 与 wpa_passphrase 都是 wpasupplicant。
+        # 原来按命令去重 ⇒ apt 参数里同一个包出现两遍（10-01 新容器实测）。
+        case "$seen" in *" $pkg "*) continue ;; esac
+        seen="$seen$pkg "
+        printf '%s\n' "$pkg"
     done
 }
 
