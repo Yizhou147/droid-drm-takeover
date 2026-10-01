@@ -808,6 +808,14 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
+# ⚠ 必须在**重启 polkit 之前**把占位符换成真实用户名。
+# 10-01 实证的坏法：37acfdb（09-30 23:53 参数化）把规则里的用户名改成 __DRM_USER__，
+# 而替换的 sed 留在脚本末尾 —— 本轮日志的顺序是 `restart polkit`(3181 行) →
+# POWERDEVIL-OK(3217 行) → `sed __DRM_USER__`(3702 行)：polkit 重载规则时文件里还是占位符，
+# powerdevil 启动那一刻授权不到 backlighthelper，`DisplaysDBusNames` 恒为 `as 0`，
+# 托盘亮度滑块整个不出现（09-30 21:14 那轮的版本 7260d33 是直接写死 "xieyizhou"，所以一直好的）。
+# 同理 60-nm-drm.rules / 61-bluez-drm-lock.conf 也必须当场落地，别等末尾统一补。
+sed -i "s/__DRM_USER__/$DRM_USER/g" /etc/polkit-1/rules.d/61-powerdevil-backlight.rules 2>/dev/null
 # 09-24 假设：同轮两处 try-restart polkit 恰好撞在 NM 启动的 polkit 权限查询窗口上
 # → 10:47 轮 NM 主循环冻结。这里改成唯一一次 restart，并等 polkit 真正 active 再继续。
 systemctl restart polkit 2>/dev/null
