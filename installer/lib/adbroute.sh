@@ -195,6 +195,8 @@ establish_adb_bridge() {
         fi
     fi
     [[ "$interactive" == "1" ]] || { ADBR_OK=0; return 1; }
+    say "$(msg '  回环 127.0.0.1:5555 也被拒：本容器的 adb 客户端密钥不在设备信任列表里 ⇒ 需要配对一次（每台容器只需一次）。' \
+               '  Loopback refused too: this container adb key is not trusted on the device; pair once per container.')"
 
     say ""
     say "$(msg '接管需要平板的 adb 通道。本容器已配对过则只需连接，否则做一次配对（仅一次）。' \

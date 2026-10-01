@@ -46,23 +46,16 @@ probe_adb() {
     done
     # 本机通道优先：容器与 pad 同一台机器，emulator-5554 这类通道与 WiFi 生死无关
     DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="device"{print $1; exit}')
-    # 未授权/掉线时先做一次"本机侧"的自救：`adb kill-server` + 重新起服务端。
-    # 今天一天里这台机器上三次出现"突然 unauthorized/offline，kill-server 立刻恢复"
-    # （本容器 15:0x、16:2x、17:3x 各一次），而旧代码会把它当成"要去配对"，
-    # 把用户带去重做一次根本不必要的配对流程。
-    # ⚠ adb server 在共享 netns 下是**多个容器共用一份**，重启会打断别的容器正在发的 adb 调用
-    #   ⇒ 只有在没有接管轮在跑时才自动做这件事。
-    if [[ -z "$DRM_ADB_DEV" && ( "$out" == *unauthorized* || "$out" == *offline* ) ]] \
-        && ! pgrep -f "desk-takeover.sh|drm-takeover.sh" >/dev/null 2>&1; then
-        adb kill-server >/dev/null 2>&1
-        sleep 1
-        timeout 15 adb start-server >/dev/null 2>&1
-        timeout 12 adb connect 127.0.0.1:5555 >/dev/null 2>&1
-        for i in 1 2 3 4; do
-            out=$(timeout "${DRM_ADB_TIMEOUT:-8}" adb devices 2>/dev/null | tail -n +2)
-            [[ -n "${out// }" ]] && break
-            sleep 1
-        done
+    # ⚠ 这里**绝不**自动 `adb kill-server`：容器与安卓共享 netns，adb server 在 127.0.0.1:5037
+    #   上只有**一份**，谁重启它，之后所有容器都改用那份 server 的密钥去认证。
+    #   10-01 实测：drm 容器那边做一次 kill-server，本容器的 emulator-5554 立刻变
+    #   unauthorized，必须回到本容器 kill-server + start-server 才恢复。
+    #   ⇒ 自动动作只允许"补连一个地址"这种无副作用的；重启 server 由人决定并写清后果。
+    #   回环 127.0.0.1:5555 与 WiFi 无关（persist.adb.tcp.port=5555，adbd 常驻监听），
+    #   换网之后靠它，而不是无线调试那个每次重连都会变的 IP:端口。
+    if [[ -z "$DRM_ADB_DEV" ]]; then
+        timeout 12 adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+        out=$(timeout "${DRM_ADB_TIMEOUT:-8}" adb devices 2>/dev/null | tail -n +2)
         DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="device"{print $1; exit}')
     fi
     if [[ -n "$DRM_ADB_DEV" ]]; then
@@ -72,7 +65,7 @@ probe_adb() {
         DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="unauthorized"{print $1; exit}')
     elif [[ $(printf '%s\n' "$out" | grep -cE 'offline|no permissions') -gt 0 ]]; then
         DRM_ADB_STATUS="offline"
-        DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$1!=""){print $1; exit}')
+        DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$1!="" {print $1; exit}')
     else
         DRM_ADB_STATUS="none"
     fi
