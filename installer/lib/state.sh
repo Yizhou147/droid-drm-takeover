@@ -26,7 +26,8 @@ DRM_ROUND_PID=""        # 接管轮 kwin 的 pid
 
 # adb 通道状态：none(没有设备) / unauthorized(有设备但未授权) / offline / device / no-adb
 # 这四种必须分开报：**unauthorized 被说成"看不到设备"或"机型不符"会把人带去装 adb、
-# 查机型，而真正要做的是在平板屏幕上同意 RSA 指纹**（10-01 新容器实测就是这么被误导的）。
+# 查机型，而真正要做的是**走无线调试配对**（这台设备没有 USB 物理连接，不会出现任何授权对话框；
+# 10-01 新容器实测就是这么被误导的）。
 DRM_ADB_STATUS="no-adb"
 DRM_ADB_STATUS_LABEL=""
 

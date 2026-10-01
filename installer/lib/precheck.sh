@@ -26,8 +26,10 @@ declare -A DEP_PACKAGE_MAP=(
     [jq]=jq [python3]=python3-minimal [curl]=curl [sha256sum]=coreutils
     [pipewire]=pipewire
     # 只有包名、没有对应命令的条目：按 dpkg 状态判定（键=值走同一条快速路径）。
-    # bluez-obexd / libspa-0.2-bluetooth 缺了，接管轮里蓝牙配对与 A2DP 音频不可用。
+    # bluez-obexd / libspa-0.2-bluetooth 缺了，接管轮里蓝牙配对与 A2DP 音频不可用；
+    # bluez 也按包名判，不借助 command -v（实测命令在不在与桥能不能跑不是一回事）。
     [bluez-obexd]=bluez-obexd [libspa-0.2-bluetooth]=libspa-0.2-bluetooth
+    [bluez]=bluez
     [plasma-nm]=plasma-nm [mesa-utils]=mesa-utils
     [xdotool]=xdotool [zenity]=zenity
 )
@@ -71,10 +73,10 @@ check_android_root() {
     [[ "$out" == "0" ]]
 }
 
-# adb 桥：容器里要有 adb，且本机调试通道必须已授权。
+# adb 桥：容器里要有 adb，且通道必须已授权。
 # 未装 adb / 通道未建立 / 通道未授权这三种情况症状相同而处置不同，必须分开报，
 # 不能笼统一句"adb 不可用"（10-01 新容器实测：unauthorized 被说成"机型不符"，
-# 把人带去查机型和装 adb，而真正该做的是在平板屏幕上同意 RSA 指纹授权）。
+# 把人带去查机型和装 adb，而真正该做的是走无线调试配对 —— 这台设备不会出现任何 USB 授权对话框）。
 check_adb_bridge() {
     local rc=0
     if ! command -v adb >/dev/null 2>&1; then
@@ -126,12 +128,12 @@ check_adb_bridge() {
     esac
     if [[ "$DRM_ADB_STATUS" == "device" ]]; then
         if check_android_root; then
-            ok "$(msg 'Android 侧 root 可用（KernelSU 已授权）' 'Android root is available (KernelSU authorized)')"
+            ok "$(msg 'Android 侧 root 可用（su -c 已授权）' 'Android root is available (su -c authorized)')"
         else
             fail "$(msg 'Android 侧 su 不可用：接管需要停止 surfaceflinger 与 composer，必须具备 root' \
                'Android su unavailable: takeover must stop surfaceflinger and composer, which requires root')"
-            say "$(msg '  请在 KernelSU 中为 adb shell 授予 root（首次调用会弹出授权请求），随后重新运行本检查。' \
-               '  Grant root to adb shell in KernelSU (a request appears on first use), then re-run this check.')"
+            say "$(msg "  执行 adb -s $DRM_DEV shell su -c id，为它授予 root，然后重新运行本检查。" \
+               "  Run adb -s $DRM_DEV shell su -c id, grant it root, then re-run this check.")"
             rc=1
         fi
     fi

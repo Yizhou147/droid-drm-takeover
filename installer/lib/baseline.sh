@@ -144,11 +144,28 @@ apply_desktop_baseline() {
 
 BRIDGE_DEPLOY_FAILED=""
 
+# drm_adb_target —— 设备侧命令必须显式选地址：这台机器同时挂着本机通道 emulator-5554 与无线通道，
+# 裸 `adb shell` 会直接报 "more than one device/emulator"（第 10 步整步空转）。
+drm_adb_target() {
+    local t="${DRM_ADB_DEV:-}"
+    [[ -n "$t" ]] || t="${ADB_TARGET:-}"
+    if [[ -z "$t" ]]; then
+        t=$(timeout 12 adb devices 2>/dev/null | awk '$2=="device"{print $1; exit}')
+    fi
+    [[ -n "$t" ]] || return 1
+    printf '%s' "$t"
+}
+
 # deploy_android_bridges —— 成功返回 0；失败时把失败的组件名留在 BRIDGE_DEPLOY_FAILED
 deploy_android_bridges() {
     local lock="$COMPONENTS_LOCK" key
     detect_json_parser || { warn "$(msg '需要 jq 或 python3 才能读组件清单' 'jq or python3 required')"; return 1; }
     [[ -r "$lock" ]] || { warn "$(msg '缺组件清单，跳过安卓侧产物部署' 'Component lock missing; skipping device bridge deploy')"; return 1; }
+    if ! drm_adb_target >/dev/null 2>&1; then
+        fail "$(msg '没有可用的 adb 通道，安卓侧产物无法部署：先跑「建立 adb 通道」' 'No usable adb channel; run the adb bridge step first')"
+        BRIDGE_DEPLOY_FAILED=" audio_bridge bluetooth_bridge"
+        return 1
+    fi
     BRIDGE_DEPLOY_FAILED=""
     for key in audio_bridge bluetooth_bridge; do
         deploy_one_bridge "$key" "$(json_get "$lock" ".$key.repo")" "$(json_get "$lock" ".$key.tag")" \
@@ -171,27 +188,30 @@ deploy_one_bridge() {
     tar -xzf "$tmp" -C "$dir" || { warn "$(msg "$name 解包失败" "$name extract failed")"; rm -rf -- "$dir" "$tmp"; return 1; }
     local root="$dir/$name"
     [[ -d "$root" ]] || root="$(find "$dir" -mindepth 1 -maxdepth 1 -type d | head -1)"
-    local f base pushed=0
+    local dev f base pushed=0
+    dev=$(drm_adb_target) || { warn "$(msg "  $name：没有可用 adb 地址" '  '"$name"': no adb address')"; rm -rf -- "$dir" "$tmp"; return 1; }
     for f in "$root"/*; do
         [[ -f "$f" ]] || continue
         base="$(basename "$f")"
-        timeout 30 adb push "$f" "/data/local/tmp/$base" >/dev/null 2>&1 \
-            && { timeout 20 adb shell "su -c 'chmod 755 /data/local/tmp/$base'" >/dev/null 2>&1; pushed=$((pushed + 1)); } \
+        timeout 30 adb -s "$dev" push "$f" "/data/local/tmp/$base" >/dev/null 2>&1 \
+            && { timeout 20 adb -s "$dev" shell "su -c 'chmod 755 /data/local/tmp/$base'" >/dev/null 2>&1; pushed=$((pushed + 1)); } \
             || warn "$(msg "  push 失败：$base" '  push failed: '"$base")"
     done
     rm -rf -- "$dir" "$tmp"
     say "$(msg "  已推送 $pushed 个文件到 /data/local/tmp" "  Pushed $pushed files")"
+    (( pushed > 0 )) || { fail "$(msg "  $name 一个文件都没推上去" '  '"$name"': nothing was pushed')"; return 1; }
     verify_bridge_files "$name"
 }
 
 # 复检只认"文件真的在设备上且可执行"，不认措辞
 verify_bridge_files() {
-    local name="$1" out
+    local name="$1" out dev
+    dev=$(drm_adb_target) || { fail "$(msg '  复检取不到 adb 地址' '  Cannot resolve an adb address for the re-check')"; return 1; }
     case "$name" in
         audio_bridge)
-            out=$(timeout 25 adb shell "su -c 'for f in argsloop halsink.sh mix2.bin dev23.bin patch0.bin; do test -e /data/local/tmp/\$f || echo MISS-\$f; done; test -x /data/local/tmp/argsloop || echo NOTEXEC-argsloop'" 2>/dev/null | tr -d '\r') ;;
+            out=$(timeout 25 adb -s "$dev" shell "su -c 'for f in argsloop halsink.sh mix2.bin dev23.bin patch0.bin; do test -e /data/local/tmp/\$f || echo MISS-\$f; done; test -x /data/local/tmp/argsloop || echo NOTEXEC-argsloop'" 2>/dev/null | tr -d '\r') ;;
         bluetooth_bridge)
-            out=$(timeout 25 adb shell "su -c 'test -e /data/local/tmp/bthci-bridge-v2 || echo MISS-bthci-bridge-v2; test -x /data/local/tmp/bthci-bridge-v2 || echo NOTEXEC'" 2>/dev/null | tr -d '\r') ;;
+            out=$(timeout 25 adb -s "$dev" shell "su -c 'test -e /data/local/tmp/bthci-bridge-v2 || echo MISS-bthci-bridge-v2; test -x /data/local/tmp/bthci-bridge-v2 || echo NOTEXEC'" 2>/dev/null | tr -d '\r') ;;
     esac
     if [[ -z "${out// }" ]]; then
         ok "$(msg "  $name 设备侧复检通过" "  $name device-side check passed")"

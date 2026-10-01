@@ -797,7 +797,11 @@ check_and_repair() {
     [[ -f "$SUDOERS_FILE" ]]                         || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("sudoers")
     [[ -f /usr/local/bin/startanland-kde.sh ]]         || todo+=("runtime-scripts")
     [[ -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf ]] || todo+=("systemd-baseline")
-    [[ -n "$(timeout 20 adb shell "su -c 'test -e /data/local/tmp/argsloop && echo Y'" 2>/dev/null | tr -d '\r')" ]] || todo+=("bridges")
+    local _dev=""
+    _dev=$(drm_adb_target 2>/dev/null) || _dev=""
+    if [[ -z "$_dev" ]] || [[ -z "$(timeout 20 adb -s "$_dev" shell "su -c 'test -e /data/local/tmp/argsloop && echo Y'" 2>/dev/null | tr -d '\r')" ]]; then
+        todo+=("bridges")
+    fi
     local -a miss=(); mapfile -t miss < <(missing_packages)
     (( ${#miss[@]} )) && todo+=("deps(${miss[*]})")
     check_android_root || todo+=("android-root")
@@ -821,7 +825,7 @@ check_and_repair() {
             baseline) apply_desktop_baseline ;;
             bridges) deploy_android_bridges ;;
             deps*) install_debs_with_audit $(missing_packages) ;;
-            android-root) warn "$(msg '安卓侧 root 仍未授权：在 KernelSU 里同意后重跑检查' 'Android root not authorized yet: approve in KernelSU, then re-check')" ;;
+            android-root) warn "$(msg '安卓侧 root 仍未授权：执行 adb -s <地址> shell su -c id 并授予 root，再重跑检查' 'Android root still not authorized: run adb -s <address> shell su -c id, grant it root, then re-check')" ;;
         esac
     done
 }

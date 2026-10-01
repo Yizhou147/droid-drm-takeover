@@ -26,12 +26,21 @@ for tool in curl tar sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || die "缺少 $tool（需要 coreutils/curl/tar）/ $tool is required"
 done
 
-# 机型闸门：认不出 piano 就直接停，别把接管装到别的机器上
+# 机型闸门：认不出 piano 就直接停，别把接管装到别的机器上。
+# 必须逐地址试：这台机器同时挂着本机通道与无线通道，裸 `adb shell` 会报
+# "more than one device/emulator" → product 为空 → 闸门形同不存在（把非 piano 设备放过去）。
 if command -v adb >/dev/null 2>&1; then
-    product=$(timeout 8 adb shell getprop ro.product.device 2>/dev/null | tr -d '\r')
-    if [[ -n "$product" && "$product" != "piano" ]]; then
-        die "机型为 $product，本项目只在小米平板 8 Pro（piano）上验证过 / unsupported device: $product"
-    fi
+    product=""
+    while IFS= read -r dev; do
+        [[ -n "$dev" ]] || continue
+        p=$(timeout 8 adb -s "$dev" shell getprop ro.product.device 2>/dev/null | tr -d '\r')
+        [[ -n "$p" ]] || continue
+        if [[ "$p" != "piano" ]]; then
+            die "机型为 $p，本项目只在小米平板 8 Pro（piano）上验证过 / unsupported device: $p"
+        fi
+        product="$p"
+        break
+    done < <(timeout 12 adb devices 2>/dev/null | awk '$2=="device"{print $1}')
     [[ -n "$product" ]] || m "提示：未能读取设备型号（Android 调试通道尚未就绪），此处跳过；安装前的环境检查会再次校验并给出具体状态。" \
                     "Note: device model unavailable (Android debug channel not ready); skipped here and re-checked before install."
 else
