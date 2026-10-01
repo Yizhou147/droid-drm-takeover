@@ -1,29 +1,21 @@
 #!/usr/bin/env bash
-# adbroute.sh — 建立并修复"容器 → Android 的 adb 通道"。
+# adbroute.sh — 建立容器到 Android 的 adb 通道。
 #
-# 为什么这是安装第一步而不是预检里的一句报错：接管与交还的每一步都要经 adb 驱动 Android。
-# 通道没建立之前，"读不到机型""属性为空"都只是症状，不是原因。
-#
-# ★ 本文件按**这台设备的实际历史做法**写，不写通用 Android 教程：
-#   · 信任关系靠无线调试的**配对码**（`adb pair`）建立。这台设备由容器经网络连接，
-#     **不存在 USB 物理连接，因此不会出现「允许 USB 调试」对话框**；
-#     也**不需要**往 /data/misc/adb/adb_keys 里追加公钥。
-#     （这两条我在 09-30 凭通用知识写进过提示，10-01 被用户指出与本机事实不符，已删除。
-#      历史上第一次建桥的实况是：`echo <6位码> | adb pair <ip>:<配对端口>` → `adb connect <ip>:<连接端口>`。）
-#   · `adb root` 在这台设备上被拒绝（生产版本），root 只有 `su -c '<cmd>'` 一条路；
-#     提示里不出现任何 root 管理器的名字（用户要求）。
-#   · **配对（`adb pair`）每台容器只需要做一次**：它信任的是容器的 adb 客户端密钥，
-#     之后**只要 `adb connect <IP>:<当前端口>` 就能恢复通道**（端口每次重新启用/开机都会变，
-#     所以只有端口要重读，配对不用重做）。
-#     ⇒ 本文件的连接顺序因此是"先直接 connect，只有它仍旧 unauthorized 才引导配对"，
-#       不是"一上来就配对"（10-01 用户补充的事实，此前的顺序会让已配对过的容器白做一次配对）。
-#   · 本机通道 emulator-5554 与无线通道共用**同一份容器客户端密钥、同一个 adbd**：
-#     无线配对成功后本机通道通常一并可用（历史上它长期 unauthorized，直到某次配对之后才变 device）。
-#   · 无线调试页给出**同一个 IP、两个不同的端口**：配对弹窗里的 `IP:配对端口` 用于 `adb pair`，
-#     设备条目里的 `IP:连接端口` 用于 `adb connect`。**端口必然不一样**，填错就配不上；
-#     IP 是同一个，不要自己改动。（10-01 用户两次纠正措辞，本条为最终事实。）
-#     端口每次重新启用无线调试/每次开机都会变（历史：37827→45889→33869→43805→46213…），
-#     所以连上之后要钉固定端口（见 fix_adb_port）。
+# 本机事实（不要用通用 Android 教程覆盖）：
+#   · 信任靠无线调试配对建立。容器与 pad 之间没有 USB 连接，不会出现 USB 授权对话框，
+#     也不需要往 /data/misc/adb/adb_keys 写东西。（这两条我 09-30 凭通用知识写进过提示，是错的。）
+#   · 配对每台容器只做一次：它信任的是容器侧的 adb 客户端密钥。之后只需
+#     `adb connect <IP>:<当前端口>`；端口每次重新启用无线调试/每次开机都会变，配对不用重做。
+#     ⇒ 顺序必须是"先 connect，只有 unauthorized 才配对"。
+#   · 配对弹窗与设备条目是同一个 IP、两个不同端口：前者用于 pair，后者用于 connect。
+#   · `adb root` 被生产版本拒绝，root 只有 `su -c`。
+#   · 本机通道 emulator-5554 与无线通道共用同一份密钥与同一个 adbd：配对成功后一并可用。
+#   · 本机 adb 34.0.5：`adb help` 写的是 `pair HOST[:PORT] [PAIRING CODE]`（码作参数），
+#     而历史上成功那次用的是 `echo <码> | adb pair <ip>:<port>`（码走 stdin，会话 7960f018 行 1819）。
+#     ⇒ 两种都试，别赌一种。
+#     ⚠ 10-01 新容器报 `protocol fault (couldn't read status message)` 时弹窗是开着的、码也对，
+#       **原因尚未定位**（候选：端口取自设备条目而非弹窗、弹窗在两次输入之间被关闭、该容器 adb 不同）。
+#       因此这里加了端口可达性探测与 adb 能力检查来取证据；没有证据前不要把任何一种解释写进用户提示。
 
 ADBR_OK=0
 
@@ -33,7 +25,14 @@ adb_endpoints_from_conf() {
     printf '%s\n' $raw
 }
 
-# 只有"真能跑通 getprop"的地址才算可用；光出现在 adb devices 里不算
+# 把"网络到不了"与"协议被拒"分开：两者处置不同
+tcp_reachable() {
+    local host="${1%:*}" port="${1##*:}"
+    [[ "$host" =~ ^[0-9.]+$ && "$port" =~ ^[0-9]+$ ]] || return 1
+    timeout 5 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null
+}
+
+# 只有真能执行 getprop 的地址才算可用
 tcp_ready_ep() {
     local ep
     while IFS= read -r ep; do
@@ -45,215 +44,149 @@ tcp_ready_ep() {
     return 1
 }
 
-explain_adb_purpose() {
-    say "$(msg '为什么需要这条通道：接管与交还的每一步都要通过 adb 驱动 Android——' \
-               'Why this channel is needed: every takeover/hand-back step drives Android over adb:')"
-    say "  $(msg '停止 surfaceflinger 与 composer（屏幕才能交给 Linux 直接驱动）' \
-                 'stopping surfaceflinger and composer so Linux can own the panel')"
-    say "  $(msg '交还时恢复 system_suspend 等安卓服务（漏掉会被 watchdog 拖到自动重启）' \
-                 'restoring system_suspend on hand-back, otherwise the watchdog reboots the device')"
-    say "  $(msg '读取当前 WiFi 的 SSID 与口令（接管后容器才能自己连回同一个网络）' \
-                 'reading the current WiFi SSID/PSK so the container reconnects on its own')"
-    say "  $(msg '写背光、发唤醒键、收割内核日志（断网与花屏类问题只能靠内核日志定位）' \
-                 'backlight, wake keyevent and kernel-log harvesting for post-mortem evidence')"
-    say ""
-}
-
-guide_wireless_debug() {
-    say "$(msg '请在平板上操作：设置 → 开发者选项 → 无线调试 = 开启。' \
-               'On the tablet: Settings → Developer options → Wireless debugging = ON.')"
-    say "$(msg '  这一步只能人工完成：容器没有 USB 物理连接，屏幕上不会出现任何 USB 授权对话框，' \
-               '  This must be done by hand: the container has no USB link, so no USB consent dialog will ever appear;')"
-    say "$(msg '  所有信任关系都在无线调试页上建立。该页给的是**同一个 IP、两个不同的端口**：' \
-               '  all trust is established on that page, which shows **one IP but two different ports**:')"
-    say "  $(msg 'a) 设备条目里的「IP 地址 : 端口」—— 连接用（端口记为 P1）' 'a) the device-entry IP:port — used to CONNECT (call it P1)')"
-    say "  $(msg 'b)「使用配对码配对设备」弹窗里的 6 位码 + 端口（端口记为 P2，与 P1 不同）' \
-                'b) the pairing dialog — a 6-digit code and a port P2 (different from P1)')"
-    say "$(msg '  端口必然不一样：配对弹窗一个端口，设备条目另一个端口。把连接端口填进配对里就会失败。' \
-               '  The ports are necessarily different: the pairing dialog shows one, the device entry another.')" 
-    say ""
-}
-
-
-# connect_only —— 已配对过的容器走这条：配对每台容器只做一次，之后只要地址就能恢复通道。
-# 成功时把可用地址写到 stdout；设备回 unauthorized 时返回 2（让调用方转去做首次配对）。
+# connect_only —— 已配对过的容器只需这一步。
+# 返回 0=成功（stdout 回传地址）；1=地址不可用；2=设备未信任（需首次配对）
 connect_only() {
     local ep
-    ep=$(ask "$(msg '平板的无线调试地址（设备条目里那条 IP:端口；回车跳过）' \
-                  'Wireless debugging address from the device entry (IP:port; Enter skips)')" "")
+    ep=$(ask "$(msg '设备条目地址 (IP:端口)' 'Device-entry address (IP:port)')" "")
     [[ "$ep" =~ ^[0-9A-Za-z._-]+:[0-9]+$ ]] || return 1
-    info "$(msg "正在 adb connect $ep" 'adb connect '"$ep")" >&2
+    if ! tcp_reachable "$ep"; then
+        say "$(msg "  $ep 不可达：无线调试未开启、IP 不对或端口已变更。" \
+                   "  $ep unreachable: wireless debugging off, wrong IP, or the port changed.")" >&2
+        return 1
+    fi
     timeout 20 adb connect "$ep" >/dev/null 2>&1 || true
     if timeout 10 adb -s "$ep" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
-        printf '%s' "$ep"
-        return 0
+        printf '%s' "$ep"; return 0
     fi
     probe_adb
-    if [[ "$DRM_ADB_STATUS" == "unauthorized" ]]; then
-        say "$(msg "  $ep 仍未被信任（unauthorized）：这台容器还没配对过，做一次配对即可，以后只连不配。" \
-                   "  $ep is still unauthorized: this container has never paired. Pair once; afterwards it is connect-only.")" >&2
-        return 2
-    fi
-    say "$(msg "  连上 $ep 仍取不到属性：多半是端口已经变了，请回无线调试页读最新端口再试。" \
-               "  $ep still returns no properties: the port has probably changed; re-read it on the wireless debugging page.")" >&2
+    [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && return 2
+    say "$(msg "  $ep 已连接但拒绝命令：请重新读取端口。" \
+               "  $ep connected but refuses commands: re-read the port.")" >&2
     return 1
 }
 
-# pair_then_connect —— 成功时把可用地址写到 stdout（其余输出全部走 stderr）
+# pair_now <配对地址> <6位码> —— 码作参数与码走 stdin 两种都试
+pair_now() {
+    local addr="$1" code="$2" out out2
+    if ! tcp_reachable "$addr"; then
+        say "$(msg "  配对端口 $addr 不可达：请用配对弹窗里显示的地址，并保持弹窗开启。" \
+                   "  Pairing port $addr unreachable: use the address in the pairing dialog and keep it open.")" >&2
+        return 1
+    fi
+    out=$(timeout 45 adb pair "$addr" "$code" 2>&1)
+    [[ "$out" == *"Successfully paired"* ]] && return 0
+    out2=$(printf '%s\n' "$code" | timeout 45 adb pair "$addr" 2>&1)
+    [[ "$out2" == *"Successfully paired"* ]] && return 0
+    # 成败判据：必须匹配 "Successfully paired" 整短语。
+    # 只 grep success 会假阳性 —— 失败原文结尾自带 "): Success"。
+    printf '%s\n%s\n' "$out" "$out2" | grep -v '^[[:space:]]*$' | sed 's/^/     /' >&2
+    say "     adb $(adb version | head -1)" >&2
+    return 1
+}
+
+# pair_then_connect —— 首次配对并连接，成功时 stdout 回传可用地址
 pair_then_connect() {
-    local pair_addr code conn
-    say "$(msg '1) 平板上点「使用配对码配对设备」，记下 6 位码和配对端口。' \
-               '1) Tap "Pair device with pairing code"; note the 6-digit code and the pairing port.')" >&2
-    pair_addr=$(ask "$(msg '   配对地址（形如 172.16.30.245:43341，回车跳过）' '   Pairing address (e.g. 172.16.30.245:43341; Enter skips)')" "")
-    [[ -n "$pair_addr" ]] || { say "$(msg '   已跳过配对。' '   Pairing skipped.')" >&2; return 1; }
-    code=$(ask "$(msg '   6 位配对码' '   6-digit pairing code')" "")
+    local paddr code caddr
+    say "$(msg '  打开「使用配对码配对设备」并保持弹窗开启，输入弹窗里的地址与配对码。' \
+               '  Open "Pair device with pairing code", keep it open, then enter its address and code.')" >&2
+    paddr=$(ask "$(msg '  配对地址 (IP:端口)' '  Pairing address (IP:port)')" "") >&2
+    [[ -n "$paddr" ]] || return 1
+    code=$(ask "$(msg '  配对码' '  Pairing code')" "") >&2
     if [[ ! "$code" =~ ^[0-9]{6}$ ]]; then
-        say "$(msg '   配对码需要 6 位数字，已跳过。' '   The pairing code needs 6 digits; skipped.')" >&2
+        say "$(msg "  配对码为 6 位数字。" "  The pairing code is 6 digits.")" >&2
         return 1
     fi
-    info "$(msg "   正在配对 $pair_addr" 'Pairing '"$pair_addr")" >&2
-    local pair_out pair_rc
-    pair_out=$(printf '%s\n' "$code" | timeout 45 adb pair "$pair_addr" 2>&1); pair_rc=$?
-    printf '%s\n' "$pair_out" | sed 's/^/     /' >&2
-    # 判据必须是"退出码 + 成功短语"两个一起看：只 grep "success" 会假阳性——
-    # 失败原文结尾就带着 "): Success"（10-01 实测：protocol fault 那条错误里就有），
-    # 而成功原文是 "Successfully paired to ..."。
-    if (( pair_rc != 0 )) || [[ "$pair_out" != *"Successfully paired"* ]]; then
-        say "$(msg '   配对未成功。本机最常见的原因：填的是设备条目那条连接地址（配对要用配对弹窗里那条独立地址）、' \
-                   '   Pairing failed. Most often the connect address was entered here — pairing needs the address from the pairing dialog.')" >&2
-        say "$(msg '  或配对弹窗已关闭/配对码过期（码只显示很短时间）。' \
-                   '  or the pairing dialog was closed and the code expired (it is shown only briefly).' )" >&2
-        say "$(msg '   另外配对码有效期很短，超时请在平板上重新生成再试。' \
-                   '   Codes expire quickly; generate a new one on the tablet and retry.')" >&2
+    if ! pair_now "$paddr" "$code"; then
+        say "$(msg "  配对失败。按序核对：① 弹窗是否仍开启；② 端口是否取自弹窗而非设备条目；③ 码是否为当前显示的那组。" \
+                   "  Pairing failed. Check in order: dialog still open; port taken from the dialog not the device entry; code is the one currently shown.")" >&2
         return 1
     fi
-    say "" >&2
-    say "$(msg '2) 现在用设备条目里那条「IP 地址 : 端口」连接（它与配对地址是两条独立条目）。' \
-               '2) Now connect with the device-entry address — it is a separate entry from the pairing address.')" >&2
-    conn=$(ask "$(msg '   连接地址（形如 172.16.30.245:37827）' '   Connection address')" "")
-    if [[ ! "$conn" =~ ^[0-9A-Za-z._-]+:[0-9]+$ ]]; then
-        say "$(msg '   地址格式不符（应为 ip:端口），已跳过。' '   Bad address format (expected ip:port); skipped.')" >&2
-        return 1
+    say "  $(msg '配对成功。' 'Paired.')" >&2
+    caddr=$(ask "$(msg '  设备条目地址 (IP:端口)' '  Device-entry address (IP:port)')" "") >&2
+    [[ "$caddr" =~ ^[0-9A-Za-z._-]+:[0-9]+$ ]] || return 1
+    timeout 20 adb connect "$caddr" >/dev/null 2>&1 || true
+    if timeout 10 adb -s "$caddr" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
+        printf '%s' "$caddr"; return 0
     fi
-    info "$(msg "   正在 adb connect $conn" 'adb connect '"$conn")" >&2
-    timeout 20 adb connect "$conn" >/dev/null 2>&1 || true
-    if timeout 10 adb -s "$conn" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
-        printf '%s' "$conn"
-        return 0
-    fi
-    # 配对后本机通道常会立刻可用（共用同一份密钥与同一个 adbd），这里复检一次
     probe_adb
-    if [[ "$DRM_ADB_STATUS" == "device" ]]; then
-        printf ''
-        return 0
-    fi
-    say "$(msg "   已连接但命令仍被拒绝（$conn）：这次配对没有被设备接受，请重新生成配对码再做一次。" \
-               "   Connected but commands are refused at $conn: the pairing was not accepted; generate a new code and redo it.")" >&2
+    [[ "$DRM_ADB_STATUS" == "device" ]] && { printf ''; return 0; }
+    say "$(msg "  配对成功但 $caddr 不可用：确认端口取自设备条目。" \
+               "  Paired but $caddr unusable: confirm the port came from the device entry.")" >&2
     return 1
 }
 
 guide_shell_root() {
     say ""
-    say "$(msg '3) 让 adb shell 具备 root（接管需要以 su -c 形式执行命令）。先在容器里验证：' \
-               '3) Give adb shell root (takeover needs su -c). Verify from the container:')"
+    say "$(msg '接管需要 adb shell 具备 root（su -c）。验证：' \
+               'Takeover needs root on adb shell (su -c). Verify:')"
     say "    adb -s ${1:-$DRM_ADB_DEV} shell su -c id"
-    say "$(msg '  返回 uid=0(root) 即已就绪；若被拒绝，请在平板上同意随即弹出的 root 授权请求后重试。' \
-               '  uid=0(root) means ready; if denied, approve the root request shown on the tablet and retry.')"
-    say "$(msg '  说明：这台设备上 adb root 不可用（生产版本会直接拒绝），只有 su -c 这一条路。' \
-               '  Note: adb root is refused on this device (production build); su -c is the only path.')"
+    say "$(msg '  返回 uid=0(root) 即就绪；被拒绝则在平板上同意后重试。本机 adb root 不可用。' \
+               '  uid=0(root) means ready; if denied, approve the request on the tablet and retry. adb root is unavailable here.')"
 }
 
 fix_adb_port() {
-    local ep="${1:-$DRM_ADB_DEV}"
-    local ip="${ep%:*}"
+    local ep="${1:-$DRM_ADB_DEV}" ip="${1%:*}"
     say ""
-    say "$(msg '4) 钉固定端口，做成长期可用的桥（无线调试的连接端口每次重新启用/每次开机都会变）：' \
-               '4) Pin a fixed port so the bridge survives reconnects (the wireless port changes on every enable/boot):')"
-    say "    adb -s $ep shell su -c 'setprop persist.adb.tcp.port 5555'"
-    say "    adb -s $ep shell su -c 'setprop service.adb.tcp.port 5555'"
-    say "    adb -s $ep shell su -c 'stop adbd'"
-    say "    adb -s $ep shell su -c 'start adbd'"
+    say "$(msg '可选：钉固定端口，之后不必再读端口（需设备侧 root）：' \
+               'Optional: pin a fixed port so it never has to be re-read (needs device root):')"
+    say "    adb -s $ep shell su -c 'setprop persist.adb.tcp.port 5555; setprop service.adb.tcp.port 5555; stop adbd; start adbd'"
     say "    adb connect $ip:5555"
-    say ""
-    warn "$(msg '  两点副作用要知道：stop adbd 会立刻断开当前这条无线连接；' \
-                '  Two side effects: stop adbd drops the current connection immediately;')"
-    warn "$(msg '  这台设备不保证认 persist 属性——若 5555 连不上说明仍走随机端口，' \
-                '  this device may not honour the persist property; if 5555 will not connect it still uses random ports,')"
-    warn "$(msg '  那时每次从无线调试页读新地址，并更新到 ADB_ENDPOINTS。' \
-                '  then read the fresh address from the page each time and update ADB_ENDPOINTS.')"
-    say ""
-    say "$(msg '  钉成功后记进配置，以后不必再问：' '  Record it so it never has to be asked again:')"
+    warn "$(msg '  stop adbd 会立刻断开当前连接；本机不保证认 persist，5555 连不上说明端口仍是随机的。' \
+                '  stop adbd drops the current connection; the persist property may not be honoured, in which case ports stay random.')"
     say "    sudo tee -a /etc/drm-takeover.conf <<< 'ADB_ENDPOINTS=\"$ip:5555\"'"
 }
 
 # establish_adb_bridge <interactive:0|1>
 establish_adb_bridge() {
-    local interactive="${1:-1}" ep
+    local interactive="${1:-1}" ep rc
     probe_adb
     if [[ "$DRM_ADB_STATUS" == "device" ]]; then
-        ok "$(msg "Android 调试通道已就绪：$DRM_ADB_DEV" 'Android debug channel ready: '"$DRM_ADB_DEV")"
+        ok "$(msg "adb 通道就绪：$DRM_ADB_DEV" 'adb channel ready: '"$DRM_ADB_DEV")"
         ADBR_OK=1; return 0
     fi
     if ! command -v adb >/dev/null 2>&1; then
-        fail "$(msg '未安装 adb：接管与交还均需通过它驱动 Android。' \
-               'adb is not installed; takeover and hand-back drive Android through it')"
-        say "  $(msg '执行：sudo apt install -y --no-install-recommends adb' \
-                    'Run: sudo apt install -y --no-install-recommends adb')"
+        fail "$(msg '未安装 adb（接管与交还都要靠它驱动 Android）：' \
+               'adb is not installed (takeover and hand-back drive Android through it):')"
+        say "  sudo apt install -y --no-install-recommends adb"
         ADBR_OK=0; return 1
     fi
-    # 已配置过地址时先直接试（非交互也走这一步）
+    if ! adb help 2>&1 | grep -qE '^[[:space:]]*pair '; then
+        fail "$(msg '本机 adb 不支持无线调试配对（无 pair 子命令），需 platform-tools 31 以上。当前：' \
+               'This adb cannot pair (no pair subcommand); platform-tools 31+ required. Current:')"
+        say "  $(adb version | head -1)"
+        ADBR_OK=0; return 1
+    fi
     if ep=$(tcp_ready_ep); then
         timeout 20 adb connect "$ep" >/dev/null 2>&1 || true
         if timeout 10 adb -s "$ep" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
             DRM_ADB_DEV="$ep"; DRM_ADB_STATUS="device"; ADBR_OK=1
-            ok "$(msg "已用配置的地址建立通道：$ep" 'Channel established from the configured address: '"$ep")"
+            ok "$(msg "adb 通道就绪：$ep" 'adb channel ready: '"$ep")"
             return 0
         fi
     fi
-    if [[ "$DRM_ADB_STATUS" == "unauthorized" ]]; then
-        warn "$(msg "本机通道尚未被信任（$DRM_ADB_DEV：unauthorized）" \
-               'Local channel is not trusted ('"$DRM_ADB_DEV"': unauthorized)')"
-        say "$(msg '  这台设备不会出现 USB 授权对话框；信任要靠无线调试的配对码建立。' \
-               '  This device shows no USB consent dialog; trust comes from pairing over wireless debugging.')"
-        say "$(msg '  配对成功后本机通道通常一并可用（两者共用同一份容器密钥与同一个 adbd）。' \
-               '  Once paired the local channel usually works too (same client key, same adbd).')"
-    else
-        warn "$(msg '尚未建立任何 Android 调试通道。' 'No Android debug channel established yet.')"
-    fi
     [[ "$interactive" == "1" ]] || { ADBR_OK=0; return 1; }
 
-    explain_adb_purpose
-    # 先试"只连接"：配对每台容器只做一次，已配对过的容器到这里就该成功
-    say "$(msg '这台容器如果以前配对过，直接连接就能恢复通道（只有端口需要重新读）：' \
-               'If this container was paired before, connecting alone restores the channel (only the port must be re-read):')"
-    local conn_rc=1
-    ep=""
-    ep=$(connect_only); conn_rc=$?
-    if (( conn_rc == 0 )); then
+    say ""
+    say "$(msg '接管需要平板的 adb 通道。本容器已配对过则只需连接，否则做一次配对（仅一次）。' \
+               'Takeover needs the tablet adb channel. If this container has paired, connect only; otherwise pair once.')"
+    ep=$(connect_only); rc=$?
+    if (( rc == 0 )); then
         DRM_ADB_DEV="$ep"; DRM_ADB_STATUS="device"; ADBR_OK=1
-        ok "$(msg "通道已恢复：$ep" 'Channel restored: '"$ep")"
-        say "$(msg '  这台容器已配对过，以后只需 adb connect（端口变了就换端口）。' \
-                   '  This container is already paired: future runs only need adb connect with the current port.')"
-        guide_shell_root "$DRM_ADB_DEV"
+        ok "$(msg "adb 通道已恢复：$ep" 'adb channel restored: '"$ep")"
+        guide_shell_root "$ep"
         return 0
     fi
-    if (( conn_rc == 2 )); then
-        say "$(msg '本容器首次使用：做一次配对（只需这一次）。' 'First use for this container: pair once (this is the only time).')"
-    else
-        say "$(msg '接着按首次配对流程走。' 'Continuing with the first-time pairing flow.')"
-    fi
-    guide_wireless_debug
+    (( rc == 2 )) && say "$(msg '本容器尚未配对，现在做一次配对。' 'This container has not paired; pairing now.')"
     if ep=$(pair_then_connect); then
-        # ep 为空表示"无线地址没通、但本机通道已经通了"
-        if [[ -n "$ep" ]]; then DRM_ADB_DEV="$ep"; fi
+        [[ -n "$ep" ]] && DRM_ADB_DEV="$ep"
         DRM_ADB_STATUS="device"; ADBR_OK=1
-        say ""
-        ok "$(msg "通道已建立：$DRM_ADB_DEV" 'Channel established: '"$DRM_ADB_DEV")"
-        say "$(msg '  配对已完成，**这台容器以后不用再配对**：端口变了就 adb kill-server + adb connect <IP>:<新端口>。' \
-                   '  Pairing is done; **this container never needs to pair again**: if the port changes, adb kill-server then adb connect <IP>:<new port>.')"
+        ok "$(msg "adb 通道已建立：$DRM_ADB_DEV" 'adb channel established: '"$DRM_ADB_DEV")"
+        say "$(msg '  以后只需 adb connect；端口变了换端口，不必重新配对。' \
+                   '  Afterwards adb connect is enough; change the port when it changes, no re-pairing.')"
         guide_shell_root "$DRM_ADB_DEV"
         local go
-        go=$(ask "$(msg '是否现在把端口钉到 5555，建立长期可用的桥？[y/N]' 'Pin to 5555 now for a durable bridge? [y/N]')" "n")
+        go=$(ask "$(msg '钉固定端口 5555？[y/N]' 'Pin to port 5555? [y/N]')" "n")
         [[ "${go,,}" == "y" ]] && fix_adb_port "$DRM_ADB_DEV"
         return 0
     fi
@@ -261,22 +194,15 @@ establish_adb_bridge() {
     return 1
 }
 
-# 建桥失败时的补充说明：只讲这台机器真实存在的钥匙与端口，不再提 USB 对话框 / adb_keys
 auth_remedy() {
-    explain_adb_purpose
-    guide_wireless_debug
-    say "$(msg '补充：配对建立信任的是容器侧这份 adb 客户端密钥（sudo 与普通用户各一份，别搞混）：' \
-               'Note: pairing trusts the container-side adb client key (root and the normal user each keep one):')"
+    say "$(msg '配对信任的是本容器的 adb 客户端密钥（每台容器一次）。密钥位置：' \
+               'Pairing trusts this container adb client key, once per container. Key locations:')"
     local f seen=" "
     for f in "$HOME/.android/adbkey.pub" "/home/${SUDO_USER:-nobody}/.android/adbkey.pub" "/root/.android/adbkey.pub"; do
         [[ -r "$f" ]] || continue
         case "$seen" in *" $f "*) continue ;; esac
-        seen="$seen$f "
-        say "  $f"
+        seen="$seen$f "; say "  $f"
     done
-    say "$(msg '  每台容器只需配对一次：之后只要 adb connect <IP>:<当前端口> 就能恢复通道，端口变了换端口即可。' \
-               '  Pair once per container; afterwards adb connect <IP>:<current port> is enough (re-read the port when it changes).')"
-    say ""
-    say "$(msg '  多容器注意：adbd 只有一份，一个容器的配对/撤销会牵动其它容器的通道状态。' \
-               '  Multi-container note: there is one adbd; pairing or revoking affects other containers too.')"
+    say "$(msg '  在平板上撤销无线调试授权会使该密钥失效，需重新配对。' \
+               '  Revoking wireless debugging authorization on the tablet invalidates it and requires re-pairing.')"
 }

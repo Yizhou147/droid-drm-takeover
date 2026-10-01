@@ -1,5 +1,19 @@
-脚本启动于 2026-10-01 09:20:41+08:00 [COMMAND="bash -c 'set -uo pipefail;source lib/common.sh;source lib/conf.sh;source lib/state.sh;source lib/net.sh;source lib/adbroute.sh;init_colors;detect_language;drm_conf_defaults;drm_conf_eval;establish_adb_bridge 1'" <not executed on terminal>]
-172.16.30.9:47000
-  [32m✔[0m Android 调试通道已就绪：172.16.30.9:47000
+脚本启动于 2026-10-01 09:32:10+08:00 [COMMAND="bash -c 'set -uo pipefail;source lib/common.sh;source lib/conf.sh;source lib/state.sh;source lib/net.sh;source lib/adbroute.sh;init_colors;detect_language;drm_conf_defaults;drm_conf_eval;establish_adb_bridge 1'" <not executed on terminal>]
+172.16.28.69:41000
+172.16.28.69:33169
+135790
+172.16.28.69:41000
+n
 
-脚本完成于 2026-10-01 09:20:43+08:00 [COMMAND_EXIT_CODE="0"]
+接管需要平板的 adb 通道。本容器已配对过则只需连接，否则做一次配对（仅一次）。
+设备条目地址 (IP:端口) []:   172.16.28.69:41000 不可达：无线调试未开启、IP 不对或端口已变更。
+  打开「使用配对码配对设备」并保持弹窗开启，输入弹窗里的地址与配对码。
+  配对地址 (IP:端口) []:   配对码 []:   配对成功。
+  设备条目地址 (IP:端口) []:   [32m✔[0m adb 通道已建立：172.16.28.69:41000
+  以后只需 adb connect；端口变了换端口，不必重新配对。
+
+接管需要 adb shell 具备 root（su -c）。验证：
+    adb -s 172.16.28.69:41000 shell su -c id
+  返回 uid=0(root) 即就绪；被拒绝则在平板上同意后重试。本机 adb root 不可用。
+钉固定端口 5555？[y/N] [n]: 
+脚本完成于 2026-10-01 09:32:11+08:00 [COMMAND_EXIT_CODE="0"]
