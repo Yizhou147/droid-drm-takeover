@@ -34,7 +34,9 @@ drm_conf_defaults() {
     DRM_CONF[LOG_DIR]="${DRM_CONF[REPO_DIR]}/logs"
     DRM_CONF[DOWNLOAD_SOURCE]="auto"
     # 无线 adb 的地址列表（空格分隔）。端口每次重连都会变，所以要能配置而不是写死在脚本里。
-    DRM_CONF[ADB_ENDPOINTS]="${ADB_ENDPOINTS:-}"
+    # 默认就带 127.0.0.1:5555：adbd 在这台设备上监听 TCP 5555（回环，与 WiFi 无关），
+    # 无线调试的 IP:端口每次重连都会变，只作为第二顺位。
+    DRM_CONF[ADB_ENDPOINTS]="${ADB_ENDPOINTS:-127.0.0.1:5555}"
     DRM_CONF[UI_LANG]="auto"
     DRM_CONF[SHORTCUTS]="1"
     DRM_CONF[INSTALL_KEYBOARD]="1"

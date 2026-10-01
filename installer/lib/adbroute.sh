@@ -158,6 +158,21 @@ establish_adb_bridge() {
         remember_adb_endpoint "$DRM_ADB_DEV"
         ADBR_OK=1; return 0
     fi
+    # ---- 先试与网络无关的回环通道 ----
+    # 这台设备的 adbd 监听 TCP 5555（实测 `getprop service.adb.tcp.port`=5555），
+    # 容器与安卓共享 netns ⇒ `127.0.0.1:5555` 走 loopback，**换 WiFi、无线调试端口变化都影响不到它**。
+    # 这就是"本容器在任何网络下都能用"的实际原因；旧代码只会去问无线调试的 IP:端口，
+    # 一换网那个地址就作废，于是"换个网 adb 就用不了"。
+    # 非交互（预检 / 接管脚本 / 桌面快捷方式）也走这一段。
+    if timeout 12 adb connect 127.0.0.1:5555 >/dev/null 2>&1 \
+        && timeout 10 adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk >/dev/null 2>&1; then
+        DRM_ADB_DEV="127.0.0.1:5555"; DRM_ADB_STATUS="device"; ADBR_OK=1
+        remember_adb_endpoint "127.0.0.1:5555"
+        ok "$(msg 'adb 通道已建立（回环 127.0.0.1:5555，与 WiFi 无关）' \
+                  'adb channel up via loopback 127.0.0.1:5555 (network-independent)')"
+        return 0
+    fi
+
     if ! command -v adb >/dev/null 2>&1; then
         fail "$(msg '未安装 adb（接管与交还都要靠它驱动 Android）：' \
                'adb is not installed (takeover and hand-back drive Android through it):')"
