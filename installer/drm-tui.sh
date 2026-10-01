@@ -229,12 +229,13 @@ install_flow() {
     step 1 8 '建立 Android 调试通道（adb 桥）' 'Establish the Android debug channel (adb bridge)'
     say "$(msg '  接管与交还的每一个动作都要经 adb 驱动 Android（停 surfaceflinger、读当前 WiFi 凭据、写背光），' \
                '  Every takeover/hand-back action drives Android over adb (stopping surfaceflinger, reading WiFi credentials, setting backlight)','')"
-    say "$(msg '  本机通道(emulator-5554 一类)优先——它不经 WiFi 射频；没有或未授权时才走无线 adb。' \
+    say "$(msg '  本机通道(emulator-5554 一类)优先——它不经 WiFi 射频；尚未被信任时才需要用无线调试配对建立信任。' \
                '  The local channel (emulator-5554 style) is preferred because it does not depend on WiFi; wireless adb is the fallback.')"
     if ! establish_adb_bridge 1; then
         [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
-        die "$(msg 'adb 通道未能建立：后续设备校验与接管都无法进行。完成授权或提供无线 adb 地址后重跑本安装。' \
-              'The adb channel could not be established; device verification and takeover are impossible. Authorize or supply a wireless adb address, then re-run.')"
+        [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
+        die "$(msg 'adb 通道未能建立：设备校验与接管都无法进行。请在平板上开启无线调试并完成配对（adb pair + adb connect）后重跑本安装。' \
+              'The adb channel could not be established, so device verification and takeover are impossible. Enable wireless debugging on the tablet, complete pairing (adb pair + adb connect), then re-run.')"
     fi
 
     step 2 8 '识别设备与发行版' 'Identify device and distribution'

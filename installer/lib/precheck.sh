@@ -90,11 +90,12 @@ check_adb_bridge() {
         unauthorized)
             fail "$(msg "设备未授权（$DRM_ADB_DEV：unauthorized）：adb 已发现设备，但 Android 拒绝执行命令" \
                'Device not authorized ('"$DRM_ADB_DEV"': unauthorized): adb sees the device, but Android refuses commands')"
-            say "$(msg '  请在平板屏幕上同意「允许 USB 调试」对话框，并勾选"一律允许"。' \
-               '  Accept the "Allow USB debugging" dialog on the tablet and tick "Always allow".')"
-            say "$(msg '  若对话框没有弹出：在开发者选项中撤销 USB 调试授权，然后依次执行下面两条。' \
-               '  If no dialog appears: revoke USB debugging authorizations in Developer options, then run:')"
-            say "  adb kill-server"
+            say "$(msg '  这台设备没有 USB 物理连接，不会出现 USB 授权对话框；信任要用无线调试配对建立：' \
+               '  This device has no USB link, so no USB consent dialog appears; establish trust by pairing over wireless debugging:')"
+            say "  $(msg '位置：设置 → 开发者选项 → 无线调试 →「使用配对码配对设备」' \
+                        'Location: Settings → Developer options → Wireless debugging → \"Pair device with pairing code\"')"
+            say "    adb pair <ip>:<配对端口>       # 按提示输入 6 位配对码"
+            say "    adb connect <ip>:<连接端口>    # 注意：这是另一个端口，不是配对端口"
             say "  adb devices"
             rc=1
             ;;

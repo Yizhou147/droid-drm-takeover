@@ -1,52 +1,36 @@
-脚本启动于 2026-10-01 08:43:05+08:00 [COMMAND="bash drm-tui.sh" <not executed on terminal>]
-5
-9
-10
-  [2m·[0m 还没有配置文件（/etc/drm-takeover.conf），先用当前默认值
-[H[2J[3J[1m[36mdrm-tui v0.1.0[0m — Xiaomi Pad 8 Pro DRM 显示接管
-  [2m设备[0m 未知 (?)   [2m目标[0m ubuntu|26.04/kde
-  [2m状态[0m [1manland 态（Linux 桌面显示在安卓里）[0m  ·安卓通道 emulator-5554
-  [2m·[0m 后台自检进行中…
+脚本启动于 2026-10-01 09:09:42+08:00 [COMMAND="bash -c 'set -uo pipefail; source lib/common.sh; source lib/conf.sh; source lib/state.sh; source lib/net.sh; source lib/adbroute.sh; init_colors; detect_language; drm_conf_defaults; drm_conf_eval; establish_adb_bridge 1; echo FINAL=$ADBR_OK/$DRM_ADB_DEV'" <not executed on terminal>]
+172.16.30.245:43341
+387545
+172.16.30.245:37827
+n
+  [33m![0m 本机通道尚未被信任（emulator-5554：unauthorized）
+  这台设备不会出现 USB 授权对话框；信任要靠无线调试的配对码建立。
+  配对成功后本机通道通常一并可用（两者共用同一份容器密钥与同一个 adbd）。
+为什么需要这条通道：接管与交还的每一步都要通过 adb 驱动 Android——
+  停止 surfaceflinger 与 composer（屏幕才能交给 Linux 直接驱动）
+  交还时恢复 system_suspend 等安卓服务（漏掉会被 watchdog 拖到自动重启）
+  读取当前 WiFi 的 SSID 与口令（接管后容器才能自己连回同一个网络）
+  写背光、发唤醒键、收割内核日志（断网与花屏类问题只能靠内核日志定位）
 
+请在平板上操作：设置 → 开发者选项 → 无线调试 = 开启。
+  这一步只能人工完成：容器没有 USB 物理连接，屏幕上不会出现任何 USB 授权对话框，
+  所有信任关系都在无线调试页上建立。该页给出两组数字，注意它们是**不同的端口**：
+  a) 设备条目里的「IP 地址 : 端口」—— 连接用
+  b)「使用配对码配对设备」给出的 6 位码 + 配对端口 —— 配对用
 
-[1m[0m
-  [36m1)[0m ▶ 进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）
-  [36m2)[0m 回到安卓（交还显示与网络）
-  [36m3)[0m 查看上一轮日志
-  [36m4)[0m 重建 Android 调试通道（adb 授权 / 无线地址）
-  [36m5)[0m 设置（组件 / WiFi / anland / 日志 / 语言 / 源）
-  [36m6)[0m 检查安装 / 修复
-  [36m7)[0m 检查更新
-  [36m8)[0m 高级（实验开关，默认关）
-  [36m9)[0m 卸载
-  [36m10)[0m 退出
-请输入编号 [0]: 
-[1m设置 —— 快捷方式:1 输入法:1 补丁kwin:1 WiFi:1 拉起anland:1[0m
-  [36m1)[0m 切换：桌面快捷方式（当前 1）
-  [36m2)[0m 切换：接管时容器接管 WiFi（当前 1）——关掉则进无网桌面
-  [36m3)[0m 切换：返回安卓时自动拉起 anland（当前 1）
-  [36m4)[0m 补装：输入法 / 定制 kwin（当前 1/1）
-  [36m5)[0m 改下载源（当前 auto）
-  [36m6)[0m 日志目录（当前 /home/xieyizhou/Documents/XiaomiPad8Pro-drm-display/logs）
-  [36m7)[0m 语言（当前 auto）
-  [36m8)[0m 无线 adb 地址列表（当前 ）
-  [36m9)[0m 返回
-请输入编号 [0]: [H[2J[3J[1m[36mdrm-tui v0.1.0[0m — Xiaomi Pad 8 Pro DRM 显示接管
-  [2m设备[0m 未知 (?)   [2m目标[0m ubuntu|26.04/kde
-  [2m状态[0m [1manland 态（Linux 桌面显示在安卓里）[0m  ·安卓通道 emulator-5554
-  [2m·[0m 后台自检进行中…
+1) 平板上点「使用配对码配对设备」，记下 6 位码和配对端口。
+   配对地址（形如 172.16.30.245:43341，回车跳过） []:    6 位配对码 []:   [2m·[0m    正在配对 172.16.30.245:43341
+     Successfully paired to 172.16.30.245:43341 [guid=adb-test]
 
+2) 用设备条目里的「IP 地址 : 端口」连接（端口与配对端口不同）。
+   连接地址（形如 172.16.30.245:37827） []:   [2m·[0m    正在 adb connect 172.16.30.245:37827
 
-[1m[0m
-  [36m1)[0m ▶ 进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）
-  [36m2)[0m 回到安卓（交还显示与网络）
-  [36m3)[0m 查看上一轮日志
-  [36m4)[0m 重建 Android 调试通道（adb 授权 / 无线地址）
-  [36m5)[0m 设置（组件 / WiFi / anland / 日志 / 语言 / 源）
-  [36m6)[0m 检查安装 / 修复
-  [36m7)[0m 检查更新
-  [36m8)[0m 高级（实验开关，默认关）
-  [36m9)[0m 卸载
-  [36m10)[0m 退出
-请输入编号 [0]: 
-脚本完成于 2026-10-01 08:43:06+08:00 [COMMAND_EXIT_CODE="0"]
+  [32m✔[0m 通道已建立：172.16.30.245:37827
+
+3) 让 adb shell 具备 root（接管需要以 su -c 形式执行命令）。先在容器里验证：
+    adb -s 172.16.30.245:37827 shell su -c id
+  返回 uid=0(root) 即已就绪；若被拒绝，请在平板上同意随即弹出的 root 授权请求后重试。
+  说明：这台设备上 adb root 不可用（生产版本会直接拒绝），只有 su -c 这一条路。
+是否现在把端口钉到 5555，建立长期可用的桥？[y/N] [n]: FINAL=1/172.16.30.245:37827
+
+脚本完成于 2026-10-01 09:09:43+08:00 [COMMAND_EXIT_CODE="0"]
