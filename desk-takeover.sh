@@ -17,6 +17,13 @@ DRM_USER=${DRM_USER:-xieyizhou}
 DRM_UID=${DRM_UID:-1000}
 DRM_HOME=${DRM_HOME:-/home/xieyizhou}
 DRM_RT=/run/user/$DRM_UID
+# ---- 必须清掉 anland 那组环境变量（10-01 测试容器实锤）----
+# DroidSpaces 的 anland 集成会把 ANLAND=1 / ANLAND_SOCKET / ANLAND_DRM_DEVICE 写进 /etc/environment，
+# 而 sudo 的 env_reset 之后 PAM 仍会重读 /etc/environment ⇒ 这些值会一路传到 kwin。
+# kwin（打过补丁的那份）看到 ANLAND=1 就自动选 **anland 后端**而不是 DRM：
+# 表现是 kwin 活着、wayland-info 也过、但 kwinatomic.log 里 0 条 ATOMIC、面板什么都不显示，
+# 而脚本以为成功 → 不回滚 → 只能强制重启。接管轮里 anland 后端没有任何意义，直接清掉。
+unset ANLAND ANLAND_SOCKET ANLAND_DRM_DEVICE ANLAND_SKIP_IMPLICIT_SYNC_WAIT
 
 # ---- 权限闸门：必须在**任何动作之前**（尤其在建自脱钩与 stop 安卓之前）----
 # 10-01 新容器实测：以普通用户跑起来时 mknod/chmod/ln 全部 Permission denied，
@@ -628,7 +635,19 @@ runuser -u "$DRM_USER" -- env -u DISPLAY WAYLAND_DISPLAY=taketest \
 # 第二处阶段边界：kwin 已持住 card0 且 wayland 协议自检通过 = **画面此刻已经上屏**
 # （此后才是起 Plasma 组件；drm-tui 用它把"kwin 上屏"和"桌面就绪"分开显示）。
 # 注意与既有教训一致：这条只代表"kwin 活着且能应答"，**不代表 plasmashell 起来了**（§7 判据纪律）。
-echo "KWIN-UP kwin 已接管显示并通过 wayland 自检 $(date +%T)（画面此刻应已上屏，正在起桌面组件）"
+# ---- 上屏闸门：kwin 活着 ≠ 画面在出。必须看到它真的提交过 atomic 才算接管成功。
+# 10-01 测试容器就是栽在这：kwin 选了 anland 后端，进程健康、wayland 自检通过，
+# 但一次 atomic 都没提交 → 黑屏且脚本不回滚 → 用户只能强启。
+KWIN_OK=0
+for _i in 1 2 3 4 5 6 7 8; do
+    if [ -s $LOGD/kwinatomic.log ] && grep -q ATOMIC $LOGD/kwinatomic.log; then KWIN_OK=1; break; fi
+    sleep 2
+done
+if [ "$KWIN_OK" != 1 ]; then
+    kill -0 $KPID 2>/dev/null && echo "KWIN-UP 有 kwin 进程但 0 条 ATOMIC 提交（后端选错？查 kwin.log 的 backend 行）"
+    rollback "no atomic commit seen: kwin is up but nothing was scanned out (black screen guard)"
+fi
+echo "KWIN-UP kwin 已接管显示并实际提交上屏 $(date +%T)（ATOMIC 计数 $(grep -c ATOMIC $LOGD/kwinatomic.log)，正在起桌面组件）"
 # ---- 3a) XWayland（09-24：DRM 桌面缺它，X11-only 应用全打不开——星火商店/ZCode 是
 #      Electron 默认 x11 ozone，报 "Missing X server or $DISPLAY"；usb-manager 的 PyQt5
 #      源码里硬把 QT_QPA_PLATFORM=wayland 改写成 xcb，连退路都没有）。

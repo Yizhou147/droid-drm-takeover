@@ -16,6 +16,9 @@ DRM_USER=${DRM_USER:-xieyizhou}
 DRM_UID=${DRM_UID:-1000}
 DRM_HOME=${DRM_HOME:-/home/xieyizhou}
 DRM_RT=/run/user/$DRM_UID
+# anland 那组变量会让打过补丁的 kwin 自动选 anland 后端（0 次 atomic 提交=黑屏），
+# 它可能被写进 /etc/environment，sudo 之后仍会被 PAM 重新注入 ⇒ 一律清掉。详见 desk-takeover.sh 同处说明。
+unset ANLAND ANLAND_SOCKET ANLAND_DRM_DEVICE ANLAND_SKIP_IMPLICIT_SYNC_WAIT
 
 # ---- 权限闸门：必须在**任何动作之前**（尤其在建自脱钩与 stop 安卓之前）----
 # 10-01 新容器实测：以普通用户跑起来时 mknod/chmod/ln 全部 Permission denied，
