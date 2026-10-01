@@ -18,6 +18,16 @@ DRM_UID=${DRM_UID:-1000}
 DRM_HOME=${DRM_HOME:-/home/xieyizhou}
 DRM_RT=/run/user/$DRM_UID
 
+# ---- 权限闸门：必须在**任何动作之前**（尤其在建自脱钩与 stop 安卓之前）----
+# 10-01 新容器实测：以普通用户跑起来时 mknod/chmod/ln 全部 Permission denied，
+# 但脚本照往下走 —— 真的把安卓显示栈 stop 了（ANDROID-STOP），等 kwin 起不来才回滚，
+# 用户白白经历几十秒黑屏。没有 root 就一步都不许走。
+if [ "$(id -u)" != 0 ]; then
+    echo "NEED-ROOT: 接管/交还必须以 root 运行（要 mknod 设备节点、写 udev 规则、stop/start 安卓服务）。" >&2
+    echo "  请用：sudo bash $0" >&2
+    exit 1
+fi
+
 
 # ---- 自脱钩（09-23 黑屏事故教训，同 desk-stop v2）：快捷方式从桌面 konsole 进来时，
 #      konsole 是将被本脚本杀掉的 kwin 的客户端；kwin 一死 pty 关闭，前台脚本陪葬，

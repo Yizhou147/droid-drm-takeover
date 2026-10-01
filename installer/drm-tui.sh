@@ -548,6 +548,27 @@ run_takeover() {
     say ""
     confirm "$(msg '确认开始？' 'Proceed?')" || { say "$(msg '已取消。' 'Cancelled.')"; return 0; }
 
+    # 接管/交还必须要 root：10-01 新容器实测以普通用户跑起来时，mknod/chmod 全被拒，
+    # 但安卓显示栈照样被 stop，最后回滚 —— 用户白看几十秒黑屏。脚本侧已加 NEED-ROOT 闸门，
+    # 这里负责在 TUI 里把这一步用 sudo 提权后重跑（密码提示由 sudo 给）。
+    if [[ "$(id -u)" != 0 ]]; then
+        say ""
+        msg "  这一步需要 root，将通过 sudo 执行（可能需要输入一次密码）。" \
+            "  This step needs root; running via sudo (a password may be required)."
+        sudo "$SCRIPT_SRC" --run-round "$script"
+        local src=$?
+        detect_android_identity; detect_state >/dev/null
+        return $src
+    fi
+    run_round "$script"
+}
+
+# run_round —— 真正执行一轮接管/交还（root 侧），并把判据行翻成阶段进度
+run_round() {
+    local script="$1"
+    local repo="${DRM_CONF[REPO_DIR]}"
+    local logfile="${DRM_CONF[LOG_DIR]}/$(basename "$script" .sh).log"
+    # 阶段表按链选：交还链没有"进入接管"那些判据，拿错表就是一张永远不动的阶段清单
     if [[ "$script" == "$STOP_SCRIPT" ]]; then
         STAGE_ROWS=("${STAGE_ROWS_STOP[@]}")
     else
@@ -899,6 +920,7 @@ main() {
         install) shift; install_flow "$@" ;;
         --version) say "drm-tui $VERSION" ;;
         --check-kwin) load_state; check_kwin_patch ;;
+        --run-round) shift; load_state; run_round "$1" ;;
         --check) load_state; check_and_repair ;;
         *) load_state
            # 打开即后台并发跑预检与查更新（dstui 的姿势：菜单先画，结果到了再刷）

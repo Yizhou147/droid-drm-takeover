@@ -1,8 +1,22 @@
-脚本启动于 2026-10-01 09:51:19+08:00 [COMMAND="bash -c 'set -uo pipefail;source lib/common.sh;source lib/conf.sh;init_colors;detect_language;drm_conf_defaults;source /tmp/ac.sh;ask_components'" <not executed on terminal>]
+脚本启动于 2026-10-01 11:06:49+08:00 [COMMAND="bash -c 'set -uo pipefail; source drm-tui.sh --selftest 2>/dev/null || true'" <not executed on terminal>]
+y
+  [2m·[0m 还没有配置文件（/etc/drm-takeover.conf），先用当前默认值
+[H[2J[3J[1m[36mdrm-tui v0.1.0[0m — Xiaomi Pad 8 Pro DRM 显示接管
+  [2m设备[0m 25091RP04C (piano)   [2m目标[0m ubuntu|26.04/kde
+  [2m状态[0m [1manland 态（Linux 桌面显示在安卓里）[0m  ·安卓通道 emulator-5554
+  [2m·[0m 后台自检进行中…
 
 
+[1m[0m
+  [36m1)[0m ▶ 进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）
+  [36m2)[0m 回到安卓（交还显示与网络）
+  [36m3)[0m 查看上一轮日志
+  [36m4)[0m 重建 Android 调试通道（adb 授权 / 无线地址）
+  [36m5)[0m 设置（组件 / WiFi / anland / 日志 / 语言 / 源）
+  [36m6)[0m 检查安装 / 修复
+  [36m7)[0m 检查更新
+  [36m8)[0m 高级（实验开关，默认关）
+  [36m9)[0m 卸载
+  [36m10)[0m 退出
 
-
-生成桌面快捷方式（进入DRM接管 / 返回安卓）？ [Y]: 安装输入法 droid-pc-keyboard？ [Y]: X11 应用也弹出虚拟键盘？（需换装打过补丁的 kwin） [Y]:   [33m![0m   副作用：这台机器上 anland 用的就是这个 kwin 二进制，回退后 anland 可能起不来。
-
-脚本完成于 2026-10-01 09:51:19+08:00 [COMMAND_EXIT_CODE="0"]
+脚本完成于 2026-10-01 11:06:50+08:00 [COMMAND_EXIT_CODE="0"]
