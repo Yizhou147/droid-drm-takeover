@@ -26,10 +26,14 @@ declare -A DEP_PACKAGE_MAP=(
     [jq]=jq [python3]=python3-minimal [curl]=curl [sha256sum]=coreutils
     [pipewire]=pipewire
     # 只有包名、没有对应命令的条目：按 dpkg 状态判定（键=值走同一条快速路径）。
+    # 只有包名、没有对应命令的条目：按 dpkg 状态判定（键=值走同一条快速路径）。
     # bluez-obexd / libspa-0.2-bluetooth 缺了，接管轮里蓝牙配对与 A2DP 音频不可用；
-    # bluez 也按包名判，不借助 command -v（实测命令在不在与桥能不能跑不是一回事）。
+    # bluez 也按包名判，不借助 command -v（命令在不在与桥能不能跑不是一回事）。
     [bluez-obexd]=bluez-obexd [libspa-0.2-bluetooth]=libspa-0.2-bluetooth
     [bluez]=bluez
+    # bluedevil：系统设置里的蓝牙页 + 托盘图标都来自它。Ubuntu + Plasma 默认不装，
+    # 缺了会让人误判"桥没通"（工作总结 §470 实测坑，10-01 双容器包比对确认新容器没有它）。
+    [bluedevil]=bluedevil
     [plasma-nm]=plasma-nm [mesa-utils]=mesa-utils
     [xdotool]=xdotool [zenity]=zenity
 )
