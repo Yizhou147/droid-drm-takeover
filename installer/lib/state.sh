@@ -112,8 +112,13 @@ detect_state() {
     elif [[ "$DRM_KWIN_ROLE" == "anland" ]]; then
         DRM_STATE="anland"; DRM_STATE_LABEL="$(msg 'anland 态（Linux 桌面显示在安卓里）' 'anland mode (Linux desktop shown inside Android)')"
     elif [[ $sf_stopped -eq 0 && "$DRM_KWIN_ROLE" == "none" ]]; then
-        # 安卓活着、没有任何 Linux 桌面 = "失败轮"（点过进入接管但没成功，anland 也没回来）
-        DRM_STATE="failed-round"; DRM_STATE_LABEL="$(msg '安卓正常、Linux 桌面没在跑（可能是上一轮失败）' 'Android fine, no Linux desktop (last round may have failed)')"
+        # "失败轮"必须有证据：真的跑过一轮（有接管日志）才算。
+        # 全新容器从来没人起过桌面，判成"上一轮没成功"会让人以为是自己搞坏了（10-01 实测）。
+        if [[ -s "${DRM_CONF[LOG_DIR]:-/dev/null}/desk-takeover.log" ]]; then
+            DRM_STATE="failed-round"; DRM_STATE_LABEL="$(msg '安卓正常、Linux 桌面没在跑（上一轮未成功）' 'Android fine, no Linux desktop (last round did not succeed)')"
+        else
+            DRM_STATE="android"; DRM_STATE_LABEL="$(msg 'Android 正常，本容器还没有 Linux 桌面在运行' 'Android is up; no Linux desktop is running in this container yet')"
+        fi
     else
         DRM_STATE="android"; DRM_STATE_LABEL="$(msg '纯安卓态（容器 Linux 未在显示）' 'Plain Android (container Linux not displaying)')"
     fi

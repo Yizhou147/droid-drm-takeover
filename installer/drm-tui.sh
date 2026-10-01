@@ -586,10 +586,22 @@ run_takeover() {
 relaunch_anland() {
     say ""
     head2 "$(msg '重启 anland 会话' 'Restart the anland session')"
-    local starter=/usr/local/bin/startanland-kde.sh
-    [[ -f "$starter" ]] || die "$(msg "缺 $starter，anland 无法由本工具拉起" 'anland starter is missing')"
-    msg "  将在容器里以桌面用户身份重新起 anland（屏幕仍归安卓）。" \
-        "  The anland session will be restarted inside the container (Android keeps the screen)."
+    # 不同 rootfs 里 anland 启动脚本位置不同（DroidSpaces 的 KDE 镜像放 /usr/local/bin，
+    # 也有发行版放 /usr/bin；全新容器可能根本没有 anland 集成）。
+    local starter="" cand
+    for cand in /usr/local/bin/startanland-kde.sh /usr/bin/startanland-kde.sh \
+                "$HOME/.local/bin/startanland-kde.sh" /opt/droidspaces/startanland-kde.sh; do
+        [[ -f "$cand" ]] && { starter="$cand"; break; }
+    done
+    if [[ -z "$starter" ]]; then
+        say "$(msg '本容器没有 anland 启动脚本，即未安装 DroidSpaces 的 Linux 桌面集成。' \
+                   'This container has no anland launcher, i.e. no DroidSpaces Linux desktop integration.')"
+        say "$(msg '  不影响 DRM 接管：直接从菜单选「进入 DRM 接管」。' \
+                   '  This does not block DRM takeover: choose Enter DRM takeover from the menu.')"
+        return 0
+    fi
+    msg "  将以桌面用户身份重启 anland（屏幕仍归安卓）：$starter" \
+        "  Restarting anland as the desktop user (Android keeps the screen): $starter"
     confirm "$(msg '确认？' 'Proceed?')" || return 0
     local user="${DRM_CONF[DRM_USER]}"
     runuser -u "$user" -- bash -c "nohup $starter > /tmp/anland-restart.log 2>&1 &" 2>/dev/null \
