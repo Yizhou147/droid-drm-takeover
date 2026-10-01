@@ -12,6 +12,11 @@
 #      历史上第一次建桥的实况是：`echo <6位码> | adb pair <ip>:<配对端口>` → `adb connect <ip>:<连接端口>`。）
 #   · `adb root` 在这台设备上被拒绝（生产版本），root 只有 `su -c '<cmd>'` 一条路；
 #     提示里不出现任何 root 管理器的名字（用户要求）。
+#   · **配对（`adb pair`）每台容器只需要做一次**：它信任的是容器的 adb 客户端密钥，
+#     之后**只要 `adb connect <IP>:<当前端口>` 就能恢复通道**（端口每次重新启用/开机都会变，
+#     所以只有端口要重读，配对不用重做）。
+#     ⇒ 本文件的连接顺序因此是"先直接 connect，只有它仍旧 unauthorized 才引导配对"，
+#       不是"一上来就配对"（10-01 用户补充的事实，此前的顺序会让已配对过的容器白做一次配对）。
 #   · 本机通道 emulator-5554 与无线通道共用**同一份容器客户端密钥、同一个 adbd**：
 #     无线配对成功后本机通道通常一并可用（历史上它长期 unauthorized，直到某次配对之后才变 device）。
 #   · 无线调试页给出**同一个 IP、两个不同的端口**：配对弹窗里的 `IP:配对端口` 用于 `adb pair`，
@@ -67,6 +72,31 @@ guide_wireless_debug() {
     say "$(msg '  端口必然不一样：配对弹窗一个端口，设备条目另一个端口。把连接端口填进配对里就会失败。' \
                '  The ports are necessarily different: the pairing dialog shows one, the device entry another.')" 
     say ""
+}
+
+
+# connect_only —— 已配对过的容器走这条：配对每台容器只做一次，之后只要地址就能恢复通道。
+# 成功时把可用地址写到 stdout；设备回 unauthorized 时返回 2（让调用方转去做首次配对）。
+connect_only() {
+    local ep
+    ep=$(ask "$(msg '平板的无线调试地址（设备条目里那条 IP:端口；回车跳过）' \
+                  'Wireless debugging address from the device entry (IP:port; Enter skips)')" "")
+    [[ "$ep" =~ ^[0-9A-Za-z._-]+:[0-9]+$ ]] || return 1
+    info "$(msg "正在 adb connect $ep" 'adb connect '"$ep")" >&2
+    timeout 20 adb connect "$ep" >/dev/null 2>&1 || true
+    if timeout 10 adb -s "$ep" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
+        printf '%s' "$ep"
+        return 0
+    fi
+    probe_adb
+    if [[ "$DRM_ADB_STATUS" == "unauthorized" ]]; then
+        say "$(msg "  $ep 仍未被信任（unauthorized）：这台容器还没配对过，做一次配对即可，以后只连不配。" \
+                   "  $ep is still unauthorized: this container has never paired. Pair once; afterwards it is connect-only.")" >&2
+        return 2
+    fi
+    say "$(msg "  连上 $ep 仍取不到属性：多半是端口已经变了，请回无线调试页读最新端口再试。" \
+               "  $ep still returns no properties: the port has probably changed; re-read it on the wireless debugging page.")" >&2
+    return 1
 }
 
 # pair_then_connect —— 成功时把可用地址写到 stdout（其余输出全部走 stderr）
@@ -193,6 +223,25 @@ establish_adb_bridge() {
     [[ "$interactive" == "1" ]] || { ADBR_OK=0; return 1; }
 
     explain_adb_purpose
+    # 先试"只连接"：配对每台容器只做一次，已配对过的容器到这里就该成功
+    say "$(msg '这台容器如果以前配对过，直接连接就能恢复通道（只有端口需要重新读）：' \
+               'If this container was paired before, connecting alone restores the channel (only the port must be re-read):')"
+    local conn_rc=1
+    ep=""
+    ep=$(connect_only); conn_rc=$?
+    if (( conn_rc == 0 )); then
+        DRM_ADB_DEV="$ep"; DRM_ADB_STATUS="device"; ADBR_OK=1
+        ok "$(msg "通道已恢复：$ep" 'Channel restored: '"$ep")"
+        say "$(msg '  这台容器已配对过，以后只需 adb connect（端口变了就换端口）。' \
+                   '  This container is already paired: future runs only need adb connect with the current port.')"
+        guide_shell_root "$DRM_ADB_DEV"
+        return 0
+    fi
+    if (( conn_rc == 2 )); then
+        say "$(msg '本容器首次使用：做一次配对（只需这一次）。' 'First use for this container: pair once (this is the only time).')"
+    else
+        say "$(msg '接着按首次配对流程走。' 'Continuing with the first-time pairing flow.')"
+    fi
     guide_wireless_debug
     if ep=$(pair_then_connect); then
         # ep 为空表示"无线地址没通、但本机通道已经通了"
@@ -200,6 +249,8 @@ establish_adb_bridge() {
         DRM_ADB_STATUS="device"; ADBR_OK=1
         say ""
         ok "$(msg "通道已建立：$DRM_ADB_DEV" 'Channel established: '"$DRM_ADB_DEV")"
+        say "$(msg '  配对已完成，**这台容器以后不用再配对**：端口变了就 adb kill-server + adb connect <IP>:<新端口>。' \
+                   '  Pairing is done; **this container never needs to pair again**: if the port changes, adb kill-server then adb connect <IP>:<new port>.')"
         guide_shell_root "$DRM_ADB_DEV"
         local go
         go=$(ask "$(msg '是否现在把端口钉到 5555，建立长期可用的桥？[y/N]' 'Pin to 5555 now for a durable bridge? [y/N]')" "n")
@@ -223,8 +274,8 @@ auth_remedy() {
         seen="$seen$f "
         say "  $f"
     done
-    say "$(msg '  一次配对即对该密钥长期有效，除非设备侧删除了配对记录（撤销无线调试授权）。' \
-               '  One pairing trusts that key until the device drops the pairing record (revoke wireless debugging).')"
+    say "$(msg '  每台容器只需配对一次：之后只要 adb connect <IP>:<当前端口> 就能恢复通道，端口变了换端口即可。' \
+               '  Pair once per container; afterwards adb connect <IP>:<current port> is enough (re-read the port when it changes).')"
     say ""
     say "$(msg '  多容器注意：adbd 只有一份，一个容器的配对/撤销会牵动其它容器的通道状态。' \
                '  Multi-container note: there is one adbd; pairing or revoking affects other containers too.')"
