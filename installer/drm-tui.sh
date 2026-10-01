@@ -483,11 +483,58 @@ install_patched_kwin() {
             warn "$(msg "  第 1 次未成功（退出码 $rc / 复检$v），重试一次" "  Attempt 1 failed (rc $rc / verify $v); retrying")"
         fi
     done
+        # 上游脚本这条走到这里还是没打上补丁 ⇒ 用 dpkg 强制解包一次（见 force_dpkg_patched_kwin 注）
+    if force_dpkg_patched_kwin && kwin_patch_present; then
+        ok "$(msg '  用 dpkg 强制解包后复检通过' '  Verified after forcing dpkg unpack')"
+        DRM_KWIN_FAILED=0
+        rm -f -- "$tmp"
+        return 0
+    fi
     DRM_KWIN_FAILED=1
     fail "$(msg '定制 kwin 未装上：X11 应用不会弹虚拟键盘、组合键通道 C 不可用（接管与 anland 本身不受影响）' \
                'Patched kwin not installed: X11 apps will not pop the VKB and channel C is unavailable')"
     rm -f -- "$tmp"
     return 1
+}
+
+# force_dpkg_patched_kwin —— 强制把补丁包解包一次。
+# 为什么必须自己来：上游 install-anland-kde.sh 第 919 行用的是
+#   apt-get install -y --allow-downgrades --allow-change-held-packages <本地 deb>
+# 没有 --reinstall。定制 deb **复用了 Ubuntu 的版本串**（4:6.6.6-0ubuntu0.1），
+# 于是 apt 判定"已装同版本"，**退出码 0、一个字节都没解包**，脚本还以为成功了。
+# 10-01 在 drm 容器实测：apt history 里四次同样的命令、每次 1 秒结束，
+# 落地的 libkwin.so.6.6.6 仍是 9,123,568 字节的发行版原版（补丁版 9,123,792、含 PCKEYD 符号）。
+# dpkg -i 不做"同版本就跳过"的判断，所以用它兜这一层。
+force_dpkg_patched_kwin() {
+    detect_json_parser || return 1
+    local asset out tag want
+    asset="$(json_get "$COMPONENTS_LOCK" ".patched_kwin.asset")"
+    # 清单里没有该条目时按上游当前的资产名兜底（版本串写死，与 §12.3 的"复用 Ubuntu 版本串"同源）
+    [[ -n "$asset" ]] || asset="anland-kde-ubuntu2604-kwin-6.6.6-arm64.tar.gz"
+    out="$(mktemp -t drm-kwinpk.XXXXXX.json)"
+    want=""
+    if github_api "/repos/$KWIN_REPO_SLUG/releases/tags/$KWIN_ROLLING_TAG" "$out"; then
+        want="$(release_asset_digest "$out" "$asset")"
+    fi
+    rm -f -- "$out"
+    [[ -n "$want" ]] || warn "$(msg '  取不到资产 digest，本次解包不做校验' '  No digest; unpacking unverified')"
+    local tmpdir d
+    tmpdir="$(mktemp -d -t drm-kwinpk.XXXXXXXX)"; d="$tmpdir/t.tgz"
+    if ! fetch_verified "$KWIN_REPO_SLUG" "$KWIN_ROLLING_TAG" "$asset" "$want" "$d" "${DRM_CONF[DOWNLOAD_SOURCE]}"; then
+        warn "$(msg "  取不到 $asset" '  Cannot fetch '"$asset")"
+        rm -rf -- "$tmpdir"; return 1
+    fi
+    mkdir -p "$tmpdir/x"
+    tar -xzf "$d" -C "$tmpdir/x" || { rm -rf -- "$tmpdir"; return 1; }
+    local -a debs=()
+    mapfile -t debs < <(find "$tmpdir/x" -maxdepth 3 -type f -name '*.deb' | sort)
+    (( ${#debs[@]} )) || { warn "$(msg '  包里没有 deb' '  No debs in archive')"; rm -rf -- "$tmpdir"; return 1; }
+    say "$(msg "  用 dpkg 强制解包 ${#debs[@]} 个补丁包" "  Forcing dpkg unpack of ${#debs[@]} patched debs")"
+    dpkg -i "${debs[@]}" >"$tmpdir/dpkg.log" 2>&1   # 不加 --force-*：同版本解包本来就够，force 只会掩掉真问题
+    local rc=$?
+    (( rc != 0 )) && tail -n 5 "$tmpdir/dpkg.log" | sed 's/^/    /'
+    rm -rf -- "$tmpdir"
+    return $rc
 }
 
 # kwin_patch_present —— 实测判据：libkwin 里有没有本项目自造的符号
