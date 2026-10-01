@@ -79,27 +79,24 @@ fetch_verified() {
 # 输出：源序号 1|2|3；失败输出空串。
 pick_fastest_source() {
     local repo="$1" tag="$2" asset="$3"
-    local best="" best_rate=0 idx out rate
+    # 本函数用 stdout 回传选中的源序号 ⇒ 所有诊断必须 >&2。
+    # （10-01 实测两个后果：info 写 stdout 会让调用方把整段中文提示当成序号存进配置；
+    #   而 rate 未赋值时进算术就报"需要操作数"。）
+    local best="" best_rate=0 idx out base t0 t1 n rate
     for idx in 1 2 3; do
         out="$(mktemp -t drm-src-probe.XXXXXX)"
-        local base; base="$(source_base "$idx" "$repo")" || { rm -f "$out"; continue; }
-        local t0 t1 n
+        base="$(source_base "$idx" "$repo")" || { rm -f -- "$out"; continue; }
+        rate=0; n=0
         t0=$(date +%s%N)
         if dl_curl "$PROBE_TIMEOUT" "$out" "$base/$tag/$asset"; then
-            t1=$(date +%s%N); n=$(stat -c '%s' "$out")
+            t1=$(date +%s%N); n=$(stat -c '%s' "$out" 2>/dev/null || echo 0)
             (( n > 0 )) && rate=$(( n * 1000000000 / (t1 - t0 + 1) ))
-            if [[ -n "${rate:-}" ]] && (( rate > best_rate )); then
-                best_rate=$rate; best=$idx
-                info "$(msg "  ${SRC_LABELS[idx-1]}：$(( rate / 1024 )) KB/s（${n}B）" \
-                           "  ${SRC_LABELS[idx-1]}: $(( rate / 1024 )) KB/s (${n}B)")"
-            else
-                info "$(msg "  ${SRC_LABELS[idx-1]}：$(( ${rate:-0} / 1024 )) KB/s" \
-                           "  ${SRC_LABELS[idx-1]}: $(( ${rate:-0} / 1024 )) KB/s")"
-            fi
+            say "  ${SRC_LABELS[idx-1]}: $(( rate / 1024 )) KB/s ($n B)" >&2
         else
-            info "$(msg "  ${SRC_LABELS[idx-1]}：不可达 / unreachable" "  ${SRC_LABELS[idx-1]}: unreachable")"
+            say "  ${SRC_LABELS[idx-1]}: $(msg '不可达' 'unreachable')" >&2
         fi
-        rm -f -- "$out"; unset rate
+        if (( rate > best_rate )); then best_rate=$rate; best=$idx; fi
+        rm -f -- "$out"
     done
     printf '%s' "$best"
 }

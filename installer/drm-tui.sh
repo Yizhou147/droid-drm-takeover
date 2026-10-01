@@ -24,6 +24,11 @@ SCRIPT_SRC="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f "$SCRIPT_SRC")")" && pwd -P)"
 LIB_DIR="$SCRIPT_DIR/lib"
 
+if [[ ! -r "$LIB_DIR/common.sh" ]]; then
+    printf '%s\n' "缺少 $LIB_DIR/common.sh —— 请通过仓库里的 installer/drm-tui.sh 运行，或用安装器重装。" >&2
+    exit 1
+fi
+
 # shellcheck source=/dev/null
 source "$LIB_DIR/common.sh"
 source "$LIB_DIR/conf.sh"
@@ -238,8 +243,14 @@ install_flow() {
     ok "$(msg "运行环境确认：$(detect_distro) / $(detect_desktop)" 'Runtime environment verified')"
 
     step 3 8 '安装前环境检查' 'Pre-install environment checks'
-    local fails
-    fails=$(run_precheck | tail -1)
+    # 原来写 `fails=$(run_precheck | tail -1)`：只留最后一行数字，
+    # 于是所有 ✔/✘ 明细都被吞掉，用户在第 3 步什么也看不见（10-01 实测第 3 步是空的）。
+    local fails pre_out
+    pre_out="$(mktemp -t drm-precheck.XXXXXX)"
+    run_precheck >"$pre_out" 2>&1
+    sed '$d' "$pre_out"
+    fails="$(tail -1 "$pre_out")"
+    rm -f -- "$pre_out"
     (( ${fails:-1} == 0 )) || die "$(msg "预检未通过 $fails 项——按上面每条的单行命令补救后重跑安装" 'Precheck failed '"$fails"' item(s); fix with the single-line hints, then re-run')"
 
     step 4 8 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
@@ -367,20 +378,17 @@ install_patched_kwin() {
     # 装法：install-anland-kde.sh 本身就是 anland-kde-packages 那个滚动 release 的资产，
     # 取回来直接跑它 —— 它已经处理好多发行版、三源回退、apt holds、以及 --uninstall 回退，
     # 不要在这里重新发明一遍（尤其别试图用 dpkg 判断补丁在不在，见 §12.3 的 md5sums 污染）。
-    detect_json_parser || return 1
-    local out asset_id base
+    # api.github.com 在部分网络下不可达（10-01 新容器实测 curl 28 超时）。
+    # 那不该终止这一步：draft 检查只是省一次无用下载，资产本身走 release 下载 URL 就能取。
+    local out base
     out="$(mktemp -t drm-kwin.XXXXXX.json)"
-    github_api "/repos/$KWIN_REPO_SLUG/releases/tags/$KWIN_ROLLING_TAG" "$out" || {
-        rm -f -- "$out"
-        warn "$(msg '取不到 anland-kde-packages 的 release 信息（仓库或 tag 变了？）' 'Cannot read the rolling kwin release')"; return 1; }
-    # draft 的 release 不会有公开 URL，这里直接要求已发布
-    local draft
-    draft=$(json_get "$out" ".draft")
-    if [[ "$draft" == "true" ]]; then
-        rm -f -- "$out"
-        warn "$(msg 'anland-kde-packages 仍是 draft：镜像站拿不到，请先公开发布' 'Rolling kwin release is still a draft; publish it before mirroring')"; return 1
+    if github_api "/repos/$KWIN_REPO_SLUG/releases/tags/$KWIN_ROLLING_TAG" "$out" && detect_json_parser; then
+        if [[ "$(json_get "$out" ".draft")" == "true" ]]; then
+            rm -f -- "$out"
+            warn "$(msg 'anland-kde-packages 仍是 draft：镜像站拿不到，请先公开发布' 'Rolling kwin release is still a draft; publish it first')"
+            return 1
+        fi
     fi
-    asset_id=$(json_get "$out" '.assets[].name')
     rm -f -- "$out"
 
     local tmp; tmp="$(mktemp -t drm-kwininst.XXXXXX.sh)"
@@ -459,9 +467,27 @@ EOF
 }
 
 install_tui_entry() {
+    # 不能把 drm-tui.sh 单独拷到 /usr/local/bin：它按"自己所在目录的 lib/"找依赖库，
+    # 拷过去就会报 /usr/local/bin/lib/common.sh 不存在（10-01 新容器实测：装完的 drm-tui 命令直接不可用）。
+    # 正确做法是装一个入口脚本，运行期从配置里取仓库路径再 exec 过去。
     mkdir -p /usr/local/bin 2>/dev/null
-    install -m 0755 "$SCRIPT_SRC" "$TUI_BIN" 2>/dev/null || { warn "$(msg 'drm-tui 命令安装失败' 'Cannot install drm-tui command')"; return 1; }
-    ok "$(msg "命令已安装：drm-tui" 'Command installed: drm-tui')"
+    local tmp; tmp="$(mktemp -t drm-tui-entry.XXXXXX)"
+    cat >"$tmp" <<ENTRY
+#!/usr/bin/env bash
+# drm-tui 入口（由安装器生成）。实现与 lib/ 都在接管仓库里，别把本文件当实现改。
+CONF="\${DRM_CONF_FILE:-/etc/drm-takeover.conf}"
+REPO=""
+[ -r "\$CONF" ] && REPO=\$(sed -n 's/^REPO_DIR=\("\{0,1\}\)\([^"]*\)\1\$/\2/p' "\$CONF" | head -1)
+if [ -z "\$REPO" ] || [ ! -f "\$REPO/installer/drm-tui.sh" ]; then
+    echo "找不到接管仓库（REPO_DIR=\"\$REPO\"）。请重新运行安装器，或修正 \$CONF 里的 REPO_DIR。" >&2
+    exit 1
+fi
+exec bash "\$REPO/installer/drm-tui.sh" "\$@"
+ENTRY
+    chmod 0755 "$tmp"
+    install -m 0755 "$tmp" "$TUI_BIN" 2>/dev/null || { warn "$(msg 'drm-tui 命令安装失败' 'Cannot install drm-tui command')"; rm -f -- "$tmp"; return 1; }
+    rm -f -- "$tmp"
+    ok "$(msg "命令已安装：drm-tui（指向 ${DRM_CONF[REPO_DIR]}）" 'Command installed: drm-tui')"
 }
 
 # ---------------------------------------------------------------- 运行期 ----
@@ -599,11 +625,20 @@ set_adb_endpoints() {
 pick_mirror() {
     head2 "$(msg '镜像站测速' 'Mirror probe')"
     detect_json_parser || die "$(msg '缺少 JSON 解析器（需要 jq 或 python3）' 'Need jq or python3')"
-    say "$(msg '三个源各下一次同一个文件，按实测吞吐排序后选最快的那个。' 'Each source downloads the same file; the fastest verified one wins.')"
-    say "$(msg '本机实测参考：直连 GitHub 常在 1MB 左右中途 PROTOCOL_ERROR，gh-proxy 3 秒下完 11.6MB。' \
-          'Measured here: direct GitHub often dies at ~1MB with PROTOCOL_ERROR; gh-proxy did 11.6MB in 3s.')"
-    local winner
-    winner=$(pick_fastest_source "$REPO_SLUG" "latest" "components.lock.json")
+    # 探测必须用**真实 tag**：release 的下载 URL 不支持 "latest" 这个字面量，
+    # 拿它去拼地址会三源全 404（10-01 实测）。
+    local tag="" winner
+    [[ -r "$COMPONENTS_LOCK" ]] && tag=$(json_get "$COMPONENTS_LOCK" ".takeover.tag")
+    if [[ -z "$tag" ]]; then
+        local j; j="$(mktemp -t drm-tag.XXXXXX.json)"
+        github_api "/repos/$REPO_SLUG/releases/latest" "$j" && tag=$(json_get "$j" ".tag_name")
+        rm -f -- "$j"
+    fi
+    if [[ -z "$tag" ]]; then
+        warn "$(msg '取不到 release tag，跳过测速（稍后可在设置页重选下载源）' 'Cannot resolve the release tag; skipping the probe')"
+        return 1
+    fi
+    winner=$(pick_fastest_source "$REPO_SLUG" "$tag" "components.lock.json")
     if [[ -z "$winner" ]]; then
         warn "$(msg '三源都不可达，保持当前设置' 'All sources unreachable; keeping current choice')"
         return 1
