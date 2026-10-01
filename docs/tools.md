@@ -4,6 +4,8 @@
 
 `make` 在 `bin/` 生成全部工具（19 个二进制 + `atomicspy.so`）。接管流程由
 `desk-takeover.sh` / `drm-takeover.sh` 自动调用，日常使用无需手动运行其中任何一个；
+新用户走 `installer/install-drm-tui.sh`（装完留下 `drm-tui` 命令，安装器第 10 步会把安卓侧的
+音频桥 `argsloop` 与蓝牙桥 `bthci-bridge-v2` 从各自 release 部署到 `/data/local/tmp`），
 本文面向新设备适配与故障排查。
 
 前提：所有需要 DRM master 的工具（含 TEST_ONLY 探测）都必须在 Android 显示栈停止后以

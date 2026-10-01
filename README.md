@@ -70,9 +70,20 @@ kwin 上屏 → Plasma → XWayland → WiFi），每步显示耗时，交还链
 蓝牙桥、音频桥、返回安卓时是否自动复活 anland（默认开）、日志目录、界面语言、下载源。
 高级页放着 GPUFLOOR / PERFMAX 两个实验开关，**默认全关**（收益与代价写在页内）。
 
-> 状态说明：这套安装器与 TUI 的代码已就绪并通过静态检查，**但尚未在全新容器上完成真机验证**；
-> 主仓 release（`drm-takeover-aarch64.tar.gz` + 回填过 sha256 的 `components.lock.json`）
-> 也需要先打 tag 由 CI 产出，`extract_release()` 才能真正取到东西。
+安装器一共 10 步。**第 1 步是建「容器 → Android 的 adb 通道」**：需要用户在平板上开无线调试、
+按配对码配对一次（同一 IP、配对与连接是两个不同端口），再把连接端口钉到 5555 做成长期可用的桥；
+这台设备不出现 USB 授权对话框，`adb root` 也被生产版本拒绝，root 只能走 `adb shell su -c`。
+**第 10 步部署安卓侧的桥产物**：音频桥（`argsloop` + `halsink.sh` + piano 的三份线节模板）和蓝牙桥
+（`bthci-bridge-v2`）从各自 release 取、校验、push 到 `/data/local/tmp`，再按"文件在不在、可不可执行"复检
+——此前这些二进制只存在于开发机，新设备装完因此没声音、没蓝牙。
+
+要被安装器取到的三份 release 都必须**公开**（draft 不进镜像站、`latest` 也读不到）：
+`droid-drm-takeover v0.1.0`、`droid-audio-bridge v0.1.0`、`droid-bluetooth-bridge v0.1.1`。
+组件与版本写在 `installer/lib/components.lock.json`；主仓那份 tar 自己的 tag/sha256 由 CI 回填到
+release 里那份**独立**的清单资产上（tar 内嵌那份必然是空的，安装器对这个组件现问 release API）。
+
+> 状态说明：主仓 release `v0.1.0` 已公开，下载链与 sha256 校验在本容器实测通过（gh-proxy 源，字节一致）；
+> **整套装机流程尚未在全新容器上跑完**，`extract_release()` 读空清单那一处已修（改为现问 `releases/latest`）。
 
 ## 快速开始
 
@@ -96,7 +107,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | `LOG_DIR` | 仓库同级 `logs/` | 日志目录（不入库） |
 | `BT_BRIDGE` | `1`（开） | 蓝牙桥（见相关项目）+ 配套的 `scripts/bt-keepalive.sh`（默认上电、掉电回开、卡死按硬信号才重拉）。置 `0` 经 `/run/drm-round.conf` 或环境变量关闭；桥与看门狗都带自熔断，Android 框架复活时立即退场 |
 | `BT_BIN` | `/data/local/tmp/bthci-bridge-v2` | 用哪座桥二进制。默认已是带打点的 v2（09-30 真轮实测：转发 240 命令、内核侧 `errors:0`、`在途命令=[无]`、`写pty` 全 full 无丢包）；退回旧构建写 `echo 'BT_BIN=/data/local/tmp/bthci-bridge' > /run/drm-round.conf`，两份二进制都原地保留 |
-| `AUDIO_BRIDGE` | `0`（**09-30 起默认关**） | 接管轮 A 路板载外放。默认关的原因：它与蓝牙 A2DP 抢同一套输出路由（A 路停掉 audioserver 并独占 deep_buffer/speaker 端口，实测会让耳机没声）。要外放：`echo 'AUDIO_BRIDGE=1' > /run/drm-round.conf` 后重跑一轮。失败仅告警，**绝不触发回滚** |
+| `AUDIO_BRIDGE` | 脚本内 `0`，**安装器写进 `/etc/drm-takeover.conf` 的是 `1`** | 接管轮 A 路板载外放。脚本裸跑时默认关：它与蓝牙 A2DP 抢同一套输出路由（A 路停掉 audioserver 并独占 deep_buffer/speaker 端口，实测会让耳机没声）。按用户要求（10-01）WiFi/蓝牙/音频三项经安装器装好后一律默认开，conf 里的 `AUDIO_BRIDGE=1` 会覆盖脚本内默认；要临时关写 `echo 'AUDIO_BRIDGE=0' > /run/drm-round.conf`。失败仅告警，**绝不触发回滚** |
 | `AUDIO_ROUTE` | `a` | `a` = 直连 vendor AIDL HAL（`argsloop` SINK + `aa-feeder`，已实测外放）；`b` = 回退的 AAudio 路线 |
 
 ## 子系统现状
@@ -107,7 +118,7 @@ sudo bash scripts/desk-stop.sh   # 交还 Android（含看门狗兜底）
 | 触摸 | udev 属性合成 + libinput 校准矩阵，kwin 为唯一读者 | 可用（十指） |
 | 网络 | NetworkManager 裸进程直管 wlan0；SSID/PSK 接管前自 Android 现读；`ip rule` 备份/恢复标准三表；polkit 规则放行，plasma-nm 桌面 UI 可连可改密 | 可用；关联/出口失败仅告警，不连坐桌面 |
 | 蓝牙 | droid-bluetooth-bridge（vendor HAL binder 客户端 → pty H4 → 内核 hci0 → 容器 BlueZ）；`scripts/bt-keepalive.sh` 轮内常驻 | 鼠标/HID 可用，A2DP 出声已验证；轮内与 WiFi 同政策「默认开 + 关不掉」：判到适配器后显式上电并实测 `Powered: yes`（BT-POWER）、装一条 dbus 总线策略拒桌面用户写适配器属性并每轮自检（BT-LOCK，蓝牙侧没有 polkit 可用）、掉电与卡死由看门狗按「内核重踢 → 重拉桥(先杀旧，整轮上限 2 次) → 收手留现场 `logs/bt-wedge-*.txt`」三级台阶处理（BT-KICK/BT-RESTART/BT-GIVEUP）；蓝牙上电后自动解一次 **class 级 rfkill 阻塞**（`BT-UNBLOCK OK`，脚本 `scripts/bt-rfkill-unblock.sh`）——本机有两颗 type=bluetooth 的 rfkill（vendor 的 `bt_power` 与我们的 `hci0`），只要有一颗 soft-block，bluedevil 就显示"蓝牙已禁用"且托盘无图标（它读的是 `BluezQt::isBluetoothBlocked()`，不是 `Adapter1.Powered`），而鼠标照连；不重载壳也不行——所以这一步就是用户平时"手动开一下开关"的自动化。万一个别版本仍不回读，可 `BT_UI_REFRESH=1` 让上电后重载一次 plasmashell（`BT-UI-REFRESH`）；**判据是内核侧硬信号**（`hciconfig` 读不出 local name + `dmesg` 的 `tx timeout` 在涨 → BT-DEADCHANNEL），不看 bluez 的 `Powered`——实测哑掉时它仍是 `yes`。开局若见 `bt_power` rfkill soft=1（芯片电源还没被 vendor HAL 拉起来）只标 `BT-POWER-PENDING`/`BT-CHIP-BLOCKED` 并**等待**——实测这是接管开局暂态，自己会回 0，到位后 root `power on` 一次即通，同一座从未重拉的桥计数立刻从 `转发=50` 走到 150+；**不**手动解这颗 rfkill，也**不**在等待期重拉桥（重拉会注销 hci0、把恢复窗口吹掉）。桥进程**一律按 comm 匹配**（`pgrep bthci-bridge`，不带 `-x` 也不带 `-f`）：桥活在**安卓的 PID ns** 里，`-x bthci-bridge` 会漏掉改名的 v2（交还/回滚杀不掉它、开局单实例判据也看不见它 ⇒ 再起一座 = 两个 HAL 客户端抢芯片，正是最坏那条路；desk-stop 里那两行容器侧 pkill 更是从头到尾的空操作 = 假护栏），`-f` 则会被 `su -c` 包装壳自匹配（实测 6 个"命中"里 5 个是壳）。新标记：`BT-BRIDGE ONLY`（恰好一座，附 pid+comm）/ `BT-BRIDGE MULTI`（≥2 座 ⇒ 本轮蓝牙不可信，先 desk-stop 再重跑）/ `BT-BRIDGE-AFTER-ROLLBACK`（回滚后残留）/ `BT-LEAK-STILL`（强杀后安卓侧仍有桥）；`BT-HANDOVER OK` 现在是真查过安卓侧才说的 |
-| 音频 | A 路：直连 vendor AIDL HAL（`argsloop` SINK 经 FMQ 喂数 + `aa-feeder` 抓 PipeWire monitor） | 接管轮内板载扬声器外放已实测；**09-30 起默认关**——它与蓝牙 A2DP 抢同一套输出路由，同开时耳机没声（共存方案是待办，见 工作总结 §58 ⑤） |
+| 音频 | A 路：直连 vendor AIDL HAL（`argsloop` SINK 经 FMQ 喂数 + `aa-feeder` 抓 PipeWire monitor） | 接管轮内板载扬声器外放已实测；安卓侧那几个二进制现在由安装器第 10 步从 `droid-audio-bridge` release 部署（此前只在开发机上存在）。与蓝牙 A2DP 抢同一套输出路由，同开时耳机没声（共存方案是待办，见 工作总结 §58 ⑤） |
 | 输入法 | 轮内定稿（09-29）：座位=plasma-keyboard，kwin 以 `KWIN_IM_SHOW_ALWAYS=1` 窗口激活时弹出（X11/Wayland 均覆盖）；旁观 fcitx5 守护（`FCITX5-BYST` 段，带 WAYLAND_DISPLAY 但晚于座位、只当 XIM 前端，默认英文态）负责 X11 应用组词；PC 页 Ctrl+Space 由 pc-keyd 特判 `fcitx5-remote -T` DBus 直达；两模式各自入场归一 kwinrc（轮=plasma-keyboard / anland=fcitx5） | 可用 |
 | 组合键 | pc-keyd v2（XTEST/EIS 主通道；通道 C 经 kwin pkeyd 补丁，uinput 仅兜底） | X11 应用已验证；Wayland 应用待通道 C 真轮验证 |
 

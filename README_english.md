@@ -86,10 +86,27 @@ the Bluetooth bridge, the audio bridge, whether handing back relaunches anland (
 log directory, UI language and mirror source. The Advanced page holds the GPUFLOOR / PERFMAX
 experimental knobs, **all off by default** (their measured payoff and cost are shown inline).
 
-> Status: this installer/TUI code is complete and passes static checks, **but it has not been
-> verified end-to-end on a fresh container yet**; the main-repo release
-> (`drm-takeover-aarch64.tar.gz` plus a `components.lock.json` with the sha256 filled in by CI)
-> also has to be produced from a tag before `extract_release()` can actually fetch anything.
+The installer runs 10 steps. **Step 1 establishes the container -> Android adb channel**: the
+user enables Wireless debugging on the tablet and pairs once (one IP, but the pairing port and the
+connection port are different), then the connection port is pinned to 5555 to make the bridge
+durable. This device never shows a USB consent dialog and `adb root` is refused by the production
+build, so root only comes from `adb shell su -c`. **Step 10 deploys the Android-side bridge
+artifacts**: the audio bridge (`argsloop` + `halsink.sh` + the three piano line-templates) and the
+Bluetooth bridge (`bthci-bridge-v2`) are fetched from their own releases, sha256-verified, pushed to
+`/data/local/tmp`, then re-checked by "is the file there and executable". Those binaries previously
+existed only on the development machine, which is why a fresh install had no sound and no Bluetooth.
+
+All three releases the installer depends on must be **public** (drafts are not mirrored and are
+invisible via `latest`): `droid-drm-takeover v0.1.0`, `droid-audio-bridge v0.1.0`,
+`droid-bluetooth-bridge v0.1.1`. Components and versions live in
+`installer/lib/components.lock.json`; the main repo's own tag/sha256 are filled by CI into the
+**standalone** lock asset on the release — the copy embedded in the tar is necessarily empty (that
+tar cannot carry its own digest), so for this component the installer queries the release API.
+
+> Status: `v0.1.0` is published for the main repo, and the download chain plus sha256 verification
+> measured clean from this container (gh-proxy source, byte-identical). **The full install flow has
+> not been run end-to-end on a fresh container yet**; the `extract_release()` case that read the
+> empty embedded lock is fixed (it now queries `releases/latest`).
 
 ## Quick start
 
@@ -116,7 +133,7 @@ for persistent takeover use `PERSIST=1 MODE=kwin`.
 | `LOG_DIR` | `logs/` next to the repo | Log directory (not in git) |
 | `BT_BRIDGE` | `1` (on) | Bluetooth bridge (see related projects) plus its companion `scripts/bt-keepalive.sh` (powers the adapter on, re-powers it if it drops, and relaunches the bridge only on hard kernel-side signals). Set `0` via `/run/drm-round.conf` or an env var; both the bridge and the watchdog carry a self-fuse and exit immediately when the Android framework comes back |
 | `BT_BIN` | `/data/local/tmp/bthci-bridge-v2` | Which bridge binary to run. The default is already the instrumented v2 (measured in a real 09-30 round: 240 commands forwarded, kernel-side `errors:0`, `outstanding=[]`, every pty write completed with no drops); to fall back to the old build write `echo 'BT_BIN=/data/local/tmp/bthci-bridge' > /run/drm-round.conf` — both binaries stay in place |
-| `AUDIO_BRIDGE` | `0` (**default off since 09-30**) | Route A built-in speaker output during takeover rounds. It is off by default because it fights Bluetooth A2DP for the same output route (Route A stops audioserver and claims the deep_buffer/speaker ports, which mutes the headphones — measured). To get speaker output: `echo 'AUDIO_BRIDGE=1' > /run/drm-round.conf`, then run a round. Failures only warn and **never trigger a rollback** |
+| `AUDIO_BRIDGE` | `0` in the scripts, **`1` as written by the installer into `/etc/drm-takeover.conf`** | Route A built-in speaker output during takeover rounds. Running the scripts bare keeps it off because it fights Bluetooth A2DP for the same output route (Route A stops audioserver and claims the deep_buffer/speaker ports, which mutes the headphones — measured). Per the user's decision (10-01) WiFi / Bluetooth / audio are all default-on after an install, and the conf value overrides the script default; to disable temporarily write `echo 'AUDIO_BRIDGE=0' > /run/drm-round.conf`. Failures only warn and **never trigger a rollback** |
 | `AUDIO_ROUTE` | `a` | `a` = direct vendor AIDL HAL (`argsloop` SINK + `aa-feeder`, speaker output measured); `b` = fallback AAudio route |
 
 ## Subsystem status

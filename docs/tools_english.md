@@ -2,9 +2,12 @@
 
 # Tool inventory (bin/ artifacts)
 
-`make` builds every tool into `bin/` (19 binaries + `atomicspy.so`). The takeover flow invokes
-them automatically via `desk-takeover.sh` / `drm-takeover.sh`; you never need to run any of them
-manually day-to-day. This document is for new-device adaptation and troubleshooting.
+`make` builds every tool into `bin/` (19 binaries + `atomicspy.so`). The takeover flow automatically
+invokes them via `desk-takeover.sh` / `drm-takeover.sh`; you never need to run any of them
+day-to-day — new users run `installer/install-drm-tui.sh` (it leaves a `drm-tui` command behind, and
+its step 10 deploys the Android-side audio bridge `argsloop` and Bluetooth bridge `bthci-bridge-v2`
+to `/data/local/tmp` from their own releases). This document is for new-device adaptation and
+troubleshooting.
 
 Premise: every tool that needs DRM master (including TEST_ONLY probes) must run as root **after**
 the Android display stack is stopped, otherwise atomic ioctls all return `EACCES`. Running any
