@@ -544,7 +544,9 @@ kwin_patch_present() {
     local lib hits
     lib="$(ls /usr/lib/*/libkwin.so.6* 2>/dev/null | grep -v '\.so\.6$' | head -1)"
     [[ -n "$lib" && -r "$lib" ]] || return 1
-    hits=$(strings -a "$lib" 2>/dev/null | grep -c '^PCKEYD_INPUT_SOCKET$')
+    # 直接 grep -a 数二进制，不依赖 binutils 的 strings（全新容器没这个包，
+    # 10-01 就是被它骗成"dpkg 解包成功但复检不过"）
+    hits=$(grep -ac 'PCKEYD_INPUT_SOCKET' "$lib" 2>/dev/null)
     (( ${hits:-0} > 0 ))
 }
 
@@ -592,7 +594,7 @@ verify_sudo_nopasswd() {
     for t in "$repo/$TAKEOVER_SCRIPT" "$repo/$STOP_SCRIPT"; do
         [[ -x "$t" ]] || chmod +x "$t" 2>/dev/null
         # ⚠ 只问 sudoers 准不准（`sudo -n -l <命令>`），**绝不执行脚本本身**：跑一次就是真的接管一次桌面。
-        if sudo -n -l "$t" 2>/dev/null | grep -qiE "may run|允许"; then
+        if sudo -n -l 2>/dev/null | grep -qF -- "$t"; then
             okn=$((okn + 1))
         else
             bad="$bad $(basename "$t")"
@@ -1149,7 +1151,7 @@ check_kwin_patch() {
     lib="$(ls /usr/lib/*/libkwin.so.6* 2>/dev/null | grep -v '\.so\.6$' | head -1)"
     [[ -n "$lib" && -r "$lib" ]] || { warn "$(msg '找不到 libkwin6，无法判定补丁状态' 'libkwin6 not found')"; return 1; }
     local hits
-    hits=$(strings -a "$lib" 2>/dev/null | grep -c '^PCKEYD_INPUT_SOCKET$')
+    hits=$(grep -ac 'PCKEYD_INPUT_SOCKET' "$lib" 2>/dev/null)   # 不用 strings：binutils 只在我这台开发机上有
     if (( ${hits:-0} > 0 )); then
         ok "$(msg "定制 kwin 在位：含 pc-keyd 通道 C 与 IM-showalways（$lib）" 'Patched kwin present')"
     else

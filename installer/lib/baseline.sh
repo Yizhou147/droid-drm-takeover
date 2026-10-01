@@ -114,7 +114,7 @@ verify_baseline() {
         || { warn "$(msg '桌面快捷方式不在目标用户家目录（多半被写进了 /root）' 'shortcuts not in the target user home')"; problems=$((problems + 1)); }
     local lib hits
     lib="$(ls /usr/lib/*/libkwin.so.6* 2>/dev/null | grep -v '\.so\.6$' | head -1)"
-    hits=$(strings -a "$lib" 2>/dev/null | grep -c '^PCKEYD_INPUT_SOCKET$')
+    hits=$(grep -ac 'PCKEYD_INPUT_SOCKET' "$lib" 2>/dev/null)   # 不用 strings：binutils 只在我这台开发机上有
     (( ${hits:-0} > 0 )) || { warn "$(msg '定制 kwin 未安装：X11 应用不会弹虚拟键盘' 'patched kwin missing')"; problems=$((problems + 1)); }
     (( problems == 0 )) && ok "$(msg '桌面基线校验全部通过' 'Baseline checks all passed')"
     return $problems
