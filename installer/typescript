@@ -1,8 +1,6 @@
-脚本启动于 2026-10-01 09:09:42+08:00 [COMMAND="bash -c 'set -uo pipefail; source lib/common.sh; source lib/conf.sh; source lib/state.sh; source lib/net.sh; source lib/adbroute.sh; init_colors; detect_language; drm_conf_defaults; drm_conf_eval; establish_adb_bridge 1; echo FINAL=$ADBR_OK/$DRM_ADB_DEV'" <not executed on terminal>]
-172.16.30.245:43341
-387545
-172.16.30.245:37827
-n
+脚本启动于 2026-10-01 09:16:48+08:00 [COMMAND="bash -c 'set -uo pipefail;source lib/common.sh;source lib/conf.sh;source lib/state.sh;source lib/net.sh;source lib/adbroute.sh;init_colors;detect_language;drm_conf_defaults;drm_conf_eval;establish_adb_bridge 1'" <not executed on terminal>]
+10.0.0.9:40001
+999999
   [33m![0m 本机通道尚未被信任（emulator-5554：unauthorized）
   这台设备不会出现 USB 授权对话框；信任要靠无线调试的配对码建立。
   配对成功后本机通道通常一并可用（两者共用同一份容器密钥与同一个 adbd）。
@@ -14,23 +12,16 @@ n
 
 请在平板上操作：设置 → 开发者选项 → 无线调试 = 开启。
   这一步只能人工完成：容器没有 USB 物理连接，屏幕上不会出现任何 USB 授权对话框，
-  所有信任关系都在无线调试页上建立。该页给出两组数字，注意它们是**不同的端口**：
+  所有信任关系都在无线调试页上建立。该页给出**两条独立地址**，配对与连接各用一条：
   a) 设备条目里的「IP 地址 : 端口」—— 连接用
-  b)「使用配对码配对设备」给出的 6 位码 + 配对端口 —— 配对用
+  b)「使用配对码配对设备」弹窗里给出的 6 位码 + 一条独立地址（配对用）
+  两处是各自独立的条目，IP 和端口都可能不一样，分别照各自显示的填即可，不要互相替换。
 
 1) 平板上点「使用配对码配对设备」，记下 6 位码和配对端口。
-   配对地址（形如 172.16.30.245:43341，回车跳过） []:    6 位配对码 []:   [2m·[0m    正在配对 172.16.30.245:43341
-     Successfully paired to 172.16.30.245:43341 [guid=adb-test]
+   配对地址（形如 172.16.30.245:43341，回车跳过） []:    6 位配对码 []:   [2m·[0m    正在配对 10.0.0.9:40001
+     Enter pairing code: error: protocol fault (couldn't read status message): Success
+   配对未成功。本机最常见的原因：填的是设备条目那条连接地址（配对要用配对弹窗里那条独立地址）、
+  或配对弹窗已关闭/配对码过期（码只显示很短时间）。
+   另外配对码有效期很短，超时请在平板上重新生成再试。
 
-2) 用设备条目里的「IP 地址 : 端口」连接（端口与配对端口不同）。
-   连接地址（形如 172.16.30.245:37827） []:   [2m·[0m    正在 adb connect 172.16.30.245:37827
-
-  [32m✔[0m 通道已建立：172.16.30.245:37827
-
-3) 让 adb shell 具备 root（接管需要以 su -c 形式执行命令）。先在容器里验证：
-    adb -s 172.16.30.245:37827 shell su -c id
-  返回 uid=0(root) 即已就绪；若被拒绝，请在平板上同意随即弹出的 root 授权请求后重试。
-  说明：这台设备上 adb root 不可用（生产版本会直接拒绝），只有 su -c 这一条路。
-是否现在把端口钉到 5555，建立长期可用的桥？[y/N] [n]: FINAL=1/172.16.30.245:37827
-
-脚本完成于 2026-10-01 09:09:43+08:00 [COMMAND_EXIT_CODE="0"]
+脚本完成于 2026-10-01 09:16:49+08:00 [COMMAND_EXIT_CODE="1"]

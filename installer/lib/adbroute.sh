@@ -14,7 +14,9 @@
 #     提示里不出现任何 root 管理器的名字（用户要求）。
 #   · 本机通道 emulator-5554 与无线通道共用**同一份容器客户端密钥、同一个 adbd**：
 #     无线配对成功后本机通道通常一并可用（历史上它长期 unauthorized，直到某次配对之后才变 device）。
-#   · **配对端口与连接端口是两个不同的数字**，两处 IP 必须一致；
+#   · 无线调试页给出**同一个 IP、两个不同的端口**：配对弹窗里的 `IP:配对端口` 用于 `adb pair`，
+#     设备条目里的 `IP:连接端口` 用于 `adb connect`。**端口必然不一样**，填错就配不上；
+#     IP 是同一个，不要自己改动。（10-01 用户两次纠正措辞，本条为最终事实。）
 #     端口每次重新启用无线调试/每次开机都会变（历史：37827→45889→33869→43805→46213…），
 #     所以连上之后要钉固定端口（见 fix_adb_port）。
 
@@ -57,11 +59,13 @@ guide_wireless_debug() {
                'On the tablet: Settings → Developer options → Wireless debugging = ON.')"
     say "$(msg '  这一步只能人工完成：容器没有 USB 物理连接，屏幕上不会出现任何 USB 授权对话框，' \
                '  This must be done by hand: the container has no USB link, so no USB consent dialog will ever appear;')"
-    say "$(msg '  所有信任关系都在无线调试页上建立。该页给出两组数字，注意它们是**不同的端口**：' \
-               '  all trust is established on that page, which shows two sets of numbers with **different ports**:')"
-    say "  $(msg 'a) 设备条目里的「IP 地址 : 端口」—— 连接用' 'a) the device entry IP:port — used to CONNECT')"
-    say "  $(msg 'b)「使用配对码配对设备」给出的 6 位码 + 配对端口 —— 配对用' \
-                'b) "Pair device with pairing code" — a 6-digit code and the PAIRING port')"
+    say "$(msg '  所有信任关系都在无线调试页上建立。该页给的是**同一个 IP、两个不同的端口**：' \
+               '  all trust is established on that page, which shows **one IP but two different ports**:')"
+    say "  $(msg 'a) 设备条目里的「IP 地址 : 端口」—— 连接用（端口记为 P1）' 'a) the device-entry IP:port — used to CONNECT (call it P1)')"
+    say "  $(msg 'b)「使用配对码配对设备」弹窗里的 6 位码 + 端口（端口记为 P2，与 P1 不同）' \
+                'b) the pairing dialog — a 6-digit code and a port P2 (different from P1)')"
+    say "$(msg '  端口必然不一样：配对弹窗一个端口，设备条目另一个端口。把连接端口填进配对里就会失败。' \
+               '  The ports are necessarily different: the pairing dialog shows one, the device entry another.')" 
     say ""
 }
 
@@ -85,15 +89,17 @@ pair_then_connect() {
     # 失败原文结尾就带着 "): Success"（10-01 实测：protocol fault 那条错误里就有），
     # 而成功原文是 "Successfully paired to ..."。
     if (( pair_rc != 0 )) || [[ "$pair_out" != *"Successfully paired"* ]]; then
-        say "$(msg '   配对未成功。本机最常见的两个原因：把连接端口当成配对端口填了；两处 IP 写得不一致。' \
-                   '   Pairing failed. Two common causes on this device: the connect port was entered as the pairing port; the two IPs differ.')" >&2
+        say "$(msg '   配对未成功。本机最常见的原因：填的是设备条目那条连接地址（配对要用配对弹窗里那条独立地址）、' \
+                   '   Pairing failed. Most often the connect address was entered here — pairing needs the address from the pairing dialog.')" >&2
+        say "$(msg '  或配对弹窗已关闭/配对码过期（码只显示很短时间）。' \
+                   '  or the pairing dialog was closed and the code expired (it is shown only briefly).' )" >&2
         say "$(msg '   另外配对码有效期很短，超时请在平板上重新生成再试。' \
                    '   Codes expire quickly; generate a new one on the tablet and retry.')" >&2
         return 1
     fi
     say "" >&2
-    say "$(msg '2) 用设备条目里的「IP 地址 : 端口」连接（端口与配对端口不同）。' \
-               '2) Connect using the device entry IP:port (not the pairing port).')" >&2
+    say "$(msg '2) 现在用设备条目里那条「IP 地址 : 端口」连接（它与配对地址是两条独立条目）。' \
+               '2) Now connect with the device-entry address — it is a separate entry from the pairing address.')" >&2
     conn=$(ask "$(msg '   连接地址（形如 172.16.30.245:37827）' '   Connection address')" "")
     if [[ ! "$conn" =~ ^[0-9A-Za-z._-]+:[0-9]+$ ]]; then
         say "$(msg '   地址格式不符（应为 ip:端口），已跳过。' '   Bad address format (expected ip:port); skipped.')" >&2

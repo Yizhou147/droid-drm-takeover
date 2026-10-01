@@ -95,7 +95,7 @@ check_adb_bridge() {
             say "  $(msg '位置：设置 → 开发者选项 → 无线调试 →「使用配对码配对设备」' \
                         'Location: Settings → Developer options → Wireless debugging → \"Pair device with pairing code\"')"
             say "    adb pair <ip>:<配对端口>       # 按提示输入 6 位配对码"
-            say "    adb connect <ip>:<连接端口>    # 注意：这是另一个端口，不是配对端口"
+            say "    adb connect <ip>:<连接端口>    # 同一个 IP、另一个端口（与配对端口不同），照设备条目填"
             say "  adb devices"
             rc=1
             ;;
