@@ -77,6 +77,38 @@ ask_for_endpoint() {
     return 1
 }
 
+# explain_adb_purpose —— 用户第一次装的时候，先说清"这条通道是干什么的"，
+# 否则后面所有授权/端口的问题都没法解释为什么要折腾这些。
+explain_adb_purpose() {
+    say "$(msg 'Android 调试通道（adb）的作用：接管与交还的每一步都要通过它驱动 Android——' \
+               'What the adb channel is for: every takeover/hand-back step drives Android through adb:')"
+    say "  $(msg '停止 surfaceflinger 与 composer（屏幕才能交给 Linux）、恢复 system_suspend（否则会被 watchdog 拖死）' \
+                 'stopping surfaceflinger/composer so Linux can own the panel, and restoring system_suspend')"
+    say "  $(msg '读取当前 WiFi 的 SSID 与密码（接管后容器才能自己连网）、写背光与唤醒屏幕' \
+                 'reading the current WiFi SSID/PSK so the container can reconnect, plus backlight and wake-keyevent')"
+    say "  $(msg '收割内核日志用于事后取证（断网/花屏类问题只能靠它定位）' \
+                 'harvesting the kernel log for post-mortem evidence')"
+    say ""
+}
+
+# fixed_port_hint —— 无线调试的端口每次重连都会变（历史上 36031→43439→44295→…），
+# 每次都要重新查端口很痛苦。经典解法是把 adbd 钉在固定 TCP 端口上（需要设备侧 root 一次）。
+fixed_port_hint() {
+    say ""
+    say "$(msg '固定端口（可选，但推荐）：无线调试的业务端口每次重连都会变，' \
+               'Fixed port (optional, recommended): the wireless-debugging port changes on every reconnect,')"
+    say "$(msg '  每次换网络/重启都要重新查一遍。用设备侧 root 把 adbd 钉在 5555 端口可以一劳永逸：' \
+               '  so it must be looked up again after every reconnect. Pinning adbd to TCP 5555 once avoids that:')"
+    say "  su -c 'setprop service.adb.tcp.port 5555'"
+    say "  su -c 'stop adbd'"
+    say "  su -c 'start adbd'"
+    say "$(msg '之后容器侧地址固定为 <平板 IP>:5555，把它写进配置的 ADB_ENDPOINTS 即可：' \
+               'The container address then stays at <tablet-ip>:5555; record it in ADB_ENDPOINTS:')"
+    say "  sudo tee -a /etc/drm-takeover.conf <<< 'ADB_ENDPOINTS=\"192.168.1.20:5555\"'"
+    say "$(msg '  注意：这钉住的是 TCP 端口，**不会**替你完成 RSA 授权；也仍需注意平板 IP 随网络变化。' \
+               '  Note: this pins the TCP port only — it does not grant RSA authorization, and the tablet IP still changes with the network.')"
+}
+
 # auth_remedy —— unauthorized 时给完整可执行的下一步（两种授权方式）
 auth_remedy() {
     local pubkeys=("$HOME/.android/adbkey.pub" "/root/.android/adbkey.pub")
@@ -147,9 +179,11 @@ establish_adb_bridge() {
 
     # 依次：已配置的 TCP 端口 →（交互时）用户现场给的地址
     local ep
+    explain_adb_purpose
     if ep=$(try_tcp_endpoints); then
         DRM_ADB_DEV="$ep"; DRM_ADB_STATUS="device"
         ok "$(msg "已通过无线 adb 建立通道：$ep" 'Channel established over wireless adb: '"$ep")" 1>&2
+        fixed_port_hint 1>&2
         say "$(msg "  已用 TCP 通道：无线调试的端口每次重连都会变，建议把它写进配置的 ADB_ENDPOINTS，或改用本机通道。" \
                    '  Wireless ports change on reconnect: keep this value in ADB_ENDPOINTS, or prefer the local channel.')" 1>&2
         ADBR_OK=1; return 0
