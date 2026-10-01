@@ -137,12 +137,25 @@ fix_adb_port() {
     say "    sudo tee -a /etc/drm-takeover.conf <<< 'ADB_ENDPOINTS=\"$ip:5555\"'"
 }
 
+# 建好通道就把这个无线地址记进 conf 的 ADB_ENDPOINTS。
+# 为什么必须记：desk-takeover 在本机通道不可用时靠它做无线兜底，而 10-01 新容器的 conf 里
+# 这一项是空的 ⇒ 兜底等于没配，本机通道一抽风整轮直接 NO-ADB-DEVICE 起不来。
+# 本机通道（emulator-5554 这种不含冒号的）不写进去——它不是可重连的地址。
+remember_adb_endpoint() {
+    local ep="${1:-${DRM_ADB_DEV:-}}"
+    [[ "$ep" == *:* ]] || return 0
+    case " ${DRM_CONF[ADB_ENDPOINTS]:-} " in *" $ep "*) return 0 ;; esac
+    DRM_CONF[ADB_ENDPOINTS]="${DRM_CONF[ADB_ENDPOINTS]:-} $ep"
+    DRM_CONF[ADB_ENDPOINTS]="${DRM_CONF[ADB_ENDPOINTS]# }"
+}
+
 # establish_adb_bridge <interactive:0|1>
 establish_adb_bridge() {
     local interactive="${1:-1}" ep rc
     probe_adb
     if [[ "$DRM_ADB_STATUS" == "device" ]]; then
         ok "$(msg "adb 通道就绪：$DRM_ADB_DEV" 'adb channel ready: '"$DRM_ADB_DEV")"
+        remember_adb_endpoint "$DRM_ADB_DEV"
         ADBR_OK=1; return 0
     fi
     if ! command -v adb >/dev/null 2>&1; then
@@ -161,6 +174,7 @@ establish_adb_bridge() {
         timeout 20 adb connect "$ep" >/dev/null 2>&1 || true
         if timeout 10 adb -s "$ep" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
             DRM_ADB_DEV="$ep"; DRM_ADB_STATUS="device"; ADBR_OK=1
+            remember_adb_endpoint "$ep"
             ok "$(msg "adb 通道就绪：$ep" 'adb channel ready: '"$ep")"
             return 0
         fi
@@ -173,6 +187,7 @@ establish_adb_bridge() {
     ep=$(connect_only); rc=$?
     if (( rc == 0 )); then
         DRM_ADB_DEV="$ep"; DRM_ADB_STATUS="device"; ADBR_OK=1
+        remember_adb_endpoint "$ep"
         ok "$(msg "adb 通道已恢复：$ep" 'adb channel restored: '"$ep")"
         guide_shell_root "$ep"
         return 0
@@ -181,6 +196,7 @@ establish_adb_bridge() {
     if ep=$(pair_then_connect); then
         [[ -n "$ep" ]] && DRM_ADB_DEV="$ep"
         DRM_ADB_STATUS="device"; ADBR_OK=1
+        remember_adb_endpoint "$DRM_ADB_DEV"
         ok "$(msg "adb 通道已建立：$DRM_ADB_DEV" 'adb channel established: '"$DRM_ADB_DEV")"
         say "$(msg '  以后只需 adb connect；端口变了换端口，不必重新配对。' \
                    '  Afterwards adb connect is enough; change the port when it changes, no re-pairing.')"

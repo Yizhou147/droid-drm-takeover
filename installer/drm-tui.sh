@@ -588,6 +588,28 @@ run_takeover() {
     local logfile="${DRM_CONF[LOG_DIR]}/$(basename "$script" .sh).log"
     [[ -f "$repo/$script" ]] || die "$(msg "找不到 $repo/$script，请先用「检查安装 / 修复」" 'Script not found; run Check installation / repair first')"
 
+    # 进入接管前先把 adb 通道问清楚（交还链不需要：安卓已经在跑，屏幕本来就是它的）。
+    # 14:18 新容器三轮黑不了也起不来的轮子就是这么来的：adb server 冷启动后第一次查表是空的，
+    # desk-takeover 判 NO-ADB-DEVICE 直接退出，而 TUI 事先什么都不知道，只把脚本丢给它跑。
+    if [[ "$script" == desk-takeover.sh || "$script" == drm-takeover.sh ]]; then
+        probe_adb
+        if [[ "$DRM_ADB_STATUS" != "device" ]]; then
+            say ""
+            case "$DRM_ADB_STATUS" in
+                unauthorized) fail "$(msg "Android 通道未配对（$DRM_ADB_DEV）" 'Channel not paired ('"$DRM_ADB_DEV"')')" ;;
+                offline)      fail "$(msg "Android 通道 offline（$DRM_ADB_DEV）" 'Channel offline ('"$DRM_ADB_DEV"')')" ;;
+                no-adb)       fail "$(msg '容器里没有 adb' 'adb is not installed')" ;;
+                *)            fail "$(msg '看不到 Android 通道' 'No Android channel visible')" ;;
+            esac
+            say "$(msg '  接管每一步都要经 adb，通道不通这一轮只会黑屏，所以先不开轮。' \
+                       '  Every takeover step drives Android over adb; without it the round only blacks out.')"
+            say ""
+            establish_adb_bridge 1
+            probe_adb
+            [[ "$DRM_ADB_STATUS" == "device" ]] || { warn "$(msg '通道仍未就绪，本轮不启动。' 'Channel still not ready; round not started.')"; return 1; }
+        fi
+    fi
+
     say ""
     head2 "$action"
     msg "  $script" "  $script"
@@ -624,6 +646,17 @@ run_round() {
     fi
     mkdir -p "$LOG_DIR" 2>/dev/null || true
     : >"$logfile" 2>/dev/null || warn "$(msg '日志目录不可写（接管仍会跑，只是这里看不到进度）' 'Log dir not writable; progress will not show here')"
+
+    # root 侧再判一次（run_takeover 那次是普通用户身份，server/密钥不是同一份）：
+    # 通道不通就别把用户带到"屏幕黑了半天、日志只有 NO-ADB-DEVICE"那种体验上。
+    if [[ "$script" != "$STOP_SCRIPT" ]]; then
+        timeout 15 adb start-server >/dev/null 2>&1
+        probe_adb
+        [[ "$DRM_ADB_STATUS" == "device" ]] || {
+            fail "$(msg "Android 通道不可用（状态：$DRM_ADB_STATUS）——本轮不启动" 'Android channel unavailable ('"$DRM_ADB_STATUS"') — round not started')"
+            return 1
+        }
+    fi
 
     local -a envargs=()
     drm_conf_bool TAKEOVER_WIFI || envargs+=(SKIP_WIFI=1)
@@ -840,8 +873,15 @@ check_updates() {
         installed="${DRM_CONF[INSTALLED_VERSION]:-未记录}"
         if [[ -n "$tag" ]]; then
             say "$(msg "主仓：本地 $installed → 最新 $tag" 'Main repo: local '"$installed"' → latest '"$tag")"
-            [[ "$installed" != "$tag" ]] && say "$(msg '  要升级：设置 → 补装产物（会校验 sha256）' '  To upgrade: Settings → re-fetch artifacts (sha256 verified)')" \
-                                          || say "$(msg '  已是最新' '  Already up to date')"
+            # 本次测试周期版本号钉死在同一个 tag（用户 10-01 决定），所以 tag 相同**不代表产物相同**：
+            # 只看 tag 会把"有修复没取到"判成"已是最新"。这里直接给取回动作，判据交给 sha256。
+            local go
+            go=$(ask "$(msg '  现在按 release digest 校验并取回产物？[y/N]' '  Re-fetch artifacts now with sha256 verification? [y/N]')" "n")
+            if [[ "${go,,}" == "y" ]]; then
+                extract_release && ok "$(msg "  产物已取回（$tag）" '  Artifacts fetched ('"$tag"')')" \
+                               || fail "$(msg "  产物取回失败，本地未改动" '  Fetch failed; local copy untouched')"
+                drm_conf_save || warn "$(msg '  版本号写回需要 root' '  Needs root to record the version')"
+            fi
         else
             warn "$(msg 'release 为空或仍是 draft（draft 不进镜像站，也不会被当最新）' 'No published release (drafts are excluded)')"
         fi

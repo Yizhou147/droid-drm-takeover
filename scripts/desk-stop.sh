@@ -47,8 +47,18 @@ set +e
 set -x
 echo "=== DESK-STOP START $(date +%F_%T) id=$DESKSTOP_ID ==="
 
-DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
-[ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
+# ⚠ 这里**必须重试**：adb server 冷启动后第一次 `adb devices` 是空表，一锤子买卖会把
+# "通道正常"判成"通道没了" ⇒ 本脚本直接 exit，安卓不会被交还，用户面对的就是黑屏。
+# （10-01 14:18 新容器三轮 NO-ADB-DEVICE 就是这个形状；exit 本身是对的——无 adb 时继续往下
+#   只会把 Linux 桌面杀光又救不回安卓——但判据不能建在一次冷表上。）
+adb start-server >/dev/null 2>&1
+DEV=""
+for _adb_try in 1 2 3 4 5; do
+    DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
+    [ -n "$DEV" ] && break
+    sleep 2
+done
+[ -n "$DEV" ] || { echo "NO-ADB-DEVICE 原始表："; timeout 12 adb devices -l 2>&1 | sed 's/^/    /'; echo "NO-ADB-DEVICE"; exit 1; }
 run() {
     # timeout 只是保命；124 必须打进日志，否则下次又只剩"某行之后没输出"这种糊账
     local out rc

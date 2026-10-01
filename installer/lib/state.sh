@@ -34,16 +34,24 @@ DRM_ADB_STATUS_LABEL=""
 probe_adb() {
     DRM_ADB_STATUS="no-adb"; DRM_ADB_DEV=""
     command -v adb >/dev/null 2>&1 || return 0
-    local out
-    out=$(timeout "${DRM_ADB_TIMEOUT:-8}" adb devices 2>/dev/null | tail -n +2)
+    local out i
+    # adb server 冷启动后**第一次 `adb devices` 是空表**：先把 server 叫起来，再重试到表里出现内容，
+    # 否则一次查询就会把"通道正常"判成"没有设备"（10-01 14:18 新容器三轮 NO-ADB-DEVICE 的形状）。
+    timeout 15 adb start-server >/dev/null 2>&1
+    out=""
+    for i in 1 2 3 4; do
+        out=$(timeout "${DRM_ADB_TIMEOUT:-8}" adb devices 2>/dev/null | tail -n +2)
+        [[ -n "${out// }" ]] && break
+        sleep 1
+    done
     # 本机通道优先：容器与 pad 同一台机器，emulator-5554 这类通道与 WiFi 生死无关
     DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="device"{print $1; exit}')
     if [[ -n "$DRM_ADB_DEV" ]]; then
         DRM_ADB_STATUS="device"
-    elif printf '%s\n' "$out" | grep -q 'unauthorized'; then
+    elif [[ $(printf '%s\n' "$out" | grep -c 'unauthorized') -gt 0 ]]; then
         DRM_ADB_STATUS="unauthorized"
         DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="unauthorized"{print $1; exit}')
-    elif printf '%s\n' "$out" | grep -qE 'offline|no permissions'; then
+    elif [[ $(printf '%s\n' "$out" | grep -cE 'offline|no permissions') -gt 0 ]]; then
         DRM_ADB_STATUS="offline"
         DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$1!=""){print $1; exit}')
     else

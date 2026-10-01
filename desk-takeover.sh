@@ -62,7 +62,17 @@ IP=172.16.30.104
 PREFIX=22
 GW=172.16.30.1
 
-DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+# adb server 是**按需冷启动**的：脚本自己第一次调 adb 才把 server 拉起来，而这一刻 `adb devices`
+# 返回的是空表（14:18 那三轮全是这个形状 —— 日志里紧跟着 "* daemon not running; starting now"，
+# DEV 为空 ⇒ NO-ADB-DEVICE 直接退出；几秒后同一命令就能看到 emulator-5554 device）。
+# 所以先 start-server 把 server 叫起来，再带重试地查表，而不是一锤子买卖。
+adb start-server >/dev/null 2>&1
+DEV=""
+for _adb_try in 1 2 3 4 5; do
+    DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
+    [ -n "$DEV" ] && break
+    sleep 2
+done
 # 本机通道（emulator-5554 一类）没有时，再试配置里的无线 adb 地址。
 # ⚠ 只在**进入接管**这一侧加：交还链（desk-stop）刻意不依赖这里——交还时 adb 不通也必须继续往下走，
 #    中止交还等于把用户锁在黑屏里。地址写在哪：/etc/drm-takeover.conf 的 ADB_ENDPOINTS。
@@ -76,7 +86,15 @@ if [ -z "$DEV" ] && [ -n "${ADB_ENDPOINTS:-}" ]; then
         fi
     done
 fi
-[ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
+if [ -z "$DEV" ]; then
+    if [ -z "${ADB_ENDPOINTS:-}" ]; then
+        echo "NO-ADB-DEVICE 原因之一：/etc/drm-takeover.conf 里没有 ADB_ENDPOINTS，无线兜底根本没配（只试了本机通道）"
+    fi
+    # 取证输出：把原表贴进日志（unauthorized / offline / 空表是三种不同处置，不看表分辨不了）
+    echo "adb devices 原表："
+    timeout 12 adb devices -l 2>&1 | sed 's/^/    /'
+    echo "NO-ADB-DEVICE"; exit 1
+fi
 run() {
     # 同 desk-stop：安卓侧 adb 调用一律限时，卡死=黑屏（09-24 16:52 轮实测 wake_unlock
     # 那一次 adb 调用永久阻塞，把回还流程钉死在半路）。超时必须进日志。
