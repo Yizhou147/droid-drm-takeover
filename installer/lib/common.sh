@@ -80,7 +80,8 @@ require_root() {
     fi
     command -v sudo >/dev/null 2>&1 || die "$(msg '需要 root，但本机没有 sudo。' 'root is required but sudo is missing.')"
     say "$(msg '此步骤需要 root 权限，将通过 sudo 重新执行（可能需要输入一次密码）。' 'This step requires root; re-executing via sudo (a password may be required).')"
-    DRM_REINVOKED=1 exec sudo -- "$script" "$@"
+    # 显式 bash：release tar 里的 installer/*.sh 是 0644，`sudo /path/x.sh` 会报"找不到命令"
+    DRM_REINVOKED=1 exec sudo bash "$script" "$@"
 }
 
 # ask <提示> <默认值> —— 读一行；非交互（DRM_ASSUME_YES）时直接给默认值。

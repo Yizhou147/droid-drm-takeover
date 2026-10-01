@@ -322,6 +322,14 @@ install_flow() {
                'During takeover the screen goes dark for tens of seconds; failures roll back. Do not hold the power button.')"
 }
 
+# 需要 root 的动作一律走这里：拼 sudo + bash + 自身路径，参数原样带过去。
+# 为什么显式写 bash：release tar 里的 installer/*.sh 是 0644（CI 打包没给执行位），
+# `sudo /path/drm-tui.sh` 会直接报"找不到命令"（15:26 实测）。
+run_as_root() {
+    printf '%s\n' "  这一步需要 root：sudo bash $(basename "$SCRIPT_SRC") $*" >&2
+    sudo bash "$SCRIPT_SRC" "$@"
+}
+
 # 接管产物：aarch64 tarball（脚本 + 已交叉编译好的 bin/）。用户端不编译。
 # tar 的 sha 不可能写进 tar 里那份清单（自指），所以这个组件的 tag 与 digest
 # 一律现问 release API —— 与 install-drm-tui.sh 用的是同一套判据。
@@ -354,7 +362,7 @@ extract_release() {
                    '  The repo is not owned by this user (installed via sudo); re-running with sudo:')"
         printf '  sudo %s --update-artifacts\n' "$SCRIPT_SRC"
         say ""
-        sudo "$SCRIPT_SRC" --update-artifacts
+        run_as_root --update-artifacts
         return $?
     fi
     out="$(mktemp -t drm-tar.XXXXXX.tar.gz)"
@@ -376,7 +384,8 @@ extract_release() {
         rc=1
     fi
     rm -rf -- "$work"
-    chmod +x "$dest"/*.sh "$dest"/scripts/*.sh 2>/dev/null || true
+    # installer/ 也要给执行位：sudo 重入、用户手敲 ./installer/drm-tui.sh 都靠它
+    chmod +x "$dest"/*.sh "$dest"/scripts/*.sh "$dest"/installer/*.sh 2>/dev/null || true
     # root 铺完必须把属主还给真正的使用者，否则下次更新又会整批"权限不够"（同一个坑不再留两轮）
     if [[ "$(id -u)" == "0" && -n "${DRM_CONF[DRM_USER]:-}" && "${DRM_CONF[DRM_USER]}" != "root" ]]; then
         chown -R "${DRM_CONF[DRM_USER]}:${DRM_CONF[DRM_USER]}" "$dest" 2>/dev/null \
@@ -499,7 +508,7 @@ Type=Application
 Name=$name
 Name[zh_CN]=$name
 Comment=$comment
-Exec=bash -c 'konsole -e sudo $exec_target'
+Exec=bash -c 'konsole -e sudo bash $exec_target'
 Terminal=false
 Icon=$icon
 Categories=System;
@@ -657,7 +666,7 @@ run_takeover() {
         say ""
         msg "  这一步需要 root，将通过 sudo 执行（可能需要输入一次密码）。" \
             "  This step needs root; running via sudo (a password may be required)."
-        sudo "$SCRIPT_SRC" --run-round "$script"
+        run_as_root --run-round "$script"
         local src=$?
         detect_android_identity; detect_state >/dev/null
         return $src
