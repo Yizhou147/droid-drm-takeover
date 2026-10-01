@@ -32,10 +32,11 @@ if command -v adb >/dev/null 2>&1; then
     if [[ -n "$product" && "$product" != "piano" ]]; then
         die "机型为 $product，本项目只在小米平板 8 Pro（piano）上验证过 / unsupported device: $product"
     fi
-    [[ -n "$product" ]] || m "警告：adb 取不到机型，继续（后续预检还会再问一次）" "Warning: cannot read device model via adb; continuing"
+    [[ -n "$product" ]] || m "提示：未能读取设备型号（Android 调试通道尚未就绪），此处跳过；安装前的环境检查会再次校验并给出具体状态。" \
+                    "Note: device model unavailable (Android debug channel not ready); skipped here and re-checked before install."
 else
-    m "容器里没有 adb，后续预检会要求先装上（接管与交还都要用它驱动安卓）" \
-      "adb is missing; the precheck will require it (takeover drives Android through adb)"
+    m "未检测到 adb：接管与交还均需通过 adb 驱动 Android，安装前的环境检查会要求安装它。" \
+      "adb not found: takeover and hand-back drive Android through adb; the pre-install check requires it."
 fi
 
 bases=(

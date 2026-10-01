@@ -225,27 +225,32 @@ install_flow() {
     head2 "$(msg 'drm-tui 安装' 'Install drm-tui')"
     load_state
 
-    step 1 7 "$(msg '识别设备与发行版' 'Identify device & distro')"
+    step 1 7 '识别设备与发行版' 'Identify device and distribution'
     detect_android_identity
-    if ! is_target_model; then
-        die "$(msg "机型不符：只验证过小米平板 8 Pro（device=${DRM_PRODUCT:-读不到} model=${DRM_MODEL:-?}）" \
-              'Unsupported device (only Xiaomi Pad 8 Pro verified): '"${DRM_PRODUCT:-?}")"
-    fi
-    supported_target || die "$(msg "本安装器目前只支持 Ubuntu 26.04 + KDE（检测到 $(detect_distro) / $(detect_desktop)）" 'Only Ubuntu 26.04 + KDE is supported')"
-    ok "$(msg "机型 ${DRM_MODEL}；目标 $(detect_distro)/$(detect_desktop)" 'Device and target confirmed')"
+    is_target_model
+    case "$?" in
+        0) ok "$(msg "设备型号确认：Xiaomi Pad 8 Pro（${DRM_MODEL}）" 'Device verified: Xiaomi Pad 8 Pro')" ;;
+        2) die "$(msg '无法确认设备型号：ro.product.device 读取为空。请先完成 Android 调试通道授权（下一步的 adb 检查会给出具体状态与处置）。' \
+              'Cannot determine the device model: ro.product.device is empty. Authorize the Android debug channel first; the adb check below reports the exact state and remedy.')" ;;
+        *) die "$(msg "设备型号不匹配：检测到 ro.product.device=${DRM_PRODUCT}。本工具仅在 Xiaomi Pad 8 Pro（piano）上验证。" \
+              'Device mismatch: detected ro.product.device='"${DRM_PRODUCT}"'. This tool is verified on Xiaomi Pad 8 Pro (piano) only.')" ;;
+    esac
+    supported_target || die "$(msg "当前发行版或桌面环境不受支持：本工具仅在 Ubuntu 26.04 + KDE 上验证（检测到 $(detect_distro) / $(detect_desktop)）。" \
+              'Unsupported distribution or desktop environment: verified only on Ubuntu 26.04 + KDE.')"
+    ok "$(msg "运行环境确认：$(detect_distro) / $(detect_desktop)" 'Runtime environment verified')"
 
-    step 2 7 "$(msg '安装前预检' 'Pre-install checks')"
+    step 2 7 '安装前环境检查' 'Pre-install environment checks'
     local fails
     fails=$(run_precheck | tail -1)
     (( ${fails:-1} == 0 )) || die "$(msg "预检未通过 $fails 项——按上面每条的单行命令补救后重跑安装" 'Precheck failed '"$fails"' item(s); fix with the single-line hints, then re-run')"
 
-    step 3 7 "$(msg '选择镜像站（实测吞吐）' 'Pick mirror by probing')"
+    step 3 7 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
     pick_mirror
 
-    step 4 7 "$(msg '选择组件' 'Choose components')"
+    step 4 7 '选择要安装的组件' 'Select components'
     ask_components
 
-    step 5 7 "$(msg '安装 apt 依赖' 'Install apt dependencies')"
+    step 5 7 '安装 apt 依赖' 'Install apt dependencies'
     local -a miss=()
     mapfile -t miss < <(missing_packages)
     if (( ${#miss[@]} )); then
@@ -254,11 +259,11 @@ install_flow() {
         ok "$(msg '依赖已齐全' 'Dependencies already present')"
     fi
 
-    step 6 7 "$(msg '取接管产物并校验（sha256 对 release digest）' 'Fetch artifacts and verify sha256')"
+    step 6 7 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
     extract_release || warn "$(msg '产物取回不完整——可用"检查安装/修复"重试' 'Artifacts incomplete; retry from Check installation / repair')"
     install_keyboard_if_chosen
 
-    step 7 7 "$(msg '写配置、快捷方式、sudoers、drm-tui 命令' 'Write config, shortcuts, sudoers, drm-tui entry')"
+    step 7 7 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
     drm_conf_save || warn "$(msg '配置写入失败（需要 root）' 'Cannot write config (needs root)')"
     install_shortcuts
     install_sudoers
@@ -268,7 +273,7 @@ install_flow() {
     say "$(msg '以后在终端输入一行即可：' 'From now on, run this single line:')"
     printf '  %bdrm-tui%b\n' "$COLOR_BOLD" "$COLOR_RESET"
     [[ "${DRM_CONF[SHORTCUTS]}" == "1" ]] && say "$(msg '桌面上也有「进入DRM接管」「返回安卓」两个图标。' 'Desktop shortcuts are installed too.')"
-    say "$(msg '提醒：接管期间安卓桌面会整体下线十几到几十秒，失败时脚本会自己把安卓恢复回去——不要长按电源键。' 'Note: Android UI goes fully down for tens of seconds; failures roll back by themselves — do NOT hold the power button.')"
+    say "$(msg '说明：接管期间 Android 桌面会完全停止数十秒；关键步骤失败时脚本自动恢复 Android。请勿长按电源键。' 'Note: the Android UI stops completely for tens of seconds during takeover; critical failures roll back automatically. Do not press and hold the power button.')"
 }
 
 # 接管产物：aarch64 tarball（脚本 + 已交叉编译好的 bin/）。用户端不编译。
@@ -514,10 +519,10 @@ run_takeover() {
     say ""
     head2 "$action"
     msg "  即将运行：$script" "  About to run: $script"
-    msg "  · 中途安卓桌面整体下线十几~几十秒、可能短暂黑屏，这是放倒显示栈的正常过程。" \
-        "  · The Android UI stops completely for tens of seconds; a briefly black screen is expected."
-    msg "  · 任一关键步失败，脚本会自己把安卓恢复回去；实在不放心可以先跑一次交还。" \
-        "  · If a key step fails, the script restores Android by itself."
+    msg "  · 过程中 Android 桌面会完全停止、屏幕可能短暂熄灭数十秒，这是停止显示栈的预期阶段。" \
+        "  · The Android UI stops completely and the screen may go dark for tens of seconds; this is the expected display-stack stop phase."
+    msg "  · 任一关键步骤失败时，脚本会自动恢复 Android；也可先执行一次交还再进入接管。" \
+        "  · If any critical step fails, the script restores Android automatically. You may also hand back before entering takeover."
     say ""
     confirm "$(msg '确认开始？' 'Proceed?')" || { say "$(msg '已取消。' 'Cancelled.')"; return 0; }
 
@@ -567,7 +572,7 @@ relaunch_anland() {
     local user="${DRM_CONF[DRM_USER]}"
     runuser -u "$user" -- bash -c "nohup $starter > /tmp/anland-restart.log 2>&1 &" 2>/dev/null \
         && ok "$(msg '已拉起（日志 /tmp/anland-restart.log）' 'Relaunched (log /tmp/anland-restart.log)')" \
-        || warn "$(msg '拉起失败：这一步需要 root，请用 sudo 再跑一次 drm-tui' 'Failed; this step needs root — run drm-tui under sudo')"
+        || warn "$(msg '拉起失败：此操作需要 root 权限，请使用 sudo drm-tui 重新执行' 'Failed; this step needs root — run drm-tui under sudo')"
 }
 
 show_tail_log() {

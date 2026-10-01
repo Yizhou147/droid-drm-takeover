@@ -66,35 +66,68 @@ check_android_root() {
     [[ "$out" == "0" ]]
 }
 
-# adb 桥：容器里要有 adb，且本机通道必须已经列出来。
-# 全新用户最常卡在这两步（DroidSpaces 的 adb 通道没开 / KernelSU 没给 adb shell 授权），
-# 所以这里把判据拆开报，不要笼统一句"adb 不可用"。
+# adb 桥：容器里要有 adb，且本机调试通道必须已授权。
+# 未装 adb / 通道未建立 / 通道未授权这三种情况症状相同而处置不同，必须分开报，
+# 不能笼统一句"adb 不可用"（10-01 新容器实测：unauthorized 被说成"机型不符"，
+# 把人带去查机型和装 adb，而真正该做的是在平板屏幕上同意 RSA 指纹授权）。
 check_adb_bridge() {
     local rc=0
     if ! command -v adb >/dev/null 2>&1; then
-        fail "$(msg '容器里没有 adb（接管与交还都要用它驱动安卓）' 'adb is missing in the container (needed to drive Android)')"
-        say "$(msg '  补救：sudo apt install -y --no-install-recommends adb' '  Fix: sudo apt install -y --no-install-recommends adb')"
+        fail "$(msg '未安装 adb：接管与交还均需通过它驱动 Android' \
+               'adb is not installed; takeover and hand-back both drive Android through it')"
+        say "  $(msg '执行：sudo apt install -y --no-install-recommends adb' \
+                   'Run: sudo apt install -y --no-install-recommends adb')"
         rc=1
     else
-        ok "$(msg '容器内 adb 就位' 'adb present in container')"
+        ok "$(msg 'adb 已安装' 'adb is installed')"
     fi
-    if [[ -n "$DRM_DEV" ]]; then
-        ok "$(msg "安卓通道可用：$DRM_DEV" 'Android channel ready: '"$DRM_DEV")"
-    else
-        fail "$(msg '看不到任何 adb 设备' 'No adb device visible')"
-        say "$(msg '  请在 DroidSpaces 里开启本机 adb 通道，然后在 KernelSU 里给 adb shell 授权' \
-               '  Enable the local adb channel in DroidSpaces, then authorize adb shell in KernelSU')"
-        say "$(msg '  检查命令（单行）：adb devices' '  Check (single line): adb devices')"
-        rc=1
-    fi
-    if check_android_root; then
-        ok "$(msg '安卓侧 root 可用（KernelSU 已授权）' 'Android root available (KernelSU authorized)')"
-    else
-        fail "$(msg '安卓侧 su 不可用：接管要停 surfaceflinger/composer，必须有 root' \
-               'Android su unavailable: takeover stops surfaceflinger/composer, root is mandatory')"
-        say "$(msg '  请在 KernelSU 里为本机授予 root（第一次会弹授权窗），然后重跑本检查' \
-               '  Grant root in KernelSU (a prompt appears on first use), then re-run this check')"
-        rc=1
+    probe_adb
+    case "$DRM_ADB_STATUS" in
+        device)
+            ok "$(msg "Android 调试通道已授权：$DRM_ADB_DEV" \
+               'Android debug channel authorized: '"$DRM_ADB_DEV")"
+            ;;
+        unauthorized)
+            fail "$(msg "设备未授权（$DRM_ADB_DEV：unauthorized）：adb 已发现设备，但 Android 拒绝执行命令" \
+               'Device not authorized ('"$DRM_ADB_DEV"': unauthorized): adb sees the device, but Android refuses commands')"
+            say "$(msg '  请在平板屏幕上同意「允许 USB 调试」对话框，并勾选"一律允许"。' \
+               '  Accept the "Allow USB debugging" dialog on the tablet and tick "Always allow".')"
+            say "$(msg '  若对话框没有弹出：在开发者选项中撤销 USB 调试授权，然后依次执行下面两条。' \
+               '  If no dialog appears: revoke USB debugging authorizations in Developer options, then run:')"
+            say "  adb kill-server"
+            say "  adb devices"
+            rc=1
+            ;;
+        offline)
+            fail "$(msg "设备状态异常（$DRM_ADB_DEV：offline / no permissions）" \
+               'Device state abnormal ('"$DRM_ADB_DEV"': offline / no permissions)')"
+            say "  adb kill-server"
+            say "  adb devices"
+            rc=1
+            ;;
+        none)
+            fail "$(msg '未检测到任何 Android 设备：adb 可用，但本机调试通道尚未建立' \
+               'No Android device detected: adb works, but the local debug channel is not established')"
+            say "$(msg '  请在 DroidSpaces 中启用本机 adb 通道，然后执行：adb devices' \
+               '  Enable the local adb channel in DroidSpaces, then run: adb devices')"
+            say "  adb devices"
+            rc=1
+            ;;
+        *)
+            fail "$(msg 'adb 状态未知：adb devices 未能执行' 'adb state unknown: adb devices did not run')"
+            rc=1
+            ;;
+    esac
+    if [[ "$DRM_ADB_STATUS" == "device" ]]; then
+        if check_android_root; then
+            ok "$(msg 'Android 侧 root 可用（KernelSU 已授权）' 'Android root is available (KernelSU authorized)')"
+        else
+            fail "$(msg 'Android 侧 su 不可用：接管需要停止 surfaceflinger 与 composer，必须具备 root' \
+               'Android su unavailable: takeover must stop surfaceflinger and composer, which requires root')"
+            say "$(msg '  请在 KernelSU 中为 adb shell 授予 root（首次调用会弹出授权请求），随后重新运行本检查。' \
+               '  Grant root to adb shell in KernelSU (a request appears on first use), then re-run this check.')"
+            rc=1
+        fi
     fi
     return $rc
 }
@@ -122,12 +155,16 @@ check_drm_nodes() {
 # 依赖检查：只报缺的，并把命令写成单行给用户
 missing_packages() {
     local cmd pkg
+    # 普通用户的 PATH 常常不含 /usr/sbin 与 /sbin，直接 command -v 会把已装的
+    # rfkill / runuser / wpa_supplicant / dhcpcd 报成"缺失"（10-01 实测）。
+    # 查找命令时显式补上这两段；判定仍只看可执行文件是否存在，不依赖当前 PATH。
+    local search_path="$PATH:/usr/sbin:/sbin"
     for cmd in "${!DEP_PACKAGE_MAP[@]}"; do
         pkg="${DEP_PACKAGE_MAP[$cmd]}"
         if [[ "$cmd" == "$pkg" || -n "${DEP_PACKAGE_ONLY[$cmd]:-}" ]]; then
             dpkg -l "$pkg" 2>/dev/null | awk '$2=="ii"{f=1} END{exit f?0:1}' && continue
         fi
-        command -v "$cmd" >/dev/null 2>&1 && continue
+        PATH="$search_path" command -v "$cmd" >/dev/null 2>&1 && continue
         case "$cmd" in
             org_kde_powerdevil) [[ -x /usr/lib/aarch64-linux-gnu/libexec/org_kde_powerdevil ]] && continue ;;
         esac
@@ -187,13 +224,16 @@ check_disk_space() {
 run_precheck() {
     local fails=0
     detect_android_identity
-    if ! is_target_model; then
-        fail "$(msg "机型不符：只支持小米平板 8 Pro（检测到 device=${DRM_PRODUCT:-未知} model=${DRM_MODEL:-未知}）" \
-               'Unsupported device: only Xiaomi Pad 8 Pro (got device='"${DRM_PRODUCT:-?}"' model='"${DRM_MODEL:-?}"')')"
-        fails=$((fails + 1))
-    else
-        ok "$(msg "机型：Xiaomi Pad 8 Pro（${DRM_MODEL:-piano}）" 'Device: Xiaomi Pad 8 Pro ('"$DRM_MODEL"')')"
-    fi
+    is_target_model
+    case "$?" in
+        0) ok "$(msg "设备型号确认：Xiaomi Pad 8 Pro（${DRM_MODEL}）" 'Device verified: Xiaomi Pad 8 Pro ('"$DRM_MODEL"')')" ;;
+        2) fail "$(msg '无法确认设备型号：ro.product.device 读取为空，通常是 Android 调试通道尚未就绪（见上一项 adb 结果）' \
+              'Cannot determine the device model: ro.product.device is empty, normally because the Android debug channel is not ready')"
+           fails=$((fails + 1)) ;;
+        *) fail "$(msg "设备型号不匹配：检测到 ro.product.device=${DRM_PRODUCT}，本工具仅在 Xiaomi Pad 8 Pro（piano）上验证" \
+              'Device mismatch: detected ro.product.device='"${DRM_PRODUCT}"'; verified on Xiaomi Pad 8 Pro (piano) only')"
+           fails=$((fails + 1)) ;;
+    esac
     if supported_target; then
         ok "$(msg "发行版/桌面：$(detect_distro) / $(detect_desktop)" 'Target: '"$(detect_distro)/$(detect_desktop)")"
     else

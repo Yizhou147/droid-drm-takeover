@@ -61,8 +61,11 @@ die() {
 # step <编号> <总数> <中文> <English> —— 啰嗦模式的骨架：每一步都先报"在干什么"再干。
 # 用户明确要求：不要像老脚本那样"进程一晃就过去、不知道跑了什么、卡在哪"。
 step() {
-    local idx="$1" total="$2"
-    printf '%b[%d/%d]%b %s\n' "$COLOR_CYAN" "$idx" "$total" "$COLOR_RESET" "$(msg "${3}" "${4}")"
+    # 缺第 4 个参数时不能直接写 ${4}：set -u 下会当场"未绑定的变量"退出，
+    # 而且是在 printf 的子命令里炸，结果连步骤名都被吞掉，用户只看到 [1/7] 后面空白
+    # （10-01 新容器实测就是这个现象）。
+    local idx="${1:-0}" total="${2:-0}" zh="${3:-}" en="${4:-${3:-}}"
+    printf '%b[%d/%d]%b %s\n' "$COLOR_CYAN" "$idx" "$total" "$COLOR_RESET" "$(msg "$zh" "$en")"
 }
 
 # require_root <script-path> —— 非 root 时自己 sudo 重跑。
@@ -76,7 +79,7 @@ require_root() {
         die "$(msg '提权后仍不是 root，无法继续。' 'Still not root after elevation; cannot continue.')"
     fi
     command -v sudo >/dev/null 2>&1 || die "$(msg '需要 root，但本机没有 sudo。' 'root is required but sudo is missing.')"
-    say "$(msg '这一步需要 root，正在申请提权（可能要输一次密码）…' 'This step needs root; elevating (you may be asked for your password)…')"
+    say "$(msg '此步骤需要 root 权限，将通过 sudo 重新执行（可能需要输入一次密码）。' 'This step requires root; re-executing via sudo (a password may be required).')"
     DRM_REINVOKED=1 exec sudo -- "$script" "$@"
 }
 

@@ -24,39 +24,62 @@ DRM_KWIN_ROLE="none"    # none | drm | anland | both
 DRM_SENTINEL=0          # takeover.ok 是否存在
 DRM_ROUND_PID=""        # 接管轮 kwin 的 pid
 
-adb_dev() {
-    command -v adb >/dev/null 2>&1 || return 1
-    # 本机通道优先：容器与 pad 同一台机器，emulator-5554 型通道与 WiFi 生死无关
-    local local_dev
-    local_dev=$(timeout "$DRM_ADB_TIMEOUT" adb devices 2>/dev/null | awk '$2=="device"{print $1; exit}')
-    [[ -n "$local_dev" ]] || return 1
-    printf '%s' "$local_dev"
+# adb 通道状态：none(没有设备) / unauthorized(有设备但未授权) / offline / device / no-adb
+# 这四种必须分开报：**unauthorized 被说成"看不到设备"或"机型不符"会把人带去装 adb、
+# 查机型，而真正要做的是在平板屏幕上同意 RSA 指纹**（10-01 新容器实测就是这么被误导的）。
+DRM_ADB_STATUS="no-adb"
+DRM_ADB_STATUS_LABEL=""
+
+probe_adb() {
+    DRM_ADB_STATUS="no-adb"; DRM_ADB_DEV=""
+    command -v adb >/dev/null 2>&1 || return 0
+    local out
+    out=$(timeout "${DRM_ADB_TIMEOUT:-8}" adb devices 2>/dev/null | tail -n +2)
+    # 本机通道优先：容器与 pad 同一台机器，emulator-5554 这类通道与 WiFi 生死无关
+    DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="device"{print $1; exit}')
+    if [[ -n "$DRM_ADB_DEV" ]]; then
+        DRM_ADB_STATUS="device"
+    elif printf '%s\n' "$out" | grep -q 'unauthorized'; then
+        DRM_ADB_STATUS="unauthorized"
+        DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$2=="unauthorized"{print $1; exit}')
+    elif printf '%s\n' "$out" | grep -qE 'offline|no permissions'; then
+        DRM_ADB_STATUS="offline"
+        DRM_ADB_DEV=$(printf '%s\n' "$out" | awk '$1!=""){print $1; exit}')
+    else
+        DRM_ADB_STATUS="none"
+    fi
 }
 
-# android_getprop <key> —— 不需要 root；拿不到就返回空串，由调用方决定怎么解释。
+adb_dev() {
+    [[ "$DRM_ADB_STATUS" == "device" ]] || probe_adb
+    [[ "$DRM_ADB_STATUS" == "device" ]] || return 1
+    printf '%s' "$DRM_ADB_DEV"
+}
+
 android_getprop() {
     [[ -n "$DRM_DEV" ]] || return 1
     timeout "$DRM_ADB_TIMEOUT" adb -s "$DRM_DEV" shell getprop "$1" 2>/dev/null | tr -d '\r' | head -1
 }
 
 detect_android_identity() {
-    DRM_DEV="$(adb_dev || true)"
-    [[ -n "$DRM_DEV" ]] || return 1
+    probe_adb
+    DRM_DEV="$DRM_ADB_DEV"
+    [[ "$DRM_ADB_STATUS" == "device" ]] || return 1
     DRM_PRODUCT="$(android_getprop ro.product.device)"
     DRM_MODEL="$(android_getprop ro.product.model)"
     DRM_SF="$(android_getprop init.svc.surfaceflinger)"
     # 不要再尝试读 init.svc.vendor.qti.hardware.display.composer：09-30 实测本机它是**空串**
     # （那个 vendor HAL 由 SF 按 vintf 拉起，不是 init 跟踪的常驻服务，getprop 里压根没有）。
     # 停/起它仍然有效（`setprop ctl.restart …`，见工作总结 §2），但"查它在不在"只能靠 surfaceflinger。
+    [[ -n "$DRM_PRODUCT" ]] || return 1
     return 0
 }
 
-# 小米平板 8 Pro = piano / SM8750。model 串在不同区域版本会变（24091RP05C 等），
-# 所以 device==piano 是主判据、model 只是第二道确认；两者都中才认。
+# 小米平板 8 Pro = piano / SM8750。model 串随区域版本变化（25091RP04C 等），
+# 所以 device==piano 是主判据；读不到时返回 2（"未知"），与"确认不是"（返回 1）严格分开。
 is_target_model() {
-    [[ "${DRM_PRODUCT:-}" == "piano" ]] || return 1
-    [[ -n "${DRM_MODEL:-}" ]] || return 0
-    return 0
+    [[ -n "${DRM_PRODUCT:-}" ]] || return 2
+    [[ "$DRM_PRODUCT" == "piano" ]]
 }
 
 detect_kwin_role() {
@@ -113,7 +136,7 @@ sanity_check_state() {
     local problems=()
     [[ "$DRM_STATE" == "drm" && -z "$DRM_ROUND_PID" ]] && problems+=("state=drm but no --socket=taketest kwin")
     [[ "$DRM_STATE" == "drm" && -z "${DRM_SF:-}" ]] && problems+=("state=drm but surfaceflinger prop unreadable (adb down?)")
-    [[ -z "$DRM_DEV" ]] && problems+=("no adb device visible")
+    [[ -z "$DRM_DEV" ]] && problems+=("adb 通道不可用（状态：$DRM_ADB_STATUS）")
     if (( ${#problems[@]} )); then
         printf '%b%s%b\n' "$COLOR_YELLOW" \
             "$(msg '状态判定存在疑点：' 'State detection is shaky: ')${problems[*]}" "$COLOR_RESET"
