@@ -13,7 +13,15 @@ set -uo pipefail
 REPO="${DRM_REPO_SLUG:-Yizhou147/droid-drm-takeover}"
 TAG="${DRM_TAG:-latest}"
 ASSET="${DRM_ASSET:-drm-takeover-aarch64.tar.gz}"
-DEST="${DRM_INSTALL_DIR:-$HOME/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}"
+# sudo 时 $HOME 是 /root ⇒ 会把整套产物装进 /root/Documents，用户目录那份还是旧的
+# （和快捷方式当初被写进 /root/Desktop 同一类事故）。按 SUDO_USER 找真正的用户目录。
+_target_home() {
+    local u="${SUDO_USER:-}" h
+    [[ -n "$u" && "$u" != "root" ]] || { printf '%s' "$HOME"; return; }
+    h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+    [[ -n "$h" ]] && printf '%s' "$h" || printf '/home/%s' "$u"
+}
+DEST="${DRM_INSTALL_DIR:-$(_target_home)/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf '✘ %s\n' "$*" >&2; exit 1; }
@@ -115,6 +123,11 @@ mkdir -p "$DEST" || die "建不了 $DEST / cannot create $DEST"
 cp -a "$inner"/. "$DEST"/ || die "铺文件失败 / copy failed"
 rm -rf -- "$work"
 chmod +x "$DEST"/*.sh "$DEST"/scripts/*.sh "$DEST"/installer/*.sh 2>/dev/null || true
+# 以 root 跑时 cp -a 会把整棵目录变成 root 属主，用户之后自己跑 drm-tui 就写不动了
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    chown -R "$SUDO_USER:$SUDO_USER" "$DEST" 2>/dev/null || m "  注意：$DEST 属主没能改回 $SUDO_USER" \
+                                                       "  Note: ownership of $DEST was not restored to $SUDO_USER"
+fi
 
 m "已就位：$DEST" "Installed to: $DEST"
 m "接下来跑这一条（它会先测速、再问你要装哪些组件）：" "Now run this single line (it probes mirrors, then asks what to install):"

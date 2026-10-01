@@ -104,6 +104,14 @@ ask_yes() {
     [[ "${reply,,}" != "n" && "${reply,,}" != "no" ]]
 }
 
+# 读完一屏内容后必须停住等回车：否则调用方一 return，主菜单立刻 clear 重绘，
+# 用户看到的就是"字闪了一下就没了"（10-01 用户实测反馈，检查更新那屏就是这么看不见的）。
+pause() {
+    [[ -t 0 ]] || return 0          # 非交互（管道/脚本）里不停，否则直接把流程卡死
+    printf '%s\n' "${1:-$(msg '按回车返回菜单' 'Press Enter to go back')}" >&2
+    read -r _ || true
+}
+
 confirm() {
     local prompt="$1"
     [[ "${DRM_ASSUME_YES:-0}" == "1" ]] && return 0

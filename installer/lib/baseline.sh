@@ -67,7 +67,10 @@ apply_input_baseline() {
 install_runtime_scripts() {
     local repo="${DRM_CONF[REPO_DIR]}" f
     say "$(msg '安装运行期脚本到 /usr/local/bin' 'Installing runtime scripts')"
-    local -a want=(startanland-kde.sh power-state-sync.py usb-passthrough.sh vkb-show.sh storage-fix.sh)
+    # 名单只列仓库里真有的东西：`usb-passthrough.sh` 曾在这里挂着，但仓库从没带过它
+    # （本机 /usr/local/bin 那份是 DroidSpaces 侧的通用 /dev/bus/usb 建节点脚本，与接管无关），
+    # 结果每次装机都固定报"已安装 4/5"，把真缺的东西淹在噪声里。
+    local -a want=(startanland-kde.sh power-state-sync.py vkb-show.sh storage-fix.sh)
     local installed=0
     for f in "${want[@]}"; do
         if [[ -f "$repo/scripts/$f" ]]; then

@@ -718,6 +718,7 @@ show_tail_log() {
     say "$(msg "最近 60 行：$f" 'Last 60 lines: '"$f")"
     tail -n 60 "$f"
     say ""
+    pause
 }
 
 toggle_key() {
@@ -821,6 +822,9 @@ advanced_page() {
 
 check_and_repair() {
     head2 "$(msg '检查安装 / 修复' 'Check installation / repair')"
+    # 桥的判定要经 adb，而 adb server 冷启动后第一次查表是空的 ⇒ 先叫起来再查，
+    # 否则 repair 会把"装好的桥"报成缺件（10-01 14:18 那三轮就是被这个空表坑的）。
+    adb start-server >/dev/null 2>&1
     local -a todo=()
     [[ -r "$DRM_CONF_FILE" ]]                       || todo+=("config")
     [[ -f "${DRM_CONF[REPO_DIR]}/bin/kwinwrap" ]]    || todo+=("binaries")
@@ -892,6 +896,7 @@ check_updates() {
     say ""
     say "$(msg '定制 kwin 的更新看 anland-kde-packages 的 manifest，不要用 dpkg 判断：' 'For patched kwin use the anland-kde-packages manifest, not dpkg:')"
     say "  $(msg 'bash installer/drm-tui.sh --check-kwin' 'bash installer/drm-tui.sh --check-kwin')"
+    pause
 }
 
 uninstall() {
@@ -937,7 +942,7 @@ main_menu() {
             case "$MENU_CHOICE" in
                 1) run_takeover "$STOP_SCRIPT" "$(msg '结束接管、把屏幕和网络交还给安卓' 'Ending takeover, handing display & network back')" ;;
                 2) show_tail_log ;;
-                3) settings_page ;; 4) check_and_repair ;; 5) check_updates ;;
+                3) settings_page ;; 4) check_and_repair; pause ;; 5) check_updates ;;
                 6) advanced_page ;; 7|0) exit 0 ;;
             esac ;;
         half-dead)
@@ -981,8 +986,8 @@ main_menu() {
                 3) show_tail_log ;;
                 4) if establish_adb_bridge 1; then ok "$(msg "通道已就绪：$DRM_ADB_DEV" 'Channel ready: '"$DRM_ADB_DEV")"
                    else [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy; fi ;;
-                5) settings_page ;; 6) check_and_repair ;;
-                7) check_updates ;; 8) advanced_page ;; 9) uninstall ;; 10|0) exit 0 ;;
+                5) settings_page ;; 6) check_and_repair; pause ;;
+                7) check_updates; pause ;; 8) advanced_page ;; 9) uninstall ;; 10|0) exit 0 ;;
             esac ;;
     esac
     sleep 0.4
