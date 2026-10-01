@@ -62,17 +62,11 @@ IP=172.16.30.104
 PREFIX=22
 GW=172.16.30.1
 
-# adb server 是**按需冷启动**的：脚本自己第一次调 adb 才把 server 拉起来，而这一刻 `adb devices`
-# 返回的是空表（14:18 那三轮全是这个形状 —— 日志里紧跟着 "* daemon not running; starting now"，
-# DEV 为空 ⇒ NO-ADB-DEVICE 直接退出；几秒后同一命令就能看到 emulator-5554 device）。
-# 所以先 start-server 把 server 叫起来，再带重试地查表，而不是一锤子买卖。
-adb start-server >/dev/null 2>&1
-DEV=""
-for _adb_try in 1 2 3 4 5; do
-    DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
-    [ -n "$DEV" ] && break
-    sleep 2
-done
+# 设备地址一律交给 scripts/adb-pick.sh：本机/回环优先，且每个候选都要 getprop 真的回话。
+# 曾经的事故（10-01 19:47）：行序第一个是**换网后已死的无线地址**，交还命令全发进去，
+# 安卓没被拉回来 = 黑屏强启。
+. "$DIR/scripts/adb-pick.sh"
+DEV=$(pick_adb_dev_with_endpoints 8)
 # 本机通道（emulator-5554 一类）没有时，再试配置里的无线 adb 地址。
 # ⚠ 只在**进入接管**这一侧加：交还链（desk-stop）刻意不依赖这里——交还时 adb 不通也必须继续往下走，
 #    中止交还等于把用户锁在黑屏里。地址写在哪：/etc/drm-takeover.conf 的 ADB_ENDPOINTS。

@@ -11,7 +11,8 @@
 #   3. hciconfig/bluez 也进同一时间轴：分清"芯片断电(bt_power)"、"适配器 DOWN(hci0)"、
 #      "bluez Powered: no"这三件事的先后顺序 —— 上一版把三者混成一句话，误判了一整晚。
 #   4. 绝不动作：不写 rfkill、不 unblock、不重启服务、不碰桥（电源协调归 btpower/HAL，红线）。
-DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/adb-pick.sh"   # 本机/回环优先 + getprop 实测，见该文件头注
+DEV=$(pick_adb_dev 6)
 [ -n "$DEV" ] || { echo "NO-ADB（沿上就没法抓 logcat/dmesg 了）"; }
 R=${1:-1800}
 IV=${2:-2}

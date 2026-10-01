@@ -2,7 +2,8 @@
 # bt-anland-baseline.sh — anland 正常态的蓝牙电源基线（对照 DRM 轮内看到的 bt_power soft=1）
 # 只读：不碰 rfkill、不重启服务、不按键。锁屏请用户自己做（Doze 才有机会进）。
 # 每 5s 采内核侧便宜信号；每 30s 采一次安卓侧贵信号；soft 一翻转就立刻 dump 现场。
-DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/adb-pick.sh"   # 本机/回环优先 + getprop 实测，见该文件头注
+DEV=$(pick_adb_dev 6)
 [ -n "$DEV" ] || { echo "NO-ADB"; exit 1; }
 R=${1:-600}
 HEAVY=${HEAVY:-6}            # 每几次采样走一次 adb（见下面观测者效应注释）

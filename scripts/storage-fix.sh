@@ -11,7 +11,8 @@
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 WAIT=${1:-60}
 
-DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/adb-pick.sh"   # 本机/回环优先 + getprop 实测，见该文件头注
+DEV=$(pick_adb_dev_with_endpoints 6)
 [ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
 
 BIN=$ROOT/bin/storage-rebind

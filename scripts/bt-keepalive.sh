@@ -44,7 +44,8 @@ fi
 echo $$ > "$LOCK"
 cleanup() { [ "$(cat "$LOCK" 2>/dev/null)" = "$$" ] && rm -f "$LOCK"; }
 trap cleanup EXIT
-DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/adb-pick.sh"   # 本机/回环优先 + getprop 实测，见该文件头注
+DEV=$(pick_adb_dev 6)
 [ -n "$DEV" ] || { echo "BT-KEEPALIVE EXIT $(date +%T): 没有 adb 设备，无法观测安卓侧状态"; exit 0; }
 BTBIN=${BTBIN:-${BT_BIN:-/data/local/tmp/bthci-bridge-v2}}   # 默认跟着 desk-takeover 走 v2；BT_BIN 可指回旧构建
 BTLOG=${BTLOG:-/data/local/tmp/bt-bridge.log}

@@ -7,7 +7,8 @@ LOGD=${LOG_DIR:-$(dirname "$ROOT")/logs}
 mkdir -p "$LOGD"
 exec >>"$LOGD/drm-takeover.log" 2>&1
 set -x
-DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/adb-pick.sh"   # 本机/回环优先 + getprop 实测，见该文件头注
+DEV=$(pick_adb_dev_with_endpoints 6)
 [ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
 run() { adb -s "$DEV" shell "su -c '$1'"; }
 

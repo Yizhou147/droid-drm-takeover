@@ -47,17 +47,12 @@ set +e
 set -x
 echo "=== DESK-STOP START $(date +%F_%T) id=$DESKSTOP_ID ==="
 
-# ⚠ 这里**必须重试**：adb server 冷启动后第一次 `adb devices` 是空表，一锤子买卖会把
-# "通道正常"判成"通道没了" ⇒ 本脚本直接 exit，安卓不会被交还，用户面对的就是黑屏。
-# （10-01 14:18 新容器三轮 NO-ADB-DEVICE 就是这个形状；exit 本身是对的——无 adb 时继续往下
-#   只会把 Linux 桌面杀光又救不回安卓——但判据不能建在一次冷表上。）
-adb start-server >/dev/null 2>&1
-DEV=""
-for _adb_try in 1 2 3 4 5; do
-    DEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
-    [ -n "$DEV" ] && break
-    sleep 2
-done
+# ⚠ 交还链的设备地址**必须**用 scripts/adb-pick.sh 选：本机/回环优先、每个候选 getprop 实测。
+# 10-01 19:47 那轮就是把 `ctl.start composer; start` 发给了换网后已死的 `172.16.28.69:41043`
+# （行序第一个），一路 device offline ⇒ 安卓没回来 = 黑屏，用户只能长按电源。
+# 选不出来仍然早退：没有 adb 还往下走，只会把 Linux 桌面杀光又救不回安卓。
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/adb-pick.sh"
+DEV=$(pick_adb_dev_with_endpoints 6)
 [ -n "$DEV" ] || { echo "NO-ADB-DEVICE 原始表："; timeout 12 adb devices -l 2>&1 | sed 's/^/    /'; echo "NO-ADB-DEVICE"; exit 1; }
 run() {
     # timeout 只是保命；124 必须打进日志，否则下次又只剩"某行之后没输出"这种糊账
@@ -89,7 +84,7 @@ rm -f $STARTED_FLAG
     run 'for p in $(pgrep bthci-bridge); do kill -9 $p; done'   # 进程退→tty 关→内核自动注销 hci0
     pkill -9 -f "aa-feeder.sh" 2>/dev/null    # A 路音频：容器 feeder + 安卓 argsloop sink
     pkill -9 -f "pc-keyd.py" 2>/dev/null         # pc-keyd 的 uinput 键盘会令安卓常驻物理键盘通知（09-27）；轮内没起它则无操作
-    WDEV=$(timeout 12 adb devices | awk '$2=="device"{print $1; exit}')
+    WDEV=$(pick_adb_dev 6)   # 保命路径也不能信行序：死地址会把它带偏（19:47 事故）
     [ -n "$WDEV" ] && timeout 12 adb -s "$WDEV" shell "su -c 'pkill -x argsloop'" 2>/dev/null
     if [ -z "$WDEV" ]; then
         echo "WATCHDOG: adb 通道也没了，只能硬重启（这一步救不了）"
