@@ -839,6 +839,11 @@ check_and_repair() {
     if [[ -z "$_dev" ]] || [[ -z "$(timeout 20 adb -s "$_dev" shell "su -c 'test -e /data/local/tmp/argsloop && echo Y'" 2>/dev/null | tr -d '\r')" ]]; then
         todo+=("bridges")
     fi
+    # 定制 kwin 只认实测判据（libkwin 里本项目自造的符号）：dpkg/md5sums 都被定制包抄自
+    # 原厂的那份污染过，判不出真状态（工作总结 §12.3）。缺了它 X11 应用不弹虚拟键盘。
+    if [[ "${DRM_CONF[KWIN_X11_IM]:-0}" == "1" ]] && ! kwin_patch_present; then
+        todo+=("patched-kwin")
+    fi
     local -a miss=(); mapfile -t miss < <(missing_packages)
     (( ${#miss[@]} )) && todo+=("deps(${miss[*]})")
     check_android_root || todo+=("android-root")
@@ -861,6 +866,7 @@ check_and_repair() {
             systemd-baseline) apply_systemd_baseline ;;
             baseline) apply_desktop_baseline ;;
             bridges) deploy_android_bridges ;;
+            patched-kwin) install_patched_kwin ;;
             deps*) install_debs_with_audit $(missing_packages) ;;
             android-root) warn "$(msg '安卓侧 root 仍未授权：执行 adb -s <地址> shell su -c id 并授予 root，再重跑检查' 'Android root still not authorized: run adb -s <address> shell su -c id, grant it root, then re-check')" ;;
         esac
