@@ -780,7 +780,21 @@ if [ -n "$KDPID" ]; then
     if [ "$AHITS" -gt 0 ]; then
         echo "AUDIOKEY-OK audioshortcutsservice 已映射进 kded(pid=$KDPID)，maps 命中 $AHITS 条 $(date +%T)"
     else
-        echo "AUDIOKEY-FAIL $(date +%T): kded(pid=$KDPID) 的 maps 里没有 audioshortcutsservice（loadModule 返回: $AK）⇒ 音量键大概率无效"
+        # 10-02 实测：前台这 6s 窗口**不够**——本容器 23:26 轮报 AUDIOKEY-FAIL，而事后
+        # /proc/<kded>/maps 有 4 条 audioshortcut 命中，模块只是加载得比探针晚。
+        # ⇒ FAIL 不能在前台窗口里下结论，改后台续查 90s 再定性（两容器都中过这个假阴性）。
+        echo "AUDIOKEY-PENDING $(date +%T): 前台 6s 未命中 kded(pid=$KDPID) maps，转后台续查 90s"
+        (
+            for _ak2 in $(seq 1 30); do
+                sleep 3
+                _h2=$(grep -c "audioshortcutsservice" /proc/"$KDPID"/maps 2>/dev/null)
+                if [ "${_h2:-0}" -gt 0 ]; then
+                    echo "AUDIOKEY-OK $(date +%T): 延后 $((_ak2 * 3))s 命中 $_h2 条（模块加载晚于前台探针窗口）"
+                    exit 0
+                fi
+            done
+            echo "AUDIOKEY-FAIL $(date +%T): 90s 内 kded(pid=$KDPID) 始终没映射 audioshortcutsservice ⇒ 音量键无人处理"
+        ) >>"$LOGD/desk-takeover.log" 2>&1 &
     fi
 fi
 # ---- 4c) 虚拟键盘原生弹出（09-27 §41.7）----
