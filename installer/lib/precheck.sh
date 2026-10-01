@@ -25,6 +25,11 @@ declare -A DEP_PACKAGE_MAP=(
     [wayland-info]=wayland-utils [es2gears_wayland]=mesa-utils
     [jq]=jq [python3]=python3-minimal [curl]=curl [sha256sum]=coreutils
     [pipewire]=pipewire
+    # 只有包名、没有对应命令的条目：按 dpkg 状态判定（键=值走同一条快速路径）。
+    # bluez-obexd / libspa-0.2-bluetooth 缺了，接管轮里蓝牙配对与 A2DP 音频不可用。
+    [bluez-obexd]=bluez-obexd [libspa-0.2-bluetooth]=libspa-0.2-bluetooth
+    [plasma-nm]=plasma-nm [mesa-utils]=mesa-utils
+    [xdotool]=xdotool [zenity]=zenity
 )
 # 命令名不可直接 which 的条目：靠包名判定
 declare -A DEP_PACKAGE_ONLY=(
@@ -163,7 +168,8 @@ missing_packages() {
     for cmd in "${!DEP_PACKAGE_MAP[@]}"; do
         pkg="${DEP_PACKAGE_MAP[$cmd]}"
         if [[ "$cmd" == "$pkg" || -n "${DEP_PACKAGE_ONLY[$cmd]:-}" ]]; then
-            dpkg -l "$pkg" 2>/dev/null | awk '$2=="ii"{f=1} END{exit f?0:1}' && continue
+            # dpkg -l 的状态在**第 1 列**（"ii  包名  版本"），写成 $2=="ii" 会永远判成缺失
+            dpkg -l "$pkg" 2>/dev/null | awk '/^ii /{f=1} END{exit f?0:1}' && continue
         fi
         PATH="$search_path" command -v "$cmd" >/dev/null 2>&1 && continue
         case "$cmd" in

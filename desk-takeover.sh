@@ -546,8 +546,10 @@ fi
 sed -i 's/^\(enabledLocales=\).*/\1en_US,zh_CN/' "$DRM_HOME/.config/plasmakeyboardrc" 2>/dev/null \
     || printf '[General]\nenabledLocales=en_US,zh_CN\n' > "$DRM_HOME/.config/plasmakeyboardrc"
 chown "$DRM_USER:$DRM_USER" "$DRM_HOME/.config/plasmakeyboardrc" 2>/dev/null
-grep -q "^VirtualKeyboardEnabled=true" "$DRM_HOME/.config/kwinrc" 2>/dev/null \
-    && : || sed -i 's/^VirtualKeyboardEnabled=.*/VirtualKeyboardEnabled=true/' "$DRM_HOME/.config/kwinrc"
+# 必须用 kwriteconfig6 而不是 sed：sed 只能改**已存在**的行，全新容器的 kwinrc 里根本没有这个键，
+# 于是"看起来执行了、实际永远不生效"（10-01 新容器虚拟键盘没出现的直接原因）。
+kwriteconfig6 --file "$DRM_HOME/.config/kwinrc" --group Wayland --key VirtualKeyboardEnabled true 2>/dev/null \
+    || echo "VK-CONFIG FAIL 写不进 kwinrc，本轮虚拟键盘不会弹出"
 KIM="$DRM_HOME/.config/kwinrc"
 if grep -q '^InputMethod\[' "$KIM" 2>/dev/null; then
     sed -i 's|^InputMethod\[.*|InputMethod[$e]=/usr/share/applications/org.kde.plasma.keyboard.desktop|' "$KIM"

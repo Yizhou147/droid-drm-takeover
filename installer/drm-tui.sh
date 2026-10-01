@@ -36,6 +36,7 @@ source "$LIB_DIR/state.sh"
 source "$LIB_DIR/net.sh"
 source "$LIB_DIR/precheck.sh"
 source "$LIB_DIR/adbroute.sh"
+source "$LIB_DIR/baseline.sh"
 
 readonly REPO_SLUG="${DRM_REPO_SLUG:-Yizhou147/droid-drm-takeover}"
 readonly KEYBOARD_REPO_SLUG="${DRM_KEYBOARD_REPO_SLUG:-Yizhou147/droid-pc-keyboard}"
@@ -47,7 +48,9 @@ readonly COMPONENTS_LOCK="${DRM_COMPONENTS_LOCK:-$LIB_DIR/components.lock.json}"
 
 # 桌面快捷方式与图标（图标是用户自制的资产，见 §8.0：现在**不在 git 里**，
 # 所以安装时优先用设备上已有的那份；找不到就退回 KDE 主题图标，不阻塞安装）。
-readonly SHORTCUT_ICON_DIR_DEFAULT="$HOME/.local/share/icons"
+# 目标桌面用户的家目录。安装器以 root 运行，此时 $HOME=/root ——
+# 用它写快捷方式会把文件放进 /root/Desktop，用户桌面上自然什么都没有（10-01 实测）。
+drm_target_home() { printf '%s' "${DRM_CONF[DRM_HOME]:-$HOME}"; }
 readonly ICON_ENTER="droid-enter-drm.png"
 readonly ICON_BACK="droid-back-android.png"
 
@@ -221,14 +224,14 @@ install_flow() {
     head2 "$(msg 'drm-tui 安装' 'Install drm-tui')"
     load_state
 
-    step 1 8 '建立 Android 调试通道' 'Establish the Android debug channel'
+    step 1 9 '建立 Android 调试通道' 'Establish the Android debug channel'
     if ! establish_adb_bridge 1; then
         [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
         die "$(msg 'adb 通道未建立，无法继续。开启无线调试并完成配对后重跑。' \
               'adb channel unavailable. Enable wireless debugging, pair, then re-run.')"
     fi
 
-    step 2 8 '识别设备与发行版' 'Identify device and distribution'
+    step 2 9 '识别设备与发行版' 'Identify device and distribution'
     detect_android_identity
     is_target_model
     case "$?" in
@@ -242,7 +245,7 @@ install_flow() {
               'Unsupported distribution or desktop environment: verified only on Ubuntu 26.04 + KDE.')"
     ok "$(msg "运行环境确认：$(detect_distro) / $(detect_desktop)" 'Runtime environment verified')"
 
-    step 3 8 '安装前环境检查' 'Pre-install environment checks'
+    step 3 9 '安装前环境检查' 'Pre-install environment checks'
     # 原来写 `fails=$(run_precheck | tail -1)`：只留最后一行数字，
     # 于是所有 ✔/✘ 明细都被吞掉，用户在第 3 步什么也看不见（10-01 实测第 3 步是空的）。
     local fails pre_out
@@ -253,30 +256,40 @@ install_flow() {
     rm -f -- "$pre_out"
     (( ${fails:-1} == 0 )) || die "$(msg "预检未通过 $fails 项——按上面每条的单行命令补救后重跑安装" 'Precheck failed '"$fails"' item(s); fix with the single-line hints, then re-run')"
 
-    step 4 8 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
+    step 4 9 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
     pick_mirror
 
-    step 5 8 '选择要安装的组件' 'Select components'
+    step 5 9 '选择要安装的组件' 'Select components'
     ask_components
 
-    step 6 8 '安装 apt 依赖' 'Install apt dependencies'
+    step 6 9 '安装 apt 依赖' 'Install apt dependencies'
     local -a miss=()
     mapfile -t miss < <(missing_packages)
+    # 基线额外需要的包（命令名与包名同名，missing_packages 查不到）：
+    # bluez-obexd 与 libspa-0.2-bluetooth 缺了，接管轮里的蓝牙配对/A2DP 就不可用。
+    local -a extra=(); mapfile -t extra < <(baseline_extra_packages)
+    local e
+    for e in "${extra[@]}"; do
+        dpkg -l "$e" 2>/dev/null | awk '$2=="ii"{f=1} END{exit f?0:1}' || miss+=("$e")
+    done
     if (( ${#miss[@]} )); then
         install_debs_with_audit "${miss[@]}" || die "$(msg 'apt 安装失败' 'apt install failed')"
     else
         ok "$(msg '依赖已齐全' 'Dependencies already present')"
     fi
 
-    step 7 8 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
+    step 7 9 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
     extract_release || warn "$(msg '产物取回不完整——可用"检查安装/修复"重试' 'Artifacts incomplete; retry from Check installation / repair')"
     install_keyboard_if_chosen
 
-    step 8 8 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
+    step 8 9 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
     drm_conf_save || warn "$(msg '配置写入失败（需要 root）' 'Cannot write config (needs root)')"
     install_shortcuts
     install_sudoers
     install_tui_entry
+
+    step 9 9 '写入桌面基线（kwinrc / 输入法 / 运行期脚本 / systemd）' 'Apply the desktop baseline'
+    apply_desktop_baseline
 
     head2 "$(msg '安装完成' 'Done')"
     say "$(msg '以后在终端输入一行即可：' 'From now on, run this single line:')"
@@ -431,18 +444,21 @@ EOF
 }
 
 install_shortcuts() {
-    local repo="${DRM_CONF[REPO_DIR]}" deskdir="$HOME/Desktop"
-    mkdir -p "$deskdir" 2>/dev/null || return 1
-    local icondir="$SHORTCUT_ICON_DIR_DEFAULT"
-    if [[ ! -f "$icondir/$ICON_ENTER" ]]; then
-        icondir="$SCRIPT_DIR/assets/icons"
-        [[ -f "$icondir/$ICON_ENTER" ]] || icondir=""
-    fi
+    local repo="${DRM_CONF[REPO_DIR]}" user="${DRM_CONF[DRM_USER]}"
+    local home deskdir icondir
+    home="$(drm_target_home)"; deskdir="$home/Desktop"; icondir="$home/.local/share/icons"
+    mkdir -p "$deskdir" "$icondir" 2>/dev/null || { warn "$(msg "写不进 $deskdir" 'Cannot write '"$deskdir")"; return 1; }
+    # 图标一律从仓库装进目标用户家目录（仓库已收这两张 PNG），不再依赖设备上"恰好有一份"
+    local src="$SCRIPT_DIR/assets/icons"
+    [[ -f "$src/$ICON_ENTER" ]] || src="$icondir"
+    cp -f "$src/$ICON_ENTER" "$src/$ICON_BACK" "$icondir/" 2>/dev/null || true
     local enter_icon="$icondir/$ICON_ENTER" back_icon="$icondir/$ICON_BACK"
-    [[ -n "$icondir" ]] || { enter_icon="video-display"; back_icon="computer"; warn "$(msg '找不到自制图标，改用主题图标（可事后替换）' 'Custom icons not found; falling back to theme icons')" ; }
+    [[ -f "$enter_icon" ]] || { enter_icon="video-display"; back_icon="computer"; }
     write_desktop_file "进入DRM接管" "$repo/$TAKEOVER_SCRIPT" "$enter_icon" "停掉安卓，接管显示/WiFi，起 Plasma 桌面" "$deskdir/进入DRM接管.desktop"
     write_desktop_file "返回安卓" "$repo/$STOP_SCRIPT" "$back_icon" "结束 DRM 接管，把屏幕/网络还给安卓" "$deskdir/返回安卓.desktop"
-    ok "$(msg '桌面快捷方式已写入（Exec 里的脚本路径已按当前用户名生成）' 'Shortcuts written with this user')"
+    # root 写的文件必须 chown 回桌面用户，否则 Plasma 读不到、快捷方式显示不出来
+    chown -R "$user:" "$deskdir" "$icondir" 2>/dev/null || true
+    ok "$(msg "桌面快捷方式已写入 $deskdir" 'Shortcuts written to '"$deskdir")"
 }
 
 # ---- sudoers：让快捷方式/ TUI 免密跑那两条链 ----
@@ -611,7 +627,7 @@ relaunch_anland() {
     # 也有发行版放 /usr/bin；全新容器可能根本没有 anland 集成）。
     local starter="" cand
     for cand in /usr/local/bin/startanland-kde.sh /usr/bin/startanland-kde.sh \
-                "$HOME/.local/bin/startanland-kde.sh" /opt/droidspaces/startanland-kde.sh; do
+                "$(drm_target_home)/.local/bin/startanland-kde.sh" /opt/droidspaces/startanland-kde.sh; do
         [[ -f "$cand" ]] && { starter="$cand"; break; }
     done
     if [[ -z "$starter" ]]; then
@@ -748,8 +764,10 @@ check_and_repair() {
     [[ -f "${DRM_CONF[REPO_DIR]}/bin/kwinwrap" ]]    || todo+=("binaries")
     [[ -f "${DRM_CONF[REPO_DIR]}/$TAKEOVER_SCRIPT" ]] || todo+=("takeover-script")
     [[ -e "$TUI_BIN" ]]                              || todo+=("drm-tui-command")
-    [[ -f "$HOME/Desktop/进入DRM接管.desktop" ]]       || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("shortcuts")
+    [[ -f "$(drm_target_home)/Desktop/进入DRM接管.desktop" ]]       || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("shortcuts")
     [[ -f "$SUDOERS_FILE" ]]                         || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("sudoers")
+    [[ -f /usr/local/bin/startanland-kde.sh ]]         || todo+=("runtime-scripts")
+    [[ -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf ]] || todo+=("systemd-baseline")
     local -a miss=(); mapfile -t miss < <(missing_packages)
     (( ${#miss[@]} )) && todo+=("deps(${miss[*]})")
     check_android_root || todo+=("android-root")
@@ -768,6 +786,9 @@ check_and_repair() {
             drm-tui-command) install_tui_entry ;;
             shortcuts) install_shortcuts ;;
             sudoers) install_sudoers ;;
+            runtime-scripts) install_runtime_scripts ;;
+            systemd-baseline) apply_systemd_baseline ;;
+            baseline) apply_desktop_baseline ;;
             deps*) install_debs_with_audit $(missing_packages) ;;
             android-root) warn "$(msg '安卓侧 root 仍未授权：在 KernelSU 里同意后重跑检查' 'Android root not authorized yet: approve in KernelSU, then re-check')" ;;
         esac
@@ -805,7 +826,8 @@ uninstall() {
     msg "  不会动：接管仓库本体、已装的 apt 包、deb（键盘/定制 kwin 请各自用 --uninstall 回退）。" \
         "  Kept: the takeover repo itself, apt packages, debs (roll back kwin with its own --uninstall)."
     confirm "$(msg '确认卸载？' 'Confirm uninstall?')" || return 0
-    rm -f "$HOME/Desktop/进入DRM接管.desktop" "$HOME/Desktop/返回安卓.desktop"
+    local th; th="$(drm_target_home)"
+    rm -f "$th/Desktop/进入DRM接管.desktop" "$th/Desktop/返回安卓.desktop"
     rm -f "$TUI_BIN"
     rm -f "$SUDOERS_FILE" 2>/dev/null || warn "$(msg 'sudoers 需要 root 才能删：sudo rm -f '"$SUDOERS_FILE" 'sudoers needs root: sudo rm -f '"$SUDOERS_FILE")"
     ok "$(msg '已卸载（接管仓库仍在原处）' 'Uninstalled; the takeover repo is untouched')"
