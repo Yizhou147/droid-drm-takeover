@@ -28,19 +28,11 @@ apply_kwin_baseline() {
     say "$(msg '写入 kwin 合成器基线' 'Applying kwin baseline')"
     # 虚拟键盘必须在这里落地：desk-takeover 只用 sed 改已存在的行，键缺失时它永远不生效
     drm_kconfig_set "$rc" Wayland VirtualKeyboardEnabled true
-    # 效果开关：模糊/滑移动画关闭、抖动窗口开启（含参数），与良好容器一致
-    drm_kconfig_set "$rc" Plugins blurEnabled false
-    drm_kconfig_set "$rc" Plugins slideEnabled false
-    drm_kconfig_set "$rc" Plugins wobblywindowsEnabled true
-    drm_kconfig_set "$rc" Effect-wobblywindows Drag 85
-    drm_kconfig_set "$rc" Effect-wobblywindows Stiffness 10
-    drm_kconfig_set "$rc" Effect-wobblywindows WobblynessLevel 1
-    drm_kconfig_set "$rc" Effect-overview BorderActivate 9
-    # 触摸手势与 XWayland 缩放（3200x2136 面板上 1.75 会让 X11 应用发虚）
+    # 只留功能项。缩放/动画/装饰这类是我这台开发机的个人设置，原先一并写进装机基线，
+    # 等于替每个新用户改界面大小（10-01 用户就问了"你为什么要动我的缩放"）。
+    # `[Xwayland] Scale=2` 已删；`Effect-overview BorderActivate`、wobbly 参数、
+    # kdecoration2/Breeze 也一并删。要恢复成个人偏好请各自在系统设置里调，不由安装器代劳。
     drm_kconfig_set "$rc" TouchEdges Bottom ShowDesktop
-    drm_kconfig_set "$rc" Xwayland Scale 2
-    drm_kconfig_set "$rc" org.kde.kdecoration2 library KDecoration2
-    drm_kconfig_set "$rc" org.kde.kdecoration2 plugin breeze
     ok "$(msg "  kwinrc 已写入：$rc" '  kwinrc written')"
 }
 

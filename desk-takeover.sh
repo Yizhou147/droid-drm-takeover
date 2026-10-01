@@ -812,6 +812,34 @@ EOF
 # → 10:47 轮 NM 主循环冻结。这里改成唯一一次 restart，并等 polkit 真正 active 再继续。
 systemctl restart polkit 2>/dev/null
 for i in $(seq 1 10); do systemctl is-active polkit >/dev/null 2>&1 && break; sleep 0.5; done
+# ---- 亮度依赖 KScreen，必须在 powerdevil 之前起来 ----
+# 实测：powerdevil 的 /org/kde/ScreenBrightness 只在**启动那一刻**枚举一次可亮度设备，
+# 之后再没有刷新过 —— 本轮里 `DisplaysDBusNames` 恒为 `as 0`，托盘亮度滑块因此整个不出现
+# （polkit 已授权、/sys 已 rw、节点可写，都不是拦路的）。
+# 而接管轮不走 startplasma，没人激活 org.kde.KScreen：它由 D-Bus 服务
+# /usr/share/dbus-1/services/org.kde.kscreen.service 定义，Exec=kscreen_backend_launcher。
+# 所以这里显式把它拉起来，等它真的在跑，再启动 powerdevil。
+KSVC=$(ls /usr/lib/*/libexec/kf6/kscreen_backend_launcher 2>/dev/null | head -1)
+if [ -n "$KSVC" ]; then
+    nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE \
+        ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
+        HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        QT_QPA_PLATFORM=wayland \
+        "$KSVC" > $LOGD/kscreen.log 2>&1 &
+    KSUP=""
+    for _ks in 1 2 3 4 5 6 7 8; do
+        KSUP=$(pgrep -f kscreen_backend_launcher | head -1)
+        [ -n "$KSUP" ] && break
+        sleep 1
+    done
+    if [ -n "$KSUP" ]; then echo "KSCREEN-OK pid=$KSUP $(date +%T)（powerdevil 的亮度设备来自它）"
+    else echo "KSCREEN-FAIL $(date +%T): kscreen_backend_launcher 没起来，powerdevil 会枚举到 0 个亮度设备；kscreen.log 尾部："
+        tail -n 5 $LOGD/kscreen.log 2>&1
+    fi
+else
+    echo "KSCREEN-SKIP 容器里没有 kscreen_backend_launcher（缺 libkscreen 的 qt6 plugin 包？）"
+fi
 PDEV=$(ls /usr/lib/*/libexec/org_kde_powerdevil 2>/dev/null | head -1)
 [ -n "$PDEV" ] && nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE \
     ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
@@ -837,6 +865,24 @@ else
     echo "POWERDEVIL-FAIL $(date +%T): 拉起了但 6 秒内不在了，powerdevil.log 尾部："
     tail -n 6 $LOGD/powerdevil.log 2>&1
 fi
+# 亮度终检：判据是 powerdevil 自己报的亮度设备数量（`as 0` = 托盘没有滑块）。
+# 只看进程活着不算数 —— 本轮 powerdevil 一直活着，但 DisplaysDBusNames 始终是 0。
+BRC=""
+for _br in 1 2 3 4 5 6 7 8 9 10; do
+    BRC=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        runuser -u "$DRM_USER" -- busctl --user get-property org.kde.org_kde_powerdevil \
+        /org/kde/ScreenBrightness org.kde.ScreenBrightness DisplaysDBusNames 2>/dev/null)
+    case "$BRC" in
+        "as 0"|""|"as") ;;
+        *) break ;;
+    esac
+    sleep 1.5
+done
+case "$BRC" in
+    ""|*"No such"*|*Failed*) echo "BRIGHTNESS-FAIL $(date +%T): 读不到 ScreenBrightness.DisplaysDBusNames（powerdevil 的亮度对象不存在）⇒ 托盘亮度不可用";;
+    "as 0") echo "BRIGHTNESS-FAIL $(date +%T): powerdevil 报 0 个可亮度设备 ⇒ 托盘滑块不会出现（KScreen 时序问题，见上面 KSCREEN-* 行）";;
+    *) echo "BRIGHTNESS-OK $(date +%T): $BRC";;
+esac
 # 任务栏点击启动应用走 xdg-desktop-portal；不带 KDE 环境起来的话只有 gtk 后端
 nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE -u GTK_IM_MODULE \
     -u SDL_IM_MODULE -u GLFW_IM_MODULE XMODIFIERS=@im=fcitx5 \
