@@ -873,6 +873,8 @@ check_and_repair() {
     [[ -f "$(drm_target_home)/Desktop/进入DRM接管.desktop" ]]       || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("shortcuts")
     [[ -f "$SUDOERS_FILE" ]]                         || [[ "${DRM_CONF[SHORTCUTS]}" == "0" ]] || todo+=("sudoers")
     [[ -f /usr/local/bin/startanland-kde.sh ]]         || todo+=("runtime-scripts")
+    # 应用菜单入口缺了 = 开始菜单空白、任务栏图标点不开（见 baseline.sh 里同名的坑注）
+    [[ -e /etc/xdg/menus/applications.menu ]]          || todo+=("xdg-menu")
     [[ -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf ]] || todo+=("systemd-baseline")
     local _dev=""
     _dev=$(drm_adb_target 2>/dev/null) || _dev=""
@@ -903,6 +905,7 @@ check_and_repair() {
             shortcuts) install_shortcuts ;;
             sudoers) install_sudoers ;;
             runtime-scripts) install_runtime_scripts ;;
+            xdg-menu) apply_xdg_menu_baseline; rebuild_ksycoca ;;
             systemd-baseline) apply_systemd_baseline ;;
             baseline) apply_desktop_baseline ;;
             bridges) deploy_android_bridges ;;

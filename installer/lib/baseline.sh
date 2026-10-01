@@ -129,13 +129,45 @@ verify_baseline() {
 }
 
 # 总入口
+# XDG 应用菜单入口：Ubuntu 的 plasma-workspace 只发 plasma-applications.menu，
+# 而 KService 默认读的是 applications.menu —— 没有这个软链接时，应用列表整个是空的，
+# 表现为「开始菜单一片空白、任务栏图标点了没反应」，日志里每一条形如
+# `org.kde.plasma.kicker: Entry is not valid "org.kde.dolphin.desktop"`（.desktop 明明在）。
+# 这台开发机上是 09-22 手工 `ln -s` 出来的，从没进过任何脚本，也没写进工作总结，
+# 所以全新容器一直缺（10-01 在 drm 容器实测到）。
+apply_xdg_menu_baseline() {
+    local src=/etc/xdg/menus/plasma-applications.menu dst=/etc/xdg/menus/applications.menu
+    [[ -f "$src" ]] || { warn "$(msg '  没有 plasma-applications.menu，跳过应用菜单链接' '  plasma-applications.menu absent; skipping')"; return 0; }
+    if [[ -e "$dst" || -L "$dst" ]]; then
+        ok "$(msg '  应用菜单入口已在' '  XDG application menu already present')"
+    else
+        ln -s "$src" "$dst" 2>/dev/null && ok "$(msg '  已建 /etc/xdg/menus/applications.menu → plasma-applications.menu' '  Linked applications.menu')" \
+            || fail "$(msg '  建链接失败（需要 root）' '  Cannot create the link (needs root)')"
+    fi
+}
+
+# 菜单/桌面文件一变，KService 缓存必须重建：缓存是**按用户**的，所以要用桌面用户身份跑，
+# 且要 --delay 否则与 kded 里那份重复；重建失败只影响应用列表，不拦安装。
+rebuild_ksycoca() {
+    local user="${DRM_CONF[DRM_USER]:-}" exe
+    [[ -n "$user" && "$user" != "root" ]] || return 0
+    exe=$(command -v kbuildsycoca6 || command -v kbuildsycoca5 || true)
+    [[ -n "$exe" ]] || { warn "$(msg '  没找到 kbuildsycoca6，应用菜单可能要等下次登录才出来' '  kbuildsycoca6 missing')"; return 0; }
+    local uid; uid=$(id -u "$user" 2>/dev/null || echo 1000)
+    runuser -u "$user" -- env -u DISPLAY XDG_RUNTIME_DIR="/run/user/$uid" "$exe" --noincremental >/dev/null 2>&1 \
+        && ok "$(msg '  KService 缓存已重建' '  KService cache rebuilt')" \
+        || warn "$(msg '  KService 缓存重建失败（应用列表可能要重登一次才齐）' '  KService cache rebuild failed')"
+}
+
 apply_desktop_baseline() {
     head2 "$(msg '写入桌面基线（把良好容器的持久状态变成可重放步骤）' 'Apply desktop baseline')"
     apply_kwin_baseline
     apply_input_baseline
+    apply_xdg_menu_baseline
     install_runtime_scripts
     apply_systemd_baseline
     verify_baseline
+    rebuild_ksycoca
 }
 
 
