@@ -30,6 +30,8 @@ drm_conf_defaults() {
     DRM_CONF[REPO_DIR]="${REPO_DIR:-$home/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}"
     DRM_CONF[LOG_DIR]="${LOG_DIR:-$(dirname "${REPO_DIR:-$home/Documents/XiaomiPad8Pro-drm-display/droid-drm-takeover}")/logs}"
     DRM_CONF[DOWNLOAD_SOURCE]="auto"
+    # 无线 adb 的地址列表（空格分隔）。端口每次重连都会变，所以要能配置而不是写死在脚本里。
+    DRM_CONF[ADB_ENDPOINTS]="${ADB_ENDPOINTS:-}"
     DRM_CONF[UI_LANG]="auto"
     DRM_CONF[SHORTCUTS]="1"
     DRM_CONF[INSTALL_KEYBOARD]="1"
@@ -70,7 +72,7 @@ drm_conf_save() {
     {
         printf '# drm-takeover 参数（由 drm-tui 安装器生成；改这些值请用 drm-tui 的设置页，别手改）\n'
         printf '# 生成时间：%s\n\n' "$(date '+%F %T')"
-        for key in DRM_USER DRM_UID DRM_HOME REPO_DIR LOG_DIR DOWNLOAD_SOURCE UI_LANG \
+        for key in DRM_USER DRM_UID DRM_HOME REPO_DIR LOG_DIR DOWNLOAD_SOURCE UI_LANG ADB_ENDPOINTS \
                    SHORTCUTS INSTALL_KEYBOARD KWIN_X11_IM TAKEOVER_WIFI BT_BRIDGE AUDIO_BRIDGE \
                    RELAUNCH_ANLAND GPUFLOOR PERFMAX; do
             [[ -n "${DRM_CONF[$key]:-}" ]] || continue

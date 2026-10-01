@@ -46,6 +46,19 @@ PREFIX=22
 GW=172.16.30.1
 
 DEV=$(adb devices | awk '$2=="device"{print $1; exit}')
+# 本机通道（emulator-5554 一类）没有时，再试配置里的无线 adb 地址。
+# ⚠ 只在**进入接管**这一侧加：交还链（desk-stop）刻意不依赖这里——交还时 adb 不通也必须继续往下走，
+#    中止交还等于把用户锁在黑屏里。地址写在哪：/etc/drm-takeover.conf 的 ADB_ENDPOINTS。
+if [ -z "$DEV" ] && [ -n "${ADB_ENDPOINTS:-}" ]; then
+    for _ep in $ADB_ENDPOINTS; do
+        adb connect "$_ep" >/dev/null 2>&1
+        if timeout 10 adb -s "$_ep" shell getprop ro.build.version.sdk >/dev/null 2>&1; then
+            DEV="$_ep"
+            echo "ADB-BRIDGE 本机通道不可用，已改用无线地址 $_ep（端口每次重连会变，失效后更新 ADB_ENDPOINTS）"
+            break
+        fi
+    done
+fi
 [ -n "$DEV" ] || { echo "NO-ADB-DEVICE"; exit 1; }
 run() {
     # 同 desk-stop：安卓侧 adb 调用一律限时，卡死=黑屏（09-24 16:52 轮实测 wake_unlock

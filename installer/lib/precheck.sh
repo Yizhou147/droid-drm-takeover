@@ -223,6 +223,10 @@ check_disk_space() {
 # 一条命令跑完全部预检，返回失败项个数（TUI 的预检页直接调它）
 run_precheck() {
     local fails=0
+    # 预检是非交互的：只把已有通道/已配置端点试一遍，需要人工输入地址或授权时留给安装流程
+    if command -v establish_adb_bridge >/dev/null 2>&1; then
+        establish_adb_bridge 0 || true
+    fi
     detect_android_identity
     is_target_model
     case "$?" in

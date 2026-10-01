@@ -86,7 +86,9 @@ require_root() {
 # ask <提示> <默认值> —— 读一行；非交互（DRM_ASSUME_YES）时直接给默认值。
 ask() {
     local prompt="$1" default="${2:-}" reply=""
-    printf '%s [%s]: ' "$prompt" "$default"
+    # 提示必须写到 stderr：调用方普遍写 `v=$(ask …)`，命令替换会把 stdout 全吃进返回值——
+    # 提示语一起进去以后，菜单比较、配置赋值全部失真（本函数所有调用者都中招，10-01 才发现）。
+    printf '%s [%s]: ' "$prompt" "$default" >&2
     if [[ "${DRM_ASSUME_YES:-0}" == "1" ]] || ! [[ -t 0 ]]; then
         printf '%s\n' "$default"; return 0
     fi

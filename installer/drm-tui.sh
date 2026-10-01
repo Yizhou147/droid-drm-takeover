@@ -30,6 +30,7 @@ source "$LIB_DIR/conf.sh"
 source "$LIB_DIR/state.sh"
 source "$LIB_DIR/net.sh"
 source "$LIB_DIR/precheck.sh"
+source "$LIB_DIR/adbroute.sh"
 
 readonly REPO_SLUG="${DRM_REPO_SLUG:-Yizhou147/droid-drm-takeover}"
 readonly KEYBOARD_REPO_SLUG="${DRM_KEYBOARD_REPO_SLUG:-Yizhou147/droid-pc-keyboard}"
@@ -225,7 +226,18 @@ install_flow() {
     head2 "$(msg 'drm-tui 安装' 'Install drm-tui')"
     load_state
 
-    step 1 7 '识别设备与发行版' 'Identify device and distribution'
+    step 1 8 '建立 Android 调试通道（adb 桥）' 'Establish the Android debug channel (adb bridge)'
+    say "$(msg '  接管与交还的每一个动作都要经 adb 驱动 Android（停 surfaceflinger、读当前 WiFi 凭据、写背光），' \
+               '  Every takeover/hand-back action drives Android over adb (stopping surfaceflinger, reading WiFi credentials, setting backlight)','')"
+    say "$(msg '  本机通道(emulator-5554 一类)优先——它不经 WiFi 射频；没有或未授权时才走无线 adb。' \
+               '  The local channel (emulator-5554 style) is preferred because it does not depend on WiFi; wireless adb is the fallback.')"
+    if ! establish_adb_bridge 1; then
+        [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy
+        die "$(msg 'adb 通道未能建立：后续设备校验与接管都无法进行。完成授权或提供无线 adb 地址后重跑本安装。' \
+              'The adb channel could not be established; device verification and takeover are impossible. Authorize or supply a wireless adb address, then re-run.')"
+    fi
+
+    step 2 8 '识别设备与发行版' 'Identify device and distribution'
     detect_android_identity
     is_target_model
     case "$?" in
@@ -239,18 +251,18 @@ install_flow() {
               'Unsupported distribution or desktop environment: verified only on Ubuntu 26.04 + KDE.')"
     ok "$(msg "运行环境确认：$(detect_distro) / $(detect_desktop)" 'Runtime environment verified')"
 
-    step 2 7 '安装前环境检查' 'Pre-install environment checks'
+    step 3 8 '安装前环境检查' 'Pre-install environment checks'
     local fails
     fails=$(run_precheck | tail -1)
     (( ${fails:-1} == 0 )) || die "$(msg "预检未通过 $fails 项——按上面每条的单行命令补救后重跑安装" 'Precheck failed '"$fails"' item(s); fix with the single-line hints, then re-run')"
 
-    step 3 7 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
+    step 4 8 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
     pick_mirror
 
-    step 4 7 '选择要安装的组件' 'Select components'
+    step 5 8 '选择要安装的组件' 'Select components'
     ask_components
 
-    step 5 7 '安装 apt 依赖' 'Install apt dependencies'
+    step 6 8 '安装 apt 依赖' 'Install apt dependencies'
     local -a miss=()
     mapfile -t miss < <(missing_packages)
     if (( ${#miss[@]} )); then
@@ -259,11 +271,11 @@ install_flow() {
         ok "$(msg '依赖已齐全' 'Dependencies already present')"
     fi
 
-    step 6 7 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
+    step 7 8 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
     extract_release || warn "$(msg '产物取回不完整——可用"检查安装/修复"重试' 'Artifacts incomplete; retry from Check installation / repair')"
     install_keyboard_if_chosen
 
-    step 7 7 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
+    step 8 8 '写入配置、桌面快捷方式、sudoers 与 drm-tui 命令' 'Write configuration, shortcuts, sudoers and the drm-tui command'
     drm_conf_save || warn "$(msg '配置写入失败（需要 root）' 'Cannot write config (needs root)')"
     install_shortcuts
     install_sudoers
@@ -591,6 +603,15 @@ toggle_key() {
     say "$(msg "已切换 $k = ${DRM_CONF[$k]}（下次接管生效）" "Toggled $k = ${DRM_CONF[$k]} (applies next round)")"
 }
 
+set_adb_endpoints() {
+    local v
+    v=$(ask "$(msg '无线 adb 地址列表，空格分隔（回车保持当前）' 'Wireless adb addresses, space-separated (Enter keeps current)')" "${DRM_CONF[ADB_ENDPOINTS]}")
+    DRM_CONF[ADB_ENDPOINTS]="$v"
+    drm_conf_save || warn "$(msg '写入需要 root' 'Needs root to write')"
+    say "$(msg "已保存：${v:-（空）}；接管脚本会在本机通道不可用时依次 adb connect 这些地址。" \
+               "Saved: ${v:-(empty)}. Takeover tries these addresses when the local channel is unavailable.")"
+}
+
 pick_mirror() {
     head2 "$(msg '镜像站测速' 'Mirror probe')"
     detect_json_parser || die "$(msg '缺少 JSON 解析器（需要 jq 或 python3）' 'Need jq or python3')"
@@ -648,6 +669,7 @@ settings_page() {
             "$(msg "改下载源（当前 $(drm_conf_get DOWNLOAD_SOURCE)）" 'Change mirror source')" \
             "$(msg "日志目录（当前 $(drm_conf_get LOG_DIR)）" 'Log directory')" \
             "$(msg "语言（当前 $(drm_conf_get UI_LANG)）" 'Language')" \
+            "$(msg "无线 adb 地址列表（当前 $(drm_conf_get ADB_ENDPOINTS)）" 'Wireless adb endpoints (current: '"$(drm_conf_get ADB_ENDPOINTS)"')')" \
             "$(msg '返回' 'Back')"
         case "$MENU_CHOICE" in
             1) toggle_key SHORTCUTS; [[ "${DRM_CONF[SHORTCUTS]}" == "1" ]] && install_shortcuts ;;
@@ -657,7 +679,8 @@ settings_page() {
             5) pick_mirror ;;
             6) set_log_dir ;;
             7) pick_language ;;
-            8|0) return 0 ;;
+            8) set_adb_endpoints ;;
+            9|0) return 0 ;;
         esac
     done
 }
@@ -804,6 +827,7 @@ main_menu() {
                 "$(msg '▶ 进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）' 'Enter DRM takeover (Linux drives the panel)')" \
                 "$(msg '回到安卓（交还显示与网络）' 'Return to Android')" \
                 "$(msg '查看上一轮日志' 'Read the last round log')" \
+                "$(msg '重建 Android 调试通道（adb 授权 / 无线地址）' 'Re-establish the Android debug channel (adb authorization / wireless address)')" \
                 "$(msg '设置（组件 / WiFi / anland / 日志 / 语言 / 源）' 'Settings (components, WiFi, anland, log, language, mirror)')" \
                 "$(msg '检查安装 / 修复' 'Check installation / repair')" \
                 "$(msg '检查更新' 'Check for updates')" \
@@ -813,8 +837,11 @@ main_menu() {
             case "$MENU_CHOICE" in
                 1) run_takeover "$TAKEOVER_SCRIPT" "$(msg '进入 DRM 接管' 'Entering DRM takeover')" ;;
                 2) run_takeover "$STOP_SCRIPT" "$(msg '回到安卓' 'Returning to Android')" ;;
-                3) show_tail_log ;; 4) settings_page ;; 5) check_and_repair ;;
-                6) check_updates ;; 7) advanced_page ;; 8) uninstall ;; 9|0) exit 0 ;;
+                3) show_tail_log ;;
+                4) if establish_adb_bridge 1; then ok "$(msg "通道已就绪：$DRM_ADB_DEV" 'Channel ready: '"$DRM_ADB_DEV")"
+                   else [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy; fi ;;
+                5) settings_page ;; 6) check_and_repair ;;
+                7) check_updates ;; 8) advanced_page ;; 9) uninstall ;; 10|0) exit 0 ;;
             esac ;;
     esac
     sleep 0.4
