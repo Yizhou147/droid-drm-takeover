@@ -52,7 +52,7 @@ readonly REPO_SLUG="${DRM_REPO_SLUG:-Yizhou147/droid-drm-takeover}"
 readonly KEYBOARD_REPO_SLUG="${DRM_KEYBOARD_REPO_SLUG:-Yizhou147/droid-pc-keyboard}"
 readonly KWIN_REPO_SLUG="${DRM_KWIN_REPO_SLUG:-Yizhou147/droidspaces-package}"
 readonly KWIN_ROLLING_TAG="anland-kde-packages"
-readonly TUI_BIN="/usr/local/bin/drm-tui"
+readonly TUI_BIN="/usr/local/bin/drmtui"   # 用户定的名字：不带连字符
 readonly SUDOERS_FILE="/etc/sudoers.d/drm-tui"
 readonly COMPONENTS_LOCK="${DRM_COMPONENTS_LOCK:-$LIB_DIR/components.lock.json}"
 
@@ -144,7 +144,9 @@ load_state() {
 # ---- 打开时的后台自检（dstui 的姿势：界面先画，结果到了再刷）----
 # 菜单**只读结果文件**，绝不在这上面等网络：查更新走 GitHub API，未认证限速 60 次/小时，
 # 慢或者失败都不能让主菜单转不出来。
-drm_check_path() { printf '%s/.drm-tui-check' "${DRM_CONF[LOG_DIR]}"; }
+# 自检结果写在自己的运行目录，不写 LOG_DIR：LOG_DIR 常是 root 建起来的（接管脚本以 root 跑过一轮），
+# 普通用户的 TUI 一写就"权限不够"（19:5x 冒烟测试实测到）。
+drm_check_path() { printf '%s/.drm-tui-check' "${XDG_RUNTIME_DIR:-/tmp}"; }
 
 start_background_checks() {
     local out; out="$(drm_check_path)"
@@ -319,7 +321,7 @@ install_flow() {
         head2 "$(msg '安装完成' 'Done')"
     fi
     say "$(msg '以后在终端输入一行即可：' 'From now on, run this single line:')"
-    printf '  %bdrm-tui%b\n' "$COLOR_BOLD" "$COLOR_RESET"
+    printf '  %bdrmtui%b\n' "$COLOR_BOLD" "$COLOR_RESET"
     say "$(msg '接管时屏幕会熄灭数十秒，失败自动恢复，不要长按电源键。' \
                'During takeover the screen goes dark for tens of seconds; failures roll back. Do not hold the power button.')"
 }
@@ -670,6 +672,8 @@ exec bash "\$REPO/installer/drm-tui.sh" "\$@"
 ENTRY
     chmod 0755 "$tmp"
     install -m 0755 "$tmp" "$TUI_BIN" 2>/dev/null || { warn "$(msg 'drm-tui 命令安装失败' 'Cannot install drm-tui command')"; rm -f -- "$tmp"; return 1; }
+    # 旧名留一个软链：文档、脚本、用户手上已敲熟的 drm-tui 不能突然失效
+    ln -sf "$TUI_BIN" /usr/local/bin/drm-tui 2>/dev/null || true
     rm -f -- "$tmp"
     ok "$(msg "命令已安装：drm-tui（指向 ${DRM_CONF[REPO_DIR]}）" 'Command installed: drm-tui')"
 }
@@ -1054,7 +1058,7 @@ uninstall() {
     confirm "$(msg '确认卸载？' 'Confirm uninstall?')" || return 0
     local th; th="$(drm_target_home)"
     rm -f "$th/Desktop/进入DRM接管.desktop" "$th/Desktop/返回安卓.desktop"
-    rm -f "$TUI_BIN"
+    rm -f "$TUI_BIN" /usr/local/bin/drm-tui
     rm -f "$SUDOERS_FILE" 2>/dev/null || warn "$(msg 'sudoers 需要 root 才能删：sudo rm -f '"$SUDOERS_FILE" 'sudoers needs root: sudo rm -f '"$SUDOERS_FILE")"
     ok "$(msg '已卸载（接管仓库仍在原处）' 'Uninstalled; the takeover repo is untouched')"
 }
@@ -1078,7 +1082,7 @@ main_menu() {
         drm)
             # 接管轮活着：只给"回到安卓"。这里绝不能出现"再跑一轮接管"的入口。
             menu "" \
-                "$(msg '▶ 回到安卓（结束接管，交还显示与网络）' 'Return to Android (hand the panel back)')" \
+                "$(msg '回到安卓（结束接管，交还显示与网络）' 'Return to Android (hand the panel back)')" \
                 "$(msg '查看本轮日志' 'View this round log')" \
                 "$(msg '设置' 'Settings')" \
                 "$(msg '检查安装 / 修复' 'Check installation / repair')" \
@@ -1094,7 +1098,7 @@ main_menu() {
         half-dead)
             warn "$(msg '检测到安卓显示栈已下线、但桌面也没有起来：此刻多半是黑屏。' \
                    'Android display is down but no desktop came up: the screen is probably black.')"
-            menu "" "$(msg '▶ 紧急交还：把安卓拉回来' 'Emergency hand-back: bring Android back')" \
+            menu "" "$(msg '紧急交还：把安卓拉回来' 'Emergency hand-back: bring Android back')" \
                      "$(msg '查看日志找原因' 'Read the log to see why')" "$(msg '退出' 'Quit')"
             case "$MENU_CHOICE" in
                 1) run_takeover "$STOP_SCRIPT" "$(msg '紧急交还' 'Emergency hand-back')" ;;
@@ -1105,7 +1109,7 @@ main_menu() {
             warn "$(msg '上一轮接管没成功：安卓正常，但 Linux 桌面（含 anland）没在跑。' \
                    'Last round failed: Android is fine but no Linux session (anland included) is running.')"
             menu "" \
-                "$(msg '▶ 重启 anland 会话（把 Linux 桌面放回安卓里）' 'Restart the anland session')" \
+                "$(msg '重启 anland 会话（把 Linux 桌面放回安卓里）' 'Restart the anland session')" \
                 "$(msg '重试进入 DRM 接管' 'Retry DRM takeover')" \
                 "$(msg '查看上一轮日志' 'Read the last round log')" \
                 "$(msg '退出' 'Quit')"
@@ -1116,7 +1120,7 @@ main_menu() {
             esac ;;
         *)
             menu "" \
-                "$(msg '▶ 进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）' 'Enter DRM takeover (Linux drives the panel)')" \
+                "$(msg '进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）' 'Enter DRM takeover (Linux drives the panel)')" \
                 "$(msg '回到安卓（交还显示与网络）' 'Return to Android')" \
                 "$(msg '查看上一轮日志' 'Read the last round log')" \
                 "$(msg '重建 Android 调试通道（adb 授权 / 无线地址）' 'Re-establish the Android debug channel (adb authorization / wireless address)')" \
@@ -1176,7 +1180,7 @@ main() {
         --check) load_state; check_and_repair ;;
         *) load_state
            # 打开即后台并发跑预检与查更新（dstui 的姿势：菜单先画，结果到了再刷）
-           ( run_precheck >"${DRM_CONF[LOG_DIR]}/.precheck.$BASHPID" 2>&1 ) &
+           ( run_precheck >"$(drm_check_path).precheck" 2>&1 ) &
            while :; do main_menu; done ;;
     esac
 }

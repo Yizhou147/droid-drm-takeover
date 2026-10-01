@@ -56,7 +56,7 @@ Makefile                `make` 编全部（协议桩随仓库分发，无需 way
 ```
 bash installer/install-drm-tui.sh          # 全新容器的第一条命令（机型闸门 → 取产物 → 校验）
 sudo bash installer/drm-tui.sh install     # 交互式安装（测速选源 → 勾选组件 → 装依赖 → 写快捷方式）
-drm-tui                                    # 日常：进/出 DRM 接管、补装、检查更新、改设置
+drmtui                                     # 日常：进/出 DRM 接管、补装、检查更新、改设置（旧名 drm-tui 仍可用）
 ```
 
 `drm-tui` 的界面按当前状态取反：**识别到 DRM 接管态就只给「回到安卓」**，

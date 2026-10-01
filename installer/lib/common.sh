@@ -139,7 +139,7 @@ menu() {
         fi
     done
     local reply
-    reply=$(ask "$(msg '请输入编号' 'Number')" "0") || { MENU_CHOICE="0"; return 1; }
+    reply=$(ask "$(msg '请输入编号（0 = 退出）' 'Enter a number (0 = quit)')" "0") || { MENU_CHOICE="0"; return 1; }
     [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= i )) || { MENU_CHOICE="0"; return 1; }
     MENU_CHOICE="$reply"
 }

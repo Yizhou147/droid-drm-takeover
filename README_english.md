@@ -67,7 +67,7 @@ installer, and it leaves a `drm-tui` command behind**.
 ```
 bash installer/install-drm-tui.sh          # first command on a fresh container (model gate -> fetch -> verify)
 sudo bash installer/drm-tui.sh install     # interactive install (mirror probe -> components -> deps -> shortcuts)
-drm-tui                                    # daily use: enter/leave takeover, repair, updates, settings
+drmtui                                    # daily use: enter/leave takeover, repair, updates, settings (the old name drm-tui still works)
 ```
 
 The menu inverts with the detected state: **when a DRM takeover round is live it only offers
