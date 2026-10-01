@@ -306,6 +306,8 @@ install_flow() {
         'Some bridge artifacts are missing: '"${BRIDGE_DEPLOY_FAILED# }"' — audio/Bluetooth will not work; retry from Check installation / repair')"
 
     local -a gaps=()
+    local _st; _st=$(artifact_markers)
+    [[ -z "$_st" ]] || gaps+=("$(msg '产物不是最新（更新中途失败过）' 'Artifacts stale: an update failed halfway') $_st")
     (( ${DRM_KWIN_FAILED:-0} == 1 )) && gaps+=("$(msg '定制 kwin' 'patched kwin')")
     [[ -n "${BRIDGE_DEPLOY_FAILED:-}" ]] && gaps+=("$(msg '安卓侧桥产物' 'device bridges'):${BRIDGE_DEPLOY_FAILED# }")
     if (( ${#gaps[@]} )); then
@@ -555,7 +557,7 @@ Type=Application
 Name=$name
 Name[zh_CN]=$name
 Comment=$comment
-Exec=bash -c 'konsole -e sudo bash $exec_target'
+Exec=bash -c 'konsole -e sudo $exec_target'
 Terminal=false
 Icon=$icon
 Categories=System;
@@ -582,18 +584,62 @@ install_shortcuts() {
 }
 
 # ---- sudoers：让快捷方式/ TUI 免密跑那两条链 ----
+# verify_sudo_nopasswd —— 免密授权必须实测，不能只信"文件写成功了"。
+# 教训（10-01）：我把快捷方式改成 `sudo bash <脚本>`，而 sudoers 只放行直接执行那一条，
+# 结果桌面上的「回到安卓」要密码；触摸机上虚拟键盘弹不出，用户只能强制重启。
+verify_sudo_nopasswd() {
+    local repo="${DRM_CONF[REPO_DIR]}" okn=0 bad="" t
+    for t in "$repo/$TAKEOVER_SCRIPT" "$repo/$STOP_SCRIPT"; do
+        [[ -x "$t" ]] || chmod +x "$t" 2>/dev/null
+        # ⚠ 只问 sudoers 准不准（`sudo -n -l <命令>`），**绝不执行脚本本身**：跑一次就是真的接管一次桌面。
+        if sudo -n -l "$t" 2>/dev/null | grep -qiE "may run|允许"; then
+            okn=$((okn + 1))
+        else
+            bad="$bad $(basename "$t")"
+        fi
+    done
+    if [[ -z "$bad" ]]; then
+        ok "$(msg '免密提权实测通过（桌面按钮不会要密码）' 'Passwordless sudo verified for the desktop buttons')"
+    else
+        fail "$(msg "免密提权没通过：$bad —— 桌面上的「回到安卓」会弹密码提示！重跑「检查安装/修复」的 sudoers 项" \
+                   "Passwordless sudo failed for:$bad — the desktop button will prompt for a password")"
+    fi
+}
+
+# artifact_markers —— 装机/更新后逐项确认"这个修复真的在这台机器的文件里"。
+# 为什么要它：更新曾经中途失败（几十个 cp 报"权限不够"）却仍留着上一次的 INSTALLED_VERSION，
+# 于是同一版本号下半新半旧，光看版本号完全查不出来（10-01 用户实报"所有修复都没更新"）。
+artifact_markers() {
+    local repo="${DRM_CONF[REPO_DIR]}" pair miss=""
+    for pair in \
+        "desk-takeover.sh:KSCREEN-OK" \
+        "desk-takeover.sh:BRIGHTNESS-" \
+        "desk-takeover.sh:POWERDEVIL-OK" \
+        "desk-takeover.sh:AUDIOKEY-FAIL" \
+        "installer/lib/baseline.sh:apply_xdg_menu_baseline" \
+        "installer/lib/precheck.sh:bluedevil" \
+        "installer/lib/adbroute.sh:127.0.0.1:5555" \
+        "installer/drm-tui.sh:run_as_root" \
+        "installer/lib/common.sh:pause()"; do
+        local f="${pair%%:*}" m="${pair#*:}"
+        grep -qF -- "$m" "$repo/$f" 2>/dev/null || miss="$miss $f:$m"
+    done
+    printf '%s' "${miss# }"
+}
+
 install_sudoers() {
     local repo="${DRM_CONF[REPO_DIR]}" user="${DRM_CONF[DRM_USER]}"
     local tmp; tmp="$(mktemp -t drm-sudoers.XXXXXX)"
     # 只放行这两条具体路径，不给全量 root —— 写通配等于把整台机器的 root 交出去
     cat >"$tmp" <<EOF
 # drm-tui：只允许免密跑接管/交还这两条链（安装器生成，勿手改）
-$user ALL=(root) NOPASSWD: $repo/$TAKEOVER_SCRIPT, $repo/$STOP_SCRIPT
+$user ALL=(root) NOPASSWD: $repo/$TAKEOVER_SCRIPT, $repo/$STOP_SCRIPT, /usr/bin/bash $repo/$TAKEOVER_SCRIPT, /usr/bin/bash $repo/$STOP_SCRIPT, /usr/bin/bash $repo/installer/drm-tui.sh --run-round *, /usr/bin/bash $repo/installer/drm-tui.sh --update-artifacts
 EOF
     # 必须先 visudo -c 再落盘：sudoers 语法错 = 整机 sudo 不可用
     if visudo -c -f "$tmp" >/dev/null 2>&1; then
         install -m 0440 -o root -g root "$tmp" "$SUDOERS_FILE" || { warn "$(msg 'sudoers 写入失败（需 root）' 'Cannot write sudoers (needs root)')"; rm -f -- "$tmp"; return 1; }
         ok "$(msg 'sudoers 白名单已就位（免密范围只有那两条脚本）' 'sudoers whitelist installed (scoped to those two scripts only)')"
+    verify_sudo_nopasswd
     else
         fail "$(msg 'sudoers 校验不通过，已放弃写入（宁可不给免密，也不能把 sudo 写坏）' 'sudoers failed validation; not written')"
         rm -f -- "$tmp"; return 1
@@ -922,6 +968,8 @@ check_and_repair() {
     [[ -f /usr/local/bin/startanland-kde.sh ]]         || todo+=("runtime-scripts")
     # 应用菜单入口缺了 = 开始菜单空白、任务栏图标点不开（见 baseline.sh 里同名的坑注）
     [[ -e /etc/xdg/menus/applications.menu ]]          || todo+=("xdg-menu")
+    local _stale; _stale=$(artifact_markers)
+    [[ -z "$_stale" ]] || todo+=("artifacts")
     [[ -f /etc/systemd/system/systemd-udevd.service.d/zz-drm-force-udevd.conf ]] || todo+=("systemd-baseline")
     local _dev=""
     _dev=$(drm_adb_target 2>/dev/null) || _dev=""
@@ -953,6 +1001,7 @@ check_and_repair() {
             sudoers) install_sudoers ;;
             runtime-scripts) install_runtime_scripts ;;
             xdg-menu) apply_xdg_menu_baseline; rebuild_ksycoca ;;
+            artifacts) extract_release ;;
             systemd-baseline) apply_systemd_baseline ;;
             baseline) apply_desktop_baseline ;;
             bridges) deploy_android_bridges ;;
