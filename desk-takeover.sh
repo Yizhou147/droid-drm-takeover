@@ -678,6 +678,33 @@ echo "KWIN-UP kwin 已接管显示并实际提交上屏 $(date +%T)（ATOMIC 计
 #      socket，:0 可预期），真实结果由 DESKTOP-UP 之后的 XWAYLAND-OK/MISMATCH 后台核对。
 #      XAUTHORITY 不注入：kwin 起 Xwayland 不带 -auth，实测本地连接不需要 cookie。
 XWARGS=("DISPLAY=:0")
+# ---- 3a-2) 会话激活环境归一（10-02，修"菜单点开的应用打不开 / VKB 只在个别应用弹"）----
+# 菜单/收藏/桌面图标启动的应用不是 plasmashell 的直接 fork：kicker 把它们包进
+# `systemd-run --user --scope`（10-02 实测 anland 里 app-org.kde.konsole-*.scope /
+# app-zcode-*.scope 在跑），scope 进程的环境取自 **systemd --user 管理器**，而那份环境是：
+#   · 镜像 /etc/environment 自带的 IM 变量：QT_IM_MODULE/GTK_IM_MODULE=fcitx5（systemctl
+#     --user show-environment 实测；开发机 09-23 已把这几个从 /etc/environment 删掉 = §411
+#     "修 DRM 虚拟键盘的必要动作"，这份镜像又带回来了）；
+#   · WAYLAND_DISPLAY=wayland-0 —— anland 的 socket，轮里已被 kill_linux_stack 清掉（死值）。
+# ⇒ scope 里的应用连 wayland-0（死 socket）→ Wayland 应用打不开；QT_IM_MODULE=fcitx5
+#   → Qt/GTK 走 fcitx5 直连、不进 text-input → kwin 的 plasma-keyboard 永不自动弹。
+# 修法 = 学 startplasma-wayland 干的事：把 systemd+dbus 激活环境显式归一到轮值。
+# IM 变量置**空**（Qt/GTK 对空值回落默认= text-input，等同 unset）；XMODIFIERS 保留
+# @im=fcitx5（X11 中文走旁观 fcitx5 的路径不变，见 FCITX5-BYST 段）。
+# 放在 kactivitymanagerd 总线检查之后：systemd --user 若被 kill_linux_stack 带走，
+# 总线在那一刻已经重新可用（上面那步实测过），ACTENV 才不会白写。
+normalize_activation_env() {
+    if runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+            XDG_RUNTIME_DIR=$DRM_RT HOME="$DRM_HOME" \
+            dbus-update-activation-environment --systemd \
+            DISPLAY=:0 WAYLAND_DISPLAY=taketest \
+            QT_IM_MODULE= GTK_IM_MODULE= SDL_IM_MODULE= GLFW_IM_MODULE= \
+            XMODIFIERS=@im=fcitx5 2>/dev/null; then
+        echo "ACTENV-OK 激活环境已归一到轮值（DISPLAY=:0 WAYLAND_DISPLAY=taketest，QT/GTK/SDL/GLFW IM 置空）$(date +%T)"
+    else
+        echo "ACTENV-FAIL $(date +%T): systemd/dbus 激活环境没写成 ⇒ 菜单启动的应用会拿 anland 旧值（打不开/不弹键盘）"
+    fi
+}
 # ---- 3b) 上屏取证 + 强制点亮：stop 时 system_server 死前会走关机流程把屏灭掉，
 #      kwin 新 commit 不一定把 connector DPMS 拉回 On → 黑屏。主动写 dpms=0。 ----
 $DIR/bin/crtcstate > $LOGD/crtcstate-desk.log 2>&1
@@ -706,6 +733,8 @@ runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.kde.ActivityManager \
     || echo "WARN: kactivitymanagerd not on bus, plasmashell may abort (see kactivitymanagerd.log)"
+# 总线确认可用，先把激活环境归一到轮值（见上面 3a-2 注释），再起壳。
+normalize_activation_env
 # plasmashell 的启动命令必须是**可重入**的：蓝牙适配器出现得比壳晚（实测 20:32:33 起壳、
 # 20:33:22 才有 Powered: yes），bluedevil 的托盘 applet 与系统设置页在"根本没有适配器"的时刻
 # 做完判断就不会自己回读 ⇒ 托盘无图标 + 设置显示"已禁用"，而鼠标其实照连。
@@ -787,7 +816,8 @@ if [ -n "$KDPID" ]; then
     if [ "$AHITS" -gt 0 ]; then
         echo "AUDIOKEY-OK audioshortcutsservice 已映射进 kded(pid=$KDPID)，maps 命中 $AHITS 条 $(date +%T)"
     else
-        echo "AUDIOKEY-FAIL $(date +%T): kded(pid=$KDPID) 的 maps 里没有 audioshortcutsservice（loadModule 返回: $AK）⇒ 音量键大概率无效"
+        echo "AUDIOKEY-PENDING $(date +%T): kded(pid=$KDPID) 起跑窗口内未映射 audioshortcutsservice（loadModule 返回: $AK）⇒ 音频系统就绪后自动重试，看 AUDIOKEY-RETRY 行"
+        AUDIOKEY_PENDING=1
     fi
 fi
 # ---- 4c) 虚拟键盘原生弹出（09-27 §41.7）----
@@ -1527,6 +1557,31 @@ if [ "${AUDIO_BRIDGE:-0}" = 1 ] && [ "${AUDIO_ROUTE:-a}" = a ]; then
       echo "AUDIO-FEEDER FAIL $(date +%T)：feeder 没起来（查 PipeWire/默认 sink、$LOGD/hal-feeder.log）"
     fi
   fi
+fi
+
+# ---- 5g) 音量键第二次机会（10-02）：kded6 起跑时常加载不上 audioshortcutsservice
+# （loadModule 回 true 但 maps 0 命中；anland 的 kded6 反而总有——它起跑时 PipeWire/会话
+# 早已就绪，轮内 kded6 起跑时音频系统多半还没热）。4b' 窗口期未映射就到这里重发一次
+# loadModule，再给 60s maps 轮询；成不成都在日志落一行，判据永远看 maps 不看返回值。
+if [ "${AUDIOKEY_PENDING:-0}" = 1 ] && [ -n "$KDPID" ] && [ -d /proc/$KDPID ]; then
+    XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        runuser -u "$DRM_USER" -- busctl --user call org.kde.kded6 /kded org.kde.kded6 \
+        loadModule s audioshortcutsservice >/dev/null 2>&1
+    AHITS2=0
+    for _ak in $(seq 1 30); do
+        AHITS2=$(grep -c "audioshortcutsservice" /proc/$KDPID/maps 2>/dev/null)
+        AHITS2=${AHITS2:-0}
+        [ "$AHITS2" -gt 0 ] && break
+        sleep 2
+    done
+    KMIX=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        runuser -u "$DRM_USER" -- busctl --user get-property org.kde.kglobalaccel \
+        /component/kmix org.kde.kglobalaccel.Component isActive 2>/dev/null)
+    if [ "$AHITS2" -gt 0 ]; then
+        echo "AUDIOKEY-RETRY OK audioshortcutsservice 已映射进 kded(pid=$KDPID)（maps $AHITS2 条，kmix isActive=$KMIX）$(date +%T)"
+    else
+        echo "AUDIOKEY-RETRY FAIL $(date +%T): 音频就绪后重发 loadModule 仍未映射（kmix isActive=${KMIX:-无响应}）⇒ 音量键无效；下一轮取证 busctl --user tree org.kde.kded6"
+    fi
 fi
 if [ "${AUDIO_BRIDGE:-0}" != 1 ]; then
     # 明着写一行，免得以后把"轮内没声音"当成故障去查（09-30 起默认关，原因见 §2b 头注）
