@@ -1188,9 +1188,17 @@ main() {
         --takeover|--stop)
             export DRM_ASSUME_YES=1
             load_state
-            local _s="$TAKEOVER_SCRIPT"
-            [[ "${1:-}" == "--stop" ]] && _s="$STOP_SCRIPT"
-            run_takeover "$_s"
+            local _s="$TAKEOVER_SCRIPT" _a
+            _a="$(msg '进入 DRM 接管' 'Entering DRM takeover')"
+            if [[ "${1:-}" == "--stop" ]]; then
+                _s="$STOP_SCRIPT"; _a="$(msg '结束接管、把屏幕和网络交还给安卓' 'Ending takeover, handing display & network back')"
+            fi
+            # ⚠ run_takeover 的签名是 ($1=脚本 $2=动作名)，**两个参数都得给**：
+            #   少给一个时 `local script="$1" action="$2"` 在本脚本的 set -u 下直接报
+            #   `$2: unbound variable` 并退出 —— 表现就是"点快捷方式黑框一闪、没有任何文字"
+            #   （10-02 实锤：隔离副本里跑 `--takeover` 复现了这行报错）。菜单那几个调用点
+            #   一直传两个参数，所以只有新入口会中招。
+            run_takeover "$_s" "$_a"
             local _rc=$?
             # 快捷方式是从 konsole 起来的：不加这一步，出错（或跑完）时窗口会**一闪而过**，
             # 用户看不到任何文字（10-02 实况："点快捷方式闪一下黑屏，不出现任何代码"）。

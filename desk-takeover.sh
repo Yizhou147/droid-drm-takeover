@@ -619,16 +619,8 @@ for f in /etc/default/locale /etc/environment; do
         esac
     done < "$f"
 done
-# 10-02 实测（PyQt6 直接问 Qt，见《工作总结》§12.28）：轮里 kwin 的 env **没有** `XDG_CURRENT_DESKTOP`
-# ⇒ Qt 选 `style=fusion` + `iconTheme=hicolor`：
-#   · plasma-keyboard 的 shift/backspace/enter/语言/设置 这些键走 `Kirigami.Icon` ⇒ hicolor 里没有 ⇒ **键帽空白**；
-#   · 全桌 KDE 组件退成旧样式（Fusion）。
-# 只补这一个变量（实测最小集）就能回到 `breeze` + `breeze`；anland 之所以正常，是因为它的 kwin 由
-# startplasma 拉起、自带 `XDG_CURRENT_DESKTOP=KDE` 与 `KDE_FULL_SESSION=true`。
-# ⇒ 这三个是"桌面身份"变量，属功能必需，不是个人偏好，写进 DESK_ENV 让六个启动点（kwin/plasmashell/
-#   portal/kded/powerdevil/…）一起拿到。
-DESK_ENV+=(XDG_CURRENT_DESKTOP=KDE KDE_FULL_SESSION=true XDG_SESSION_TYPE=wayland)
-echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"kill_linux_stack
+echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"
+kill_linux_stack
 rm -f $DIR/takeover.ok
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     KWINWRAP_UID=$DRM_UID KWINWRAP_GID=$DRM_UID KWINWRAP_BRIGHTNESS=2048 \
@@ -677,32 +669,8 @@ echo "KWIN-UP kwin 已接管显示并实际提交上屏 $(date +%T)（ATOMIC 计
 #      （23:17:42 plasmashell → 23:17:44 Xwayland），起完 kwin 等 10s 只拿得到空，
 #      注入永远是缺省的。改成直接把 :0 写进会话环境（kill_linux_stack 已清掉遗留死
 #      socket，:0 可预期），真实结果由 DESKTOP-UP 之后的 XWAYLAND-OK/MISMATCH 后台核对。
-#      ★10-02 二次修正：**还要注入 `XAUTHORITY`**。旧注释写"kwin 起 Xwayland 不带 -auth、
-#      本地连接不需要 cookie"——实测**不成立**：Xwayland 的 argv 就是
-#      `Xwayland :0 -auth /run/user/1000/xauth_XXXX ...`（有两个会话时各有一套），
-#      不带 cookie 去连会直接 `Authorization required`（xwininfo 实测）。
-#      症状正是用户报的"X11 应用起来了（托盘图标在）但窗口出不来"。
-#      显示号与 auth 文件都从**同一个 Xwayland 进程的 argv** 里取，避免两套会话抽错。
-XDISP=""; XAUTH=""
-for _xi in $(seq 1 20); do
-    _xs=$(ls /tmp/.X11-unix/X* 2>/dev/null | head -1)
-    if [ -n "$_xs" ]; then
-        XDISP=":${_xs##*/X}"
-        for _xp in $(pgrep -x Xwayland 2>/dev/null); do
-            _cmd=$(tr '\0' ' ' < "/proc/$_xp/cmdline" 2>/dev/null)
-            case "$_cmd" in
-                *" $XDISP "*)
-                    XAUTH=$(printf '%s' "$_cmd" | sed -n 's/.*-auth \([^ ]*\).*/\1/p')
-                    [ -n "$XAUTH" ] && break ;;
-            esac
-        done
-        break
-    fi
-    sleep 0.5
-done
-XWARGS=("DISPLAY=${XDISP:-:0}")
-[ -n "$XAUTH" ] && XWARGS+=("XAUTHORITY=$XAUTH")
-echo "XWAYLAND-DISPLAY ${XDISP:-没等到 socket，回落 :0} auth=${XAUTH:-未取到}"
+#      XAUTHORITY 不注入：kwin 起 Xwayland 不带 -auth，实测本地连接不需要 cookie。
+XWARGS=("DISPLAY=:0")
 # ---- 3b) 上屏取证 + 强制点亮：stop 时 system_server 死前会走关机流程把屏灭掉，
 #      kwin 新 commit 不一定把 connector DPMS 拉回 On → 黑屏。主动写 dpms=0。 ----
 $DIR/bin/crtcstate > $LOGD/crtcstate-desk.log 2>&1
@@ -812,21 +780,7 @@ if [ -n "$KDPID" ]; then
     if [ "$AHITS" -gt 0 ]; then
         echo "AUDIOKEY-OK audioshortcutsservice 已映射进 kded(pid=$KDPID)，maps 命中 $AHITS 条 $(date +%T)"
     else
-        # 10-02 实测：前台这 6s 窗口**不够**——本容器 23:26 轮报 AUDIOKEY-FAIL，而事后
-        # /proc/<kded>/maps 有 4 条 audioshortcut 命中，模块只是加载得比探针晚。
-        # ⇒ FAIL 不能在前台窗口里下结论，改后台续查 90s 再定性（两容器都中过这个假阴性）。
-        echo "AUDIOKEY-PENDING $(date +%T): 前台 6s 未命中 kded(pid=$KDPID) maps，转后台续查 90s"
-        (
-            for _ak2 in $(seq 1 30); do
-                sleep 3
-                _h2=$(grep -c "audioshortcutsservice" /proc/"$KDPID"/maps 2>/dev/null)
-                if [ "${_h2:-0}" -gt 0 ]; then
-                    echo "AUDIOKEY-OK $(date +%T): 延后 $((_ak2 * 3))s 命中 $_h2 条（模块加载晚于前台探针窗口）"
-                    exit 0
-                fi
-            done
-            echo "AUDIOKEY-FAIL $(date +%T): 90s 内 kded(pid=$KDPID) 始终没映射 audioshortcutsservice ⇒ 音量键无人处理"
-        ) >>"$LOGD/desk-takeover.log" 2>&1 &
+        echo "AUDIOKEY-FAIL $(date +%T): kded(pid=$KDPID) 的 maps 里没有 audioshortcutsservice（loadModule 返回: $AK）⇒ 音量键大概率无效"
     fi
 fi
 # ---- 4c) 虚拟键盘原生弹出（09-27 §41.7）----
