@@ -33,11 +33,23 @@ mkdir -p "$LOGD"
 LOG=$LOGD/desk-stop.log
 
 # ---- 自脱钩：第一段在 konsole 里，只负责把真身甩出去并转发日志 ----
+# 10-02 升级（§12.39 三次静默死亡）：setsid 只换会话不换 cgroup —— 会话收尾时 logind
+# 按 cgroup 收割整棵树（16:59 返回安卓黑屏：desk-stop 自己死在蓝牙段）。先用 system 级
+# `systemd-run --scope` 把真身挪进 system.slice（输出仍转发到本终端/日志），systemd-run
+# 不可用再回落 setsid nohup。
 if [ -z "$DESKSTOP_ID" ]; then
     DESKSTOP_ID="$$.start"
     export DESKSTOP_ID
-    setsid nohup "$0" >>"$LOG" 2>&1 </dev/null &
-    CHILD=$!
+    if command -v systemd-run >/dev/null 2>&1; then
+        # --scope 会等真身跑完，所以放后台：$! 陪着整个交还过程活着，tail 锚得住
+        systemd-run --scope --collect --unit="drm-stop-$$" \
+            bash "$0" >>"$LOG" 2>&1 </dev/null &
+        CHILD=$!
+        echo "（交还已挪入 system 级 scope drm-stop-$$）"
+    else
+        setsid nohup "$0" >>"$LOG" 2>&1 </dev/null &
+        CHILD=$!
+    fi
     tail -n +1 --pid=$CHILD -f "$LOG" 2>/dev/null
     exit 0
 fi

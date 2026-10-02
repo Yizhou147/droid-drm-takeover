@@ -39,11 +39,24 @@ fi
 # ---- 自脱钩（09-23 黑屏事故教训，同 desk-stop v2）：快捷方式从桌面 konsole 进来时，
 #      konsole 是将被本脚本杀掉的 kwin 的客户端；kwin 一死 pty 关闭，前台脚本陪葬，
 #      而此时安卓已 stop → 两头全黑。主体必须 setsid 脱离终端。 ----
+# ---- 10-02 升级（§12.39 三次静默死亡事故）：setsid 只换会话不换 cgroup —— anland /
+#      DRM 会话收尾时 logind 按 cgroup 收割整棵树，setsid 过的脚本照样死（16:41/16:59/
+#      17:02 三次黑屏的直接死因）。所以先用 system 级 `systemd-run --scope` 把自己挪进
+#      system.slice：任何用户会话拆除都够不着；输出照旧落日志，终端死活无关。
+#      systemd-run 不可用再回落 setsid nohup（旧行为）。 ----
 if [ -z "$DESKSTART_ID" ]; then
     DESKSTART_ID="$$.start"
     export DESKSTART_ID
-    setsid nohup "$0" >>"$LOGD/desk-takeover.log" 2>&1 </dev/null &
-    CHILD=$!
+    if command -v systemd-run >/dev/null 2>&1; then
+        # --scope 会等真身跑完，所以放后台：$! 陪着整轮活着，tail 锚得住
+        systemd-run --scope --collect --unit="drm-round-$$" \
+            bash "$0" >>"$LOGD/desk-takeover.log" 2>&1 </dev/null &
+        CHILD=$!
+        echo "（轮已挪入 system 级 scope drm-round-$$，Ctrl+C 只退出日志跟踪、不影响轮）"
+    else
+        setsid nohup "$0" >>"$LOGD/desk-takeover.log" 2>&1 </dev/null &
+        CHILD=$!
+    fi
     tail -n 60 --pid=$CHILD -f "$LOGD/desk-takeover.log" 2>/dev/null
     exit 0
 fi
