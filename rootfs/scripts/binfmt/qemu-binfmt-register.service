@@ -1,0 +1,13 @@
+[Unit]
+Description=注册 QEMU binfmt_misc 处理程序
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target proc-sys-fs-binfmt_misc.automount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/qemu-binfmt-register.sh
+
+[Install]
+WantedBy=multi-user.target

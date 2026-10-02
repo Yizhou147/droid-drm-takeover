@@ -1,0 +1,196 @@
+name: 构建 RootFS（piano / Ubuntu-26 / KDE）
+
+# 表单只暴露四项：机型、发行版、用户名、桌面。
+# 其余构建开关一律来自 rootfs/presets/<机型>.env，不在这里出现第二次。
+# 构建文件全在 rootfs/ 子目录里；workflow 文件本身必须在仓库根的 .github/workflows/。
+#
+# 纪律：所有表单值一律经 env 传给 run 块，**不在 run 里内插 ${{ inputs.* }}**——
+# custom_username 是自由文本，内插等于把用户输入当脚本执行。
+on:
+  workflow_dispatch:
+    inputs:
+      device_model:
+        description: 机型
+        type: choice
+        required: true
+        default: piano
+        options:
+          - piano
+      build_target:
+        description: 发行版
+        type: choice
+        required: true
+        default: Ubuntu-26
+        options:
+          - Ubuntu-26
+      custom_username:
+        description: 自定义用户名（1–32 位，字母或下划线开头）
+        type: string
+        required: false
+        default: xyz
+      desktop:
+        description: 桌面
+        type: choice
+        required: true
+        default: KDE
+        options:
+          - KDE
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 ${{ inputs.build_target }} / ${{ inputs.desktop }}
+    runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        working-directory: rootfs
+    env:
+      DEVICE_MODEL: ${{ inputs.device_model }}
+      BUILD_TARGET: ${{ inputs.build_target }}
+      DESKTOP_INPUT: ${{ inputs.desktop }}
+      CUSTOM_USERNAME: ${{ inputs.custom_username }}
+    outputs:
+      file: ${{ steps.pack.outputs.file }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      version: ${{ steps.preset.outputs.version }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v5
+
+      - name: 校验表单并载入机型预设
+        id: preset
+        run: |
+          set -euo pipefail
+          [ -f "presets/$DEVICE_MODEL.env" ] || { echo "缺少机型预设 rootfs/presets/$DEVICE_MODEL.env" >&2; exit 1; }
+          [ -f "$BUILD_TARGET.Dockerfile" ] || { echo "缺少模板 rootfs/$BUILD_TARGET.Dockerfile" >&2; exit 1; }
+          [[ "$CUSTOM_USERNAME" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ]] || {
+            echo "自定义用户名必须是 1–32 个字符、以字母或下划线开头的 Linux 用户名。" >&2
+            exit 1
+          }
+          VERSION="Runs$GITHUB_RUN_NUMBER"
+          printf 'VERSION=%s\n' "$VERSION" >> "$GITHUB_ENV"
+          # 预设逐行写进 GITHUB_ENV：build_rootfs.sh 的 `: "${VAR:=默认}"` 会读到它们
+          while IFS='=' read -r key value; do
+            case "$key" in ''|'#'*) continue ;; esac
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_ENV"
+          done < "presets/$DEVICE_MODEL.env"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          # piano 必须带上打过补丁的 kwin（anland 后端 + pc-keyd 通道 C）。
+          # 补丁是 Ubuntu-26.Dockerfile 里 DISPLAY_BACKEND=anland-wayland 那条分支经
+          # install-anland-kde 装进 rootfs 的；后端一旦被改走 x11，这条静默不装，
+          # 于是 rootfs 出厂就没补丁 —— 与其事后靠安装器补，不如在这里拦住。
+          backend=$(sed -n 's/^DISPLAY_BACKEND_INPUT=//p' "presets/$DEVICE_MODEL.env")
+          if [ "$DEVICE_MODEL" = piano ] && [ "$backend" != anland-wayland ]; then
+            echo "piano 必须使用 anland-wayland 后端，否则定制 kwin 补丁不会进 rootfs（当前预设是 $backend）。" >&2
+            exit 1
+          fi
+          echo "机型 $DEVICE_MODEL 的预设开关："
+          grep -Ev '^[[:space:]]*(#|$)' "presets/$DEVICE_MODEL.env"
+
+      - name: 构建根文件系统
+        run: |
+          set -euo pipefail
+          chmod +x build_rootfs.sh
+          ./build_rootfs.sh \
+            -i "$BUILD_TARGET.Dockerfile" \
+            -v "$VERSION" \
+            -K "$DESKTOP_INPUT" \
+            -u "$CUSTOM_USERNAME"
+
+      - name: 计算校验和
+        id: pack
+        run: |
+          set -euo pipefail
+          file=$(ls "$DEVICE_MODEL"-*-Droidspaces-rootfs-*.tar.xz | head -1)
+          sha=$(sha256sum "$file" | cut -d' ' -f1)
+          printf 'file=%s\nsha256=%s\n' "$file" "$sha" >> "$GITHUB_OUTPUT"
+          echo "产物：$file"
+          echo "sha256：$sha"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.pack.outputs.file }}
+          path: rootfs/${{ steps.pack.outputs.file }}
+          retention-days: 30
+
+      # 实测判据，不看构建日志：从产物里解出 libkwin 数 PCKEYD 符号。
+      # 与 installer/drm-tui.sh 的 kwin_patch_present() 同源（不用 strings/binutils，
+      # 全新环境没有 binutils，10-01 就是被它骗成"解包成功但复检不过"）。
+      - name: 验证定制 kwin 补丁已在产物内
+        env:
+          ARTIFACT_FILE: ${{ steps.pack.outputs.file }}
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          tar -xJf "$ARTIFACT_FILE" -C "$tmp" --wildcards '*libkwin.so.6.*'
+          lib=$(find "$tmp" -name 'libkwin.so.6.*' -type f | head -1)
+          [ -n "$lib" ] || { echo "产物里找不到 libkwin，补丁无从判定。" >&2; exit 1; }
+          hits=$(grep -ac 'PCKEYD_INPUT_SOCKET' "$lib" 2>/dev/null || true)
+          [ "${hits:-0}" -gt 0 ] || {
+            echo "产物里的 kwin 是发行版原版：没有 pc-keyd 通道 C，接管轮的 X11 虚拟键盘/组合键会缺。" >&2
+            exit 1
+          }
+          echo "定制 kwin 已在产物内：$lib（PCKEYD_INPUT_SOCKET 命中 $hits 处）"
+
+      - name: 写发布说明
+        env:
+          ARTIFACT_FILE: ${{ steps.pack.outputs.file }}
+          ARTIFACT_SHA256: ${{ steps.pack.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          {
+            printf '# %s / %s / %s\n\n' "$DEVICE_MODEL" "$BUILD_TARGET" "$DESKTOP_INPUT"
+            printf -- '- 用户名：`%s`\n' "$CUSTOM_USERNAME"
+            printf -- '- 版本：`%s`\n' "$VERSION"
+            printf -- '- 产物：`%s`\n' "$ARTIFACT_FILE"
+            printf -- '- sha256：`%s`\n\n' "$ARTIFACT_SHA256"
+            printf '其余构建开关取自 `rootfs/presets/%s.env`：\n\n```\n' "$DEVICE_MODEL"
+            grep -Ev '^[[:space:]]*(#|$)' "presets/$DEVICE_MODEL.env"
+            printf '```\n'
+          } > release-notes.md
+
+      # 产物落在 rootfs/ 里，而这一步在仓库根跑，路径要带上目录名
+      - name: 创建草稿 Release
+        id: stage-release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: rootfs-${{ inputs.device_model }}-${{ steps.preset.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: "RootFS ${{ inputs.device_model }} ${{ steps.preset.outputs.version }}"
+          files: rootfs/${{ steps.pack.outputs.file }}
+          body_path: rootfs/release-notes.md
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # draft 不进 releases/latest、也不进镜像；主项目安装器现问 releases/latest，所以必须转公开。
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.stage-release.outputs.id }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_ID" in
+            ''|*[!0-9]*) echo "Release 没有返回有效 ID。" >&2; exit 1 ;;
+          esac
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false --silent
+
+      - name: 汇总
+        env:
+          ARTIFACT_FILE: ${{ steps.pack.outputs.file }}
+          ARTIFACT_SHA256: ${{ steps.pack.outputs.sha256 }}
+          RELEASE_URL: ${{ steps.stage-release.outputs.url }}
+        run: |
+          {
+            echo "## RootFS 产物"
+            echo
+            echo "| 项 | 值 |"
+            echo '|---|---|'
+            echo "| 文件 | \`$ARTIFACT_FILE\` |"
+            echo "| sha256 | \`$ARTIFACT_SHA256\` |"
+            echo "| Release | $RELEASE_URL |"
+          } >> "$GITHUB_STEP_SUMMARY"

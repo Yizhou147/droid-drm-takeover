@@ -1,0 +1,17 @@
+[Unit]
+Description=启动 Droidspaces 桌面会话
+After=network.target display-manager.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=1000
+PAMName=login
+EnvironmentFile=-/etc/environment
+ExecStart=/usr/local/bin/start-desktop-session
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
