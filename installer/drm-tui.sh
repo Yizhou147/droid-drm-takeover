@@ -1185,8 +1185,21 @@ main() {
         # 以前快捷方式是 `konsole -e sudo …/desk-takeover.sh` 裸调脚本，少了 run_takeover 里的
         # probe_adb/establish_adb_bridge 前置检查，于是本地通道不可用时回退到 conf 里可能过期的
         # 无线地址 ⇒ 快捷方式进不去接管、TUI 却能进。（DRM_ASSUME_YES 由 common.sh 的 confirm 认。）
-        --takeover) export DRM_ASSUME_YES=1; load_state; run_takeover "$TAKEOVER_SCRIPT" ;;
-        --stop)     export DRM_ASSUME_YES=1; load_state; run_takeover "$STOP_SCRIPT" ;;
+        --takeover|--stop)
+            export DRM_ASSUME_YES=1
+            load_state
+            local _s="$TAKEOVER_SCRIPT"
+            [[ "${1:-}" == "--stop" ]] && _s="$STOP_SCRIPT"
+            run_takeover "$_s"
+            local _rc=$?
+            # 快捷方式是从 konsole 起来的：不加这一步，出错（或跑完）时窗口会**一闪而过**，
+            # 用户看不到任何文字（10-02 实况："点快捷方式闪一下黑屏，不出现任何代码"）。
+            # 是终端才停住；管道/重定向（CI、我自己的 adb 采集）不受影响。
+            if [[ -t 1 && -t 0 ]]; then
+                printf '\n%s ' "$(msg '按回车关闭窗口' 'Press Enter to close')" >&2
+                read -r _ || true     # 不能用 ask()：它在 DRM_ASSUME_YES=1 时直接返回、不会等
+            fi
+            exit $_rc ;;
         *) load_state
            # 打开即后台并发跑预检与查更新（dstui 的姿势：菜单先画，结果到了再刷）
            ( run_precheck >"$(drm_check_path).precheck" 2>&1 ) &
