@@ -619,8 +619,16 @@ for f in /etc/default/locale /etc/environment; do
         esac
     done < "$f"
 done
-echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"
-kill_linux_stack
+# 10-02 实测（PyQt6 直接问 Qt，见《工作总结》§12.28）：轮里 kwin 的 env **没有** `XDG_CURRENT_DESKTOP`
+# ⇒ Qt 选 `style=fusion` + `iconTheme=hicolor`：
+#   · plasma-keyboard 的 shift/backspace/enter/语言/设置 这些键走 `Kirigami.Icon` ⇒ hicolor 里没有 ⇒ **键帽空白**；
+#   · 全桌 KDE 组件退成旧样式（Fusion）。
+# 只补这一个变量（实测最小集）就能回到 `breeze` + `breeze`；anland 之所以正常，是因为它的 kwin 由
+# startplasma 拉起、自带 `XDG_CURRENT_DESKTOP=KDE` 与 `KDE_FULL_SESSION=true`。
+# ⇒ 这三个是"桌面身份"变量，属功能必需，不是个人偏好，写进 DESK_ENV 让六个启动点（kwin/plasmashell/
+#   portal/kded/powerdevil/…）一起拿到。
+DESK_ENV+=(XDG_CURRENT_DESKTOP=KDE KDE_FULL_SESSION=true XDG_SESSION_TYPE=wayland)
+echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"kill_linux_stack
 rm -f $DIR/takeover.ok
 env KWINWRAP_HIJACK=1 KWINWRAP_FILTER=1 KWINWRAP_SECCOMP=1 \
     KWINWRAP_UID=$DRM_UID KWINWRAP_GID=$DRM_UID KWINWRAP_BRIGHTNESS=2048 \
