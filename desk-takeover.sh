@@ -140,6 +140,20 @@ stop_supplicant() {
     rm -f /run/desk-wpa.pid
 }
 kill_linux_stack() {
+    # ---- ① 幽灵会话预防（10-02，必须在一切 pkill 之前）----
+    # anland 的 Plasma 会话 = systemd --user 的 plasma-* 单元（plasma-workspace-wayland.target），
+    # kwin 单元带 Restart：如果先 pkill -9 杀 kwin（=单元失败），systemd 会**秒级把它复活成幽灵
+    # kwin**，幽灵的 Xwayland 抢先占 :0 ⇒ 所有 X11 应用画进不可见会话（16:18 轮实锤：先杀后停
+    # 时 stop 与已排队的重启同秒竞速并输掉）。走 systemctl 干净 stop（kwin 属于正常退出 ⇒ 不触发
+    # Restart），残余再由下面的 pkill 补刀。**这套单元绝不能在轮中途停**（10-02 16:0x 事故：
+    # 轮中途 stop ⇒ 宿主收回面板、安卓框架已停 ⇒ 黑屏，只能强启）；本函数也被 rollback 复用，
+    # 同样只发生在面板切换窗口内。
+    runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        XDG_RUNTIME_DIR=$DRM_RT \
+        systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null \
+        && echo "PLASMA-UNITS-STOPPED anland 的 systemd 用户会话单元已停（防幽灵 kwin 抢 display 号）$(date +%T)"
+    pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null        # 单元 stop 前后可能刚拉起的残余（轮 kwin 不经 wrapper）
+    pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null   # 同上（轮 kwin 无 --wayland-fd）
     # v2: 补全实际 cmdline 模式(v1 的 kwinwrap/socket 模式杀不掉真 kwin)，见 desk-stop.sh 头注
     pkill -9 -f "kwinwrap --out" 2>/dev/null
     pkill -9 -f "socket=taketest" 2>/dev/null
@@ -176,20 +190,6 @@ kill_linux_stack() {
     pkill -f "bt-keepalive[.]sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
-    # ---- 幽灵会话预防（10-02）----
-    # anland 的 Plasma 会话 = systemd --user 的 plasma-* 单元（plasma-workspace-wayland.target），
-    # kwin 单元带 Restart：上面把 anland kwin 杀掉后 systemd **秒级把它拉回来**（15:35 轮实测：
-    # 幽灵 kwin 抢在轮的按需 Xwayland 之前占了 :0 ⇒ 所有 X11 应用被画进这个不可见会话，
-    # 只有托盘图标经 xembedsniproxy 漏进可见桌面 = "usb-manager 有托盘无窗口"的真因）。
-    # 必须在轮起 kwin 之前的显示切换窗口里停掉这套单元；**绝不能在轮中途停**
-    # （10-02 16:0x 事故：轮中途 stop 这些单元 ⇒ 宿主收回面板、安卓框架又已停 ⇒ 黑屏，只能强启）。
-    # 此函数被 rollback 复用，停单元同样发生在面板切换窗口内，语义一致。
-    runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
-        XDG_RUNTIME_DIR=$DRM_RT \
-        systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null \
-        && echo "PLASMA-UNITS-STOPPED anland 的 systemd 用户会话单元已停（防幽灵 kwin 抢 display 号）$(date +%T)"
-    pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null        # 单元重启可能刚拉起的残余（轮 kwin 不经 wrapper）
-    pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null   # 同上（轮 kwin 无 --wayland-fd）
     rm -f $DIR/takeover.ok
 }
 rollback() {
@@ -983,7 +983,10 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         sleep 1
     done
     if [ -z "$XP" ]; then
-        echo "XWAYLAND-ABSENT $(date +%T): 轮 kwin 没起 Xwayland，X11-only 应用仍打不开（看 kwin.log）"
+        # 10-02 教训：ABSENT 不能连带跳过 pc-keyd/fcitx5（16:18 轮它们俩全没起，X11 输入链全断）。
+        # 按注入值 :0 兜底继续往下走；这两个守护自己会等 X 出现，起早无副作用。
+        echo "XWAYLAND-ABSENT $(date +%T): 轮 kwin 没起 Xwayland，X11-only 应用仍打不开（看 kwin.log）；pc-keyd/fcitx5 仍按 :0 启动"
+        XD=":0"
     else
         XD=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -E '^:[0-9]+$' | head -1)
         # kwin 按需起的 Xwayland 通常不带 -auth（本地免 cookie 可连）；带 -auth 时免 cookie

@@ -35,18 +35,23 @@ sync_one() {
     [ -e "$d/dev" ] || return 0
     n=$(basename "$d")
     case "$n" in event*) ;; *) return 0 ;; esac
-    if [ -e "/dev/input/$n" ]; then
-        chmod 666 "/dev/input/$n" 2>/dev/null   # 权限被 udev 规范成 0660 也要救
-        return 0
-    fi
     IFS=: read -r mj mn < "$d/dev"
     [ -n "$mj" ] && [ -n "$mn" ] || return 0
-    mknod "/dev/input/$n" c "$mj" "$mn" 2>/dev/null
-    chmod 666 "/dev/input/$n" 2>/dev/null
-    echo "input-node-sync: made /dev/input/$n ($mj:$mn) $(date +%T)"
-    # 关键：libinput 和我们听的是同一条 uevent 广播，它很可能**先**收到、那时节点还不存在，
-    # 于是打开失败就再也不管这个设备了。节点建好后自己补发一次 add，让它重来一遍。
-    [ -w "$d/uevent" ] && echo add > "$d/uevent" 2>/dev/null
+    if [ ! -e "/dev/input/$n" ]; then
+        mknod "/dev/input/$n" c "$mj" "$mn" 2>/dev/null
+        chmod 666 "/dev/input/$n" 2>/dev/null
+        echo "input-node-sync: made /dev/input/$n ($mj:$mn) $(date +%T)"
+    else
+        chmod 666 "/dev/input/$n" 2>/dev/null   # 权限被 udev 规范成 0660 也要救
+    fi
+    # udev 数据库条目缺失 ⇒ libinput（按 udev 枚举 seat0 设备）根本看不见它：
+    # 本容器的裸 udevd 不做冷插拔，input 类可能只有触摸屏一条合成条目（10-02 §12.38 实锤：
+    # 轮 kwin 只握 event11，音量键 event10/电源键 event2/物理键盘的事件全进不了 kwin）。
+    # 节点在也要补发 add，直到 udev 把它登记进 /run/udev/data（自限：登记后不再发，
+    # 避免设备在 libinput 里反复插拔）。
+    if [ ! -e "/run/udev/data/c$mj:$mn" ]; then
+        [ -w "$d/uevent" ] && echo add > "$d/uevent" 2>/dev/null
+    fi
 }
 
 # 轮询而不是只挂 monitor：monitor 只给"通知"，而补节点/补权限/补发 uevent 必须我们在
