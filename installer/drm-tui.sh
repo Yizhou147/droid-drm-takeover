@@ -554,14 +554,14 @@ kwin_patch_present() {
 
 # ---- 桌面快捷方式 ----
 write_desktop_file() {
-    local name="$1" exec_target="$2" icon="$3" comment="$4" file="$5"
+    local name="$1" cmdline="$2" icon="$3" comment="$4" file="$5"
     cat >"$file" <<EOF
 [Desktop Entry]
 Type=Application
 Name=$name
 Name[zh_CN]=$name
 Comment=$comment
-Exec=bash -c 'konsole -e sudo $exec_target'
+Exec=bash -c 'konsole -e $cmdline'
 Terminal=false
 Icon=$icon
 Categories=System;
@@ -580,8 +580,11 @@ install_shortcuts() {
     cp -f "$src/$ICON_ENTER" "$src/$ICON_BACK" "$icondir/" 2>/dev/null || true
     local enter_icon="$icondir/$ICON_ENTER" back_icon="$icondir/$ICON_BACK"
     [[ -f "$enter_icon" ]] || { enter_icon="video-display"; back_icon="computer"; }
-    write_desktop_file "进入DRM接管" "$repo/$TAKEOVER_SCRIPT" "$enter_icon" "停掉安卓，接管显示/WiFi，起 Plasma 桌面" "$deskdir/进入DRM接管.desktop"
-    write_desktop_file "返回安卓" "$repo/$STOP_SCRIPT" "$back_icon" "结束 DRM 接管，把屏幕/网络还给安卓" "$deskdir/返回安卓.desktop"
+    # 快捷方式走 **TUI 的非交互入口**，不再裸调脚本（10-02 用户要求"点快捷方式 = TUI 进接管"）：
+    # 裸调缺 run_takeover 的 adb 前置检查（probe_adb/establish_adb_bridge），本地通道不可用时会
+    # 回退到 conf 里可能过期的无线地址 ⇒ 快捷方式进不去、TUI 能进。sudo 提权由 TUI 自己负责。
+    write_desktop_file "进入DRM接管" "/usr/local/bin/drmtui --takeover" "$enter_icon" "停掉安卓，接管显示/WiFi，起 Plasma 桌面" "$deskdir/进入DRM接管.desktop"
+    write_desktop_file "返回安卓" "/usr/local/bin/drmtui --stop" "$back_icon" "结束 DRM 接管，把屏幕/网络还给安卓" "$deskdir/返回安卓.desktop"
     # root 写的文件必须 chown 回桌面用户，否则 Plasma 读不到、快捷方式显示不出来
     chown -R "$user:" "$deskdir" "$icondir" 2>/dev/null || true
     ok "$(msg "桌面快捷方式已写入 $deskdir" 'Shortcuts written to '"$deskdir")"
@@ -1178,6 +1181,12 @@ main() {
         --update-artifacts) load_state; extract_release; drm_conf_save; exit $? ;;
         --run-round) shift; load_state; run_round "$1" ;;
         --check) load_state; check_and_repair ;;
+        # 非交互入口：桌面快捷方式必须走**和 TUI 完全同一条路**（10-02 用户要求）。
+        # 以前快捷方式是 `konsole -e sudo …/desk-takeover.sh` 裸调脚本，少了 run_takeover 里的
+        # probe_adb/establish_adb_bridge 前置检查，于是本地通道不可用时回退到 conf 里可能过期的
+        # 无线地址 ⇒ 快捷方式进不去接管、TUI 却能进。（DRM_ASSUME_YES 由 common.sh 的 confirm 认。）
+        --takeover) export DRM_ASSUME_YES=1; load_state; run_takeover "$TAKEOVER_SCRIPT" ;;
+        --stop)     export DRM_ASSUME_YES=1; load_state; run_takeover "$STOP_SCRIPT" ;;
         *) load_state
            # 打开即后台并发跑预检与查更新（dstui 的姿势：菜单先画，结果到了再刷）
            ( run_precheck >"$(drm_check_path).precheck" 2>&1 ) &
