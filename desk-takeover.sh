@@ -204,6 +204,29 @@ kill_linux_stack() {
     pkill -f "xdg-desktop-portal" 2>/dev/null
     pkill -f "aa-feeder.sh" 2>/dev/null     # A 路容器喂流器（安卓侧 argsloop 由 rollback/desk-stop 各自 run pkill）
     pkill -f "bt-keepalive[.]sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
+    # ---- ② 清 display_daemon 的重拉（10-02 深夜）----
+    # 宿主 display_daemon 在 anland 死后 ~2s 整体重拉 anland（15:35/16:18/17:35 三轮实锤，
+    # 每轮恰一次）。重拉会话的 kded6/kglobalacceld 会占走 org.kde.kded6/org.kde.kglobalaccel
+    # 总线名 ⇒ 轮内音量/快捷键链路被污染（AUDIOKEY-RETRY FAIL 的真因）。等它拉完（5s）再清一次。
+    sleep 5
+    pkill -9 -f "startplasma-wayland" 2>/dev/null
+    pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null
+    pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null
+    pkill -9 -x Xwayland 2>/dev/null
+    pkill -9 -x kded6 2>/dev/null
+    pkill -9 -f plasmashell 2>/dev/null
+    pkill -9 -x fcitx5 2>/dev/null
+    rm -f /tmp/.X11-unix/X* /tmp/.X11-lock /tmp/.X*-lock 2>/dev/null
+    sleep 2
+    if pgrep -f "startplasma-wayland" >/dev/null 2>&1; then
+        pkill -9 -f "startplasma-wayland" 2>/dev/null
+        pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null
+        pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null
+        pkill -9 -x Xwayland 2>/dev/null
+        echo "GHOST-RE-RESPAWN $(date +%T): display_daemon 又拉了一轮，已再清（此行反复出现 ⇒ daemon 循环重拉，需回头改方案）"
+    else
+        echo "GHOST-CLEAN $(date +%T): display_daemon 的重拉已清，总线名归还轮内组件"
+    fi
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
     rm -f $DIR/takeover.ok
@@ -657,6 +680,10 @@ done
 # 只补这一点（实测最小集）就能回到 `breeze` + `breeze`；anland 正常是因为它的 kwin 由 startplasma 拉起、自带这些。
 # 属"桌面身份"，功能必需、非个人偏好；写进 DESK_ENV 让六个启动点共用。
 DESK_ENV+=(XDG_CURRENT_DESKTOP=KDE KDE_FULL_SESSION=true XDG_SESSION_TYPE=wayland)
+# 10-02 深夜：zcode(Electron) 在有 WAYLAND_DISPLAY 的环境里被 auto-ozone 选成 Wayland
+# ⇒ XTEST/XIM 输入链全部失效（§41.5/§41.12 的 X11 输入方案前提是 X11 客户端）。
+# 显式钉回 X11（§41.6 同一开关的 x11 向；anland 不受影响——DESK_ENV 仅接管轮使用）。
+DESK_ENV+=(ELECTRON_OZONE_PLATFORM_HINT=x11)
 echo "DESK-ENV 补 ${#DESK_ENV[@]} 条: ${DESK_ENV[*]:-（空！/etc 那两份文件读不到，界面会继续变英文+软件渲染）}"
 kill_linux_stack
 rm -f $DIR/takeover.ok
@@ -846,6 +873,9 @@ fi
 # 按键到达后无人处理（物理键和 xdotool 注入一起哑）。显式 loadModule 修复，实测音量随按键变化。
 if [ -n "$KDPID" ]; then
     sleep 2
+    KDOWNER=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        runuser -u "$DRM_USER" -- busctl --user status org.kde.kded6 2>/dev/null | sed -n 's/^PID=//p' | head -1)
+    echo "KDED6-OWNER org.kde.kded6 属主 pid=${KDOWNER:-无}（脚本拉的 kded=$KDPID；不一致 ⇒ 名字被重拉会话占用）$(date +%T)"
     AK=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         runuser -u "$DRM_USER" -- busctl --user call org.kde.kded6 /kded org.kde.kded6 \
         loadModule s audioshortcutsservice 2>&1)
@@ -1002,9 +1032,11 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
 #      才出现，XWAYLAND-PENDING 属正常）。10-02 教训：pgrep 第一条 Xwayland 可能是
 #      display_daemon 重拉的 anland 幽灵的（它抢 :0），所以仍按父进程认亲。
 (
+    # 先主动当一个客户端：触发按需 Xwayland 真正 spawn（否则它要等第一个应用连入）
+    runuser -u "$DRM_USER" -- env DISPLAY="$XD" XDG_RUNTIME_DIR=$DRM_RT timeout 5 xdpyinfo >/dev/null 2>&1
     KP2=$(pgrep -P $KPID -x kwin_wayland | head -1)
     [ -z "$KP2" ] && KP2=$KPID
-    for i in $(seq 1 90); do
+    for i in $(seq 1 30); do
         XP=""
         for p in $(pgrep -x Xwayland); do
             [ "$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')" = "$KP2" ] && { XP=$p; break; }
@@ -1023,6 +1055,16 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
                 xhost +si:localuser:"$DRM_USER" >/dev/null 2>&1 \
                 && echo "XAUTH-GRANT OK auth=$XAF localuser 授权已加 $(date +%T)"
         fi
+        # ---- X11 应用缩放（10-02 深夜）：anland 的 Xwayland 根窗口带 Xft.dpi=Scale×96
+        # （实测 Xft.dpi: 192），X11 应用靠它放大；轮的按需 Xwayland 没人写 ⇒ 96dpi 极小。
+        # 这里按 kwinrc 的 Scale 现算现写（与 dev 容器同款配置等价）。
+        XSCALE=$(grep -A1 '\[Xwayland\]' "$DRM_HOME/.config/kwinrc" 2>/dev/null | grep -o 'Scale=[0-9]*' | cut -d= -f2 | head -1)
+        XSCALE=${XSCALE:-1}
+        XDPI=$((XSCALE * 96))
+        printf 'Xft.dpi: %s\n' "$XDPI" | runuser -u "$DRM_USER" -- env DISPLAY="$XD" XDG_RUNTIME_DIR=$DRM_RT \
+            xrdb -merge - 2>/dev/null \
+            && echo "XFTDPI-OK display=$XD Xft.dpi=$XDPI（X11 应用缩放=Scale $XSCALE）$(date +%T)" \
+            || echo "XFTDPI-FAIL $(date +%T): xrdb 没写成（X11 应用会偏小；手工等价：printf 'Xft.dpi: $XDPI' | DISPLAY=$XD xrdb -merge -）"
     fi
 # ---- pc-keyd v2（组合键守护，XTEST/EIS 后端）----
         # 必须 kwin+Xwayland 就绪后启动（连接 X :0 注入）；以会话用户运行（root 的 X 连接
