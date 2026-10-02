@@ -18,7 +18,10 @@ declare -A DRM_CONF=()
 # 键 = 名称|默认值来源|说明（中文给 TUI 显示用）
 drm_conf_defaults() {
     local user="" uid="" home=""
-    user="${SUDO_USER:-$(id -un)}"
+    # DRM_PREINSTALL_USER 只给 rootfs 镜像构建期用（droid-rootfs-builder --preinstall-offline）：
+    # 那会儿是 root 且没有 SUDO_USER/logname，按原推导会把装机目标算成 root、
+    # 快捷方式与仓库目录全落进 /root，出厂镜像里那个真实用户（如 xyz）什么也没有。
+    user="${DRM_PREINSTALL_USER:-${SUDO_USER:-$(id -un)}}"
     [[ "$user" == "root" ]] && user="$(logname 2>/dev/null || id -un)"
     uid="$(id -u "$user" 2>/dev/null || echo 1000)"
     home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"

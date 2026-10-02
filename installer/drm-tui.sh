@@ -326,6 +326,62 @@ install_flow() {
                'During takeover the screen goes dark for tens of seconds; failures roll back. Do not hold the power button.')"
 }
 
+# ---- 镜像构建期预装（--preinstall-offline，给 droid-rootfs-builder 用）----
+# 目的：出厂 rootfs 自带**已经装好**的 drmtui，而不是"镜像里躺着一个还没跑过的安装器"。
+# 跑的是 install_flow 里不依赖真机的那几步：选源、apt 依赖、接管产物、
+# 配置/快捷方式/sudoers/drmtui 命令、桌面基线。
+# 跳过的三步在构建环境里根本做不了，也不假装做了：
+#   ① 建立 adb 通道  ② 机型闸门（要读 ro.product.device==piano）  ⑩ 安卓侧桥产物（要往 /data/local/tmp push）。
+# 这三步由设备上第一次跑 `drmtui` → 「检查安装 / 修复」补齐（那些项 check_and_repair 已经会自己判）。
+preinstall_offline_flow() {
+    require_root "$SCRIPT_SRC" --preinstall-offline "$@"
+    export DRM_ASSUME_YES=1
+    head2 "$(msg '镜像构建期预装（无设备）' 'Image-build preinstall (no device)')"
+    load_state
+
+    step 1 5 '选择下载源（按实测吞吐）' 'Select download source by measured throughput'
+    pick_mirror || warn "$(msg '测速未成功，沿用当前下载源' 'Probe failed; keeping the current source')"
+
+    step 2 5 '安装 apt 依赖' 'Install apt dependencies'
+    local -a miss=()
+    mapfile -t miss < <(missing_packages)
+    local -a extra=(); mapfile -t extra < <(baseline_extra_packages)
+    local e
+    for e in "${extra[@]}"; do
+        dpkg -l "$e" 2>/dev/null | awk '$2=="ii"{f=1} END{exit f?0:1}' || miss+=("$e")
+    done
+    if (( ${#miss[@]} )); then
+        install_debs_with_audit "${miss[@]}" || die "$(msg 'apt 安装失败' 'apt install failed')"
+    else
+        ok "$(msg '依赖已齐全' 'Dependencies already present')"
+    fi
+
+    step 3 5 '获取接管产物并校验 sha256' 'Fetch takeover artifacts and verify sha256'
+    # 取不回产物就没有可运行的接管脚本，镜像等于残缺 ⇒ 这里必须硬失败，不能 warn 过去
+    extract_release || die "$(msg '接管产物取不回：镜像里不会有一套能用的 drmtui' 'Cannot fetch takeover artifacts')"
+    install_keyboard_if_chosen || warn "$(msg '输入法未装好：首次运行时会由「检查安装 / 修复」补' 'Keyboard install failed; repair will retry it on the device')"
+
+    step 4 5 '写入配置、桌面快捷方式、sudoers 与 drmtui 命令' 'Write config, shortcuts, sudoers and the drmtui command'
+    drm_conf_save || die "$(msg '配置写入失败' 'Cannot write config')"
+    install_shortcuts
+    install_sudoers
+    install_tui_entry
+
+    step 5 5 '写入桌面基线（kwinrc / 输入法 / 运行期脚本 / systemd）' 'Apply the desktop baseline'
+    apply_desktop_baseline
+
+    # 定制 kwin 不在这里装：rootfs 构建期已由 anland-kde 那条链把它装上（见 droid-rootfs-builder README）。
+    # 这里只做实测，缺了就报，免得以为预装成功。
+    if [[ "${DRM_CONF[KWIN_X11_IM]:-0}" == "1" ]] && ! kwin_patch_present; then
+        warn "$(msg 'libkwin 里没有补丁符号：anland-kde 的定制 kwin 没进这个 rootfs' 'Patched kwin is not in this rootfs')"
+    fi
+
+    say "$(msg '设备上还剩三步要补（构建环境做不了）：adb 通道、机型闸门、安卓侧桥产物' \
+               'Three device-side steps remain: adb channel, model gate, Android-side bridges')"
+    say "$(msg '首次运行 drmtui 的「检查安装 / 修复」会自动列出并补齐。' \
+               'The first `drmtui` run offers Check installation / repair to finish them.')"
+}
+
 # 需要 root 的动作一律走这里：拼 sudo + bash + 自身路径，参数原样带过去。
 # 为什么显式写 bash：release tar 里的 installer/*.sh 是 0644（CI 打包没给执行位），
 # `sudo /path/drm-tui.sh` 会直接报"找不到命令"（15:26 实测）。
@@ -1169,6 +1225,8 @@ main() {
     init_colors
     case "${1:-}" in
         install) shift; install_flow "$@" ;;
+        # rootfs 镜像构建期专用：只跑不依赖真机的步骤（见 preinstall_offline_flow 注）。
+        --preinstall-offline) shift; preinstall_offline_flow "$@" ;;
         --version) say "drm-tui $VERSION" ;;
         --check-kwin) load_state; check_kwin_patch ;;
         --update-artifacts) load_state; extract_release; drm_conf_save; exit $? ;;
