@@ -204,29 +204,34 @@ kill_linux_stack() {
     pkill -f "xdg-desktop-portal" 2>/dev/null
     pkill -f "aa-feeder.sh" 2>/dev/null     # A 路容器喂流器（安卓侧 argsloop 由 rollback/desk-stop 各自 run pkill）
     pkill -f "bt-keepalive[.]sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
-    # ---- ② 清 display_daemon 的重拉（10-02 深夜）----
-    # 宿主 display_daemon 在 anland 死后 ~2s 整体重拉 anland（15:35/16:18/17:35 三轮实锤，
-    # 每轮恰一次）。重拉会话的 kded6/kglobalacceld 会占走 org.kde.kded6/org.kde.kglobalaccel
-    # 总线名 ⇒ 轮内音量/快捷键链路被污染（AUDIOKEY-RETRY FAIL 的真因）。等它拉完（5s）再清一次。
-    sleep 5
-    pkill -9 -f "startplasma-wayland" 2>/dev/null
-    pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null
-    pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null
-    pkill -9 -x Xwayland 2>/dev/null
-    pkill -9 -x kded6 2>/dev/null
-    pkill -9 -f plasmashell 2>/dev/null
-    pkill -9 -x fcitx5 2>/dev/null
-    rm -f /tmp/.X11-unix/X* /tmp/.X11-lock /tmp/.X*-lock 2>/dev/null
-    sleep 2
-    if pgrep -f "startplasma-wayland" >/dev/null 2>&1; then
+    # ---- ② 清 display_daemon 的重拉（10-02 深夜；21:3x 改循环）----
+    # 宿主 display_daemon 在 anland 死后 ~2s 整体重拉 anland（15:35/16:18/17:35 三轮实锤），
+    # drm2 上实测会**拉两波**：21:31 usb-manager 连 :0 被 auth 拒 = 第二波重拉的 Xwayland
+    # 又抢回了 :0（第一波 21:29:49 已清）。重拉会话还占走总线名（音量/快捷键污染）。
+    # ⇒ 清理改循环：清完等 5s 再查，复活就再清，最多 4 轮；:0 稳定干净才放行。
+    GHOST_ROUNDS=0
+    while [ "$GHOST_ROUNDS" -lt 4 ]; do
+        sleep 5
         pkill -9 -f "startplasma-wayland" 2>/dev/null
         pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null
         pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null
         pkill -9 -x Xwayland 2>/dev/null
-        echo "GHOST-RE-RESPAWN $(date +%T): display_daemon 又拉了一轮，已再清（此行反复出现 ⇒ daemon 循环重拉，需回头改方案）"
-    else
-        echo "GHOST-CLEAN $(date +%T): display_daemon 的重拉已清，总线名归还轮内组件"
-    fi
+        pkill -9 -x kded6 2>/dev/null
+        pkill -9 -f plasmashell 2>/dev/null
+        pkill -9 -x fcitx5 2>/dev/null
+        rm -f /tmp/.X11-unix/X* /tmp/.X11-lock /tmp/.X*-lock 2>/dev/null
+        sleep 3
+        GHOST_ROUNDS=$((GHOST_ROUNDS + 1))
+        if pgrep -f "startplasma-wayland" >/dev/null 2>&1; then
+            echo "GHOST-RESPWN#$GHOST_ROUNDS $(date +%T): display_daemon 又重拉，继续清（>4 轮则需回头改方案）"
+        else
+            echo "GHOST-CLEAN $(date +%T): 连续 $GHOST_ROUNDS 轮复查无复活，:0 与总线名已归还轮内组件"
+            break
+        fi
+    done
+    # 收尾兜底：无论循环如何退出，轮起 kwin 前必须保证 :0 无主
+    pkill -9 -x Xwayland 2>/dev/null
+    rm -f /tmp/.X11-unix/X* 2>/dev/null
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
     rm -f $DIR/takeover.ok
@@ -727,20 +732,28 @@ if [ "$KWIN_OK" != 1 ]; then
     rollback "no atomic commit seen: kwin is up but nothing was scanned out (black screen guard)"
 fi
 echo "KWIN-UP kwin 已接管显示并实际提交上屏 $(date +%T)（ATOMIC 计数 $(grep -c ATOMIC $LOGD/kwinatomic.log)，正在起桌面组件）"
-# ---- 3a-0) 轮 kwin 绑定的 X display 探测（10-02 晚定稿，§12.41）----
+# ---- 3a-0) 轮 kwin 绑定的 X display 探测（10-02 晚定稿，§12.41；21:3x 换 /proc 实现）----
 # display_daemon（宿主保活）会在 anland 死后 ~2s 整体重拉 anland（17:35:00 实锤：stop 后 2s
 # startplasma 再起），重拉的 anland kwin 的 Xwayland 抢走 :0（带 -auth）。而轮 kwin 的
-# Xwayland 是**按需**起的：kwin 先把下一个空闲 display 的 socket 绑在自己 fd 上
-# （/tmp/.X11-unix/XN，lsof 实锤 17:35 轮 kwin 握着 X1），第一个客户端连上来才 spawn 进程。
-# ⇒ :0 属于幽灵、写死必错；整轮的 display 号一律从轮 kwin 的绑定 socket 现场探测。
+# Xwayland 是**按需**起的：kwin 先把下一个空闲 display 的 socket 绑在自己 fd 上，
+# 第一个客户端连上来才 spawn 进程。⇒ 写死 :0 必错；整轮 display 号从轮 kwin 的绑定现场探测。
+# 21:31 drm2 实锤：lsof 在这台镜像上拿不到 kwin 的 abstract socket（探测恒空、回落 :0，
+# usb-manager 撞幽灵被 auth 拒）。改为纯 /proc：轮 kwin 的 fd → socket inode → /proc/net/unix
+# 反查路径（@ 前缀 = abstract，两种形态都认）。零外部依赖、root 必可见。
 KP2=$(pgrep -P $KPID -x kwin_wayland | head -1); KP2=${KP2:-$KPID}
 XDISCOVER=""
-for _i in $(seq 1 10); do
-    XDISCOVER=$(lsof -p "$KP2" 2>/dev/null | grep -o "/tmp/.X11-unix/X[0-9]*" | head -1)
+for _i in $(seq 1 15); do
+    for _fd in /proc/$KP2/fd/*; do
+        _lk=$(readlink "$_fd" 2>/dev/null) || continue
+        case "$_lk" in socket:\[*\]) _ino=${_lk#socket:[}; _ino=${_ino%]} ;; *) continue ;; esac
+        XDISCOVER=$(grep -a '^[0-9a-f]*:' /proc/net/unix 2>/dev/null | awk -v i="$_ino" '$7==i {print $8}' \
+            | grep -oE '@?/tmp/.X11-unix/X[0-9]+' | head -1)
+        [ -n "$XDISCOVER" ] && break
+    done
     [ -n "$XDISCOVER" ] && break
     sleep 1
 done
-XNUM=$(basename "${XDISCOVER:-X0}" | tr -d X)
+XNUM=$(echo "$XDISCOVER" | grep -oE '[0-9]+$')
 XNUM=${XNUM:-0}
 XWARGS=("DISPLAY=:${XNUM}")
 XD=":${XNUM}"
@@ -1056,6 +1069,10 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
 #      才出现，XWAYLAND-PENDING 属正常）。10-02 教训：pgrep 第一条 Xwayland 可能是
 #      display_daemon 重拉的 anland 幽灵的（它抢 :0），所以仍按父进程认亲。
 (
+    # 缩放值优先 conf 的 DRM_X11_SCALE（默认 2，与良好容器一致）；不读 kwinrc：
+    # drm2 实测 baseline 写的 Scale=2 会被 kwin 运行时按 output scale 同步写回 1。
+    XSCALE=${DRM_X11_SCALE:-2}
+    XDPI=$((XSCALE * 96))
     # 先主动当一个客户端：触发按需 Xwayland 真正 spawn（否则它要等第一个应用连入）
     runuser -u "$DRM_USER" -- env DISPLAY="$XD" XDG_RUNTIME_DIR=$DRM_RT timeout 5 xdpyinfo >/dev/null 2>&1
     KP2=$(pgrep -P $KPID -x kwin_wayland | head -1)
@@ -1070,6 +1087,25 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
     done
     if [ -z "$XP" ]; then
         echo "XWAYLAND-PENDING $(date +%T): display=$XD 的 socket 已由轮 kwin 绑定，尚无客户端连入 ⇒ 还没按需 spawn（第一个 X11 应用打开时就会出现）"
+        # 按需 spawn 由"用户点第一个 X11 应用"触发，Xft.dpi 必须在那一刻之后立刻写入，
+        # 否则第一个应用按 96dpi 渲染（usb-manager 极小）。起个后台守望：等 Xwayland
+        # （父进程认亲）出现，出现即写 Xft.dpi（2s 一圈，最长 5 分钟，随轮生死）。
+        (
+            for _w in $(seq 1 150); do
+                XPW=""
+                for p in $(pgrep -x Xwayland); do
+                    [ "$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')" = "$KP2" ] && { XPW=$p; break; }
+                done
+                if [ -n "$XPW" ]; then
+                    printf 'Xft.dpi: %s\n' "$XDPI" | runuser -u "$DRM_USER" -- env DISPLAY="$XD" XDG_RUNTIME_DIR=$DRM_RT \
+                        xrdb -merge - 2>/dev/null \
+                        && echo "XFTDPI-LATE-OK display=$XD Xft.dpi=$XDPI（按需 spawn 后补写）$(date +%T)" \
+                        || echo "XFTDPI-LATE-FAIL $(date +%T)"
+                    break
+                fi
+                sleep 2
+            done
+        ) >> $LOGD/desk-takeover.log 2>&1 &
     else
         XD2=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -E '^:[0-9]+$' | head -1)
         echo "XWAYLAND-OK display=$XD2 pid=$XP（轮注入 $XD）$(date +%T)"
@@ -1082,11 +1118,6 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         # ---- X11 应用缩放（10-02 深夜）：anland 的 Xwayland 根窗口带 Xft.dpi=Scale×96
         # （实测 Xft.dpi: 192），X11 应用靠它放大；轮的按需 Xwayland 没人写 ⇒ 96dpi 极小。
         # 这里按 kwinrc 的 Scale 现算现写（与 dev 容器同款配置等价）。
-        # 缩放值优先 conf 的 DRM_X11_SCALE（默认 2，与良好容器一致）；不再读 kwinrc：
-        # drm2 实测 baseline 写的 Scale=2 会被 kwin 运行时同步成 1（output scale=1 时写回），
-        # 读它 = 时对时错。conf 显式配的值才是意图。
-        XSCALE=${DRM_X11_SCALE:-2}
-        XDPI=$((XSCALE * 96))
         printf 'Xft.dpi: %s\n' "$XDPI" | runuser -u "$DRM_USER" -- env DISPLAY="$XD" XDG_RUNTIME_DIR=$DRM_RT \
             xrdb -merge - 2>/dev/null \
             && echo "XFTDPI-OK display=$XD Xft.dpi=$XDPI（X11 应用缩放=Scale $XSCALE）$(date +%T)" \
