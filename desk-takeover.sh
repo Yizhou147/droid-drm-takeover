@@ -678,7 +678,19 @@ echo "KWIN-UP kwin 已接管显示并实际提交上屏 $(date +%T)（ATOMIC 计
 #      注入永远是缺省的。改成直接把 :0 写进会话环境（kill_linux_stack 已清掉遗留死
 #      socket，:0 可预期），真实结果由 DESKTOP-UP 之后的 XWAYLAND-OK/MISMATCH 后台核对。
 #      XAUTHORITY 不注入：kwin 起 Xwayland 不带 -auth，实测本地连接不需要 cookie。
-XWARGS=("DISPLAY=:0")
+# ★10-02 修正：**显示号不能写死 :0**。我们不传 `--xwayland-display`，号是 kwin 运行时自己挑的；
+#   测试容器实测 kwin 挑到 **:1**，而会话注入 `DISPLAY=:0` ⇒ 脚本自己的判据打出
+#   `XWAYLAND-MISMATCH display=:1 但会话注入的是 :0 → 应用连不上`，X11 应用（星火/ZCode/Steam 之流）全打不开。
+#   ⇒ 以 `/tmp/.X11-unix/X<N>` 出现的那个 socket 为准（kill_linux_stack 已清过残留，此刻出现的必是本轮新起的），
+#   最多等 10s。取不到才回落 :0，并把实际值记进日志。
+XDISP=""
+for _xi in $(seq 1 20); do
+    _xs=$(ls /tmp/.X11-unix/X* 2>/dev/null | head -1)
+    [ -n "$_xs" ] && { XDISP=":${_xs##*/X}"; break; }
+    sleep 0.5
+done
+XWARGS=("DISPLAY=${XDISP:-:0}")
+echo "XWAYLAND-DISPLAY ${XDISP:-没等到 socket，回落 :0} $(date +%T)"
 # ---- 3b) 上屏取证 + 强制点亮：stop 时 system_server 死前会走关机流程把屏灭掉，
 #      kwin 新 commit 不一定把 connector DPMS 拉回 On → 黑屏。主动写 dpms=0。 ----
 $DIR/bin/crtcstate > $LOGD/crtcstate-desk.log 2>&1
