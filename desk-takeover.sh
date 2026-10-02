@@ -176,6 +176,20 @@ kill_linux_stack() {
     pkill -f "bt-keepalive[.]sh" 2>/dev/null  # 上一轮残留的蓝牙看门狗（它会在下一轮配置生效前乱拉桥）
     sleep 1
     fuser -k /dev/dri/card0 2>/dev/null
+    # ---- 幽灵会话预防（10-02）----
+    # anland 的 Plasma 会话 = systemd --user 的 plasma-* 单元（plasma-workspace-wayland.target），
+    # kwin 单元带 Restart：上面把 anland kwin 杀掉后 systemd **秒级把它拉回来**（15:35 轮实测：
+    # 幽灵 kwin 抢在轮的按需 Xwayland 之前占了 :0 ⇒ 所有 X11 应用被画进这个不可见会话，
+    # 只有托盘图标经 xembedsniproxy 漏进可见桌面 = "usb-manager 有托盘无窗口"的真因）。
+    # 必须在轮起 kwin 之前的显示切换窗口里停掉这套单元；**绝不能在轮中途停**
+    # （10-02 16:0x 事故：轮中途 stop 这些单元 ⇒ 宿主收回面板、安卓框架又已停 ⇒ 黑屏，只能强启）。
+    # 此函数被 rollback 复用，停单元同样发生在面板切换窗口内，语义一致。
+    runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        XDG_RUNTIME_DIR=$DRM_RT \
+        systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null \
+        && echo "PLASMA-UNITS-STOPPED anland 的 systemd 用户会话单元已停（防幽灵 kwin 抢 display 号）$(date +%T)"
+    pkill -9 -f "kwin_wayland_wrapper" 2>/dev/null        # 单元重启可能刚拉起的残余（轮 kwin 不经 wrapper）
+    pkill -9 -f "kwin_wayland --wayland-fd" 2>/dev/null   # 同上（轮 kwin 无 --wayland-fd）
     rm -f $DIR/takeover.ok
 }
 rollback() {
@@ -951,23 +965,45 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
     esac
 ) &
 
-# ---- 4a) XWayland 事后核对（异步，不阻塞桌面）：确认 kwin 真把 Xwayland 起在 :0，
+# ---- 4a) XWayland 事后核对（异步，不阻塞桌面）：确认**轮自己的 kwin**真的把 Xwayland 起在 :0，
 #      也就是会话里注入的 DISPLAY 是对的。它比 plasmashell 晚 ~2s，但 kwin 起不来的
 #      情况也得报出来，所以给 90s 窗口。
+#      10-02 教训：pgrep 第一条 Xwayland 可能是幽灵会话的（systemd 单元复活的 anland kwin
+#      抢先占了 :0，轮的按需 Xwayland 落到 :1）⇒ 旧探针报 XWAYLAND-OK 是**假绿**。
+#      所以这里按父进程认：Xwayland 必须是轮 kwin（kwinwrap 的子进程）的孩子。
 (
+    KP2=$(pgrep -P $KPID -x kwin_wayland | head -1)
+    [ -z "$KP2" ] && KP2=$KPID
     for i in $(seq 1 90); do
-        XP=$(pgrep -x Xwayland | head -1)
+        XP=""
+        for p in $(pgrep -x Xwayland); do
+            [ "$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')" = "$KP2" ] && { XP=$p; break; }
+        done
         [ -n "$XP" ] && break
         sleep 1
     done
     if [ -z "$XP" ]; then
-        echo "XWAYLAND-ABSENT $(date +%T): kwin 没起 Xwayland，X11-only 应用仍打不开（看 kwin.log）"
+        echo "XWAYLAND-ABSENT $(date +%T): 轮 kwin 没起 Xwayland，X11-only 应用仍打不开（看 kwin.log）"
     else
         XD=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -E '^:[0-9]+$' | head -1)
+        # kwin 按需起的 Xwayland 通常不带 -auth（本地免 cookie 可连）；带 -auth 时免 cookie
+        # 会被拒（10-02 实测 "Authorization required"）。菜单启动的应用经 systemd-run --scope
+        # 继承 plasmashell 的 env，里面没有 XAUTHORITY ⇒ 这里从 argv 现取 auth 文件，给会话
+        # 用户加一条**服务器端** localuser 授权（随轮生死，不落任何持久状态）。
+        XAF=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -A1 -- '^-auth$' | tail -1)
+        if [ -n "$XAF" ] && [ -r "$XAF" ]; then
+            runuser -u "$DRM_USER" -- env DISPLAY="$XD" XAUTHORITY="$XAF" \
+                xhost +si:localuser:"$DRM_USER" >/dev/null 2>&1 \
+                && echo "XAUTH-GRANT OK auth=$XAF 已加 localuser 授权（X11 应用免 cookie 可连）$(date +%T)" \
+                || echo "XAUTH-GRANT FAIL $(date +%T): xhost 没成，X11 应用可能连不上（手工等价：XAUTHORITY=$XAF DISPLAY=$XD xhost +si:localuser:$DRM_USER）"
+        fi
         if [ "$XD" = ":0" ]; then
             echo "XWAYLAND-OK display=$XD pid=$XP $(date +%T)"
         else
-            echo "XWAYLAND-MISMATCH display=$XD 但会话注入的是 :0 → 应用连不上，检查 /tmp/.X11-unix 残留"
+            echo "XWAYLAND-MISMATCH display=$XD 但会话注入的是 :0 ⇒ 激活环境里把 DISPLAY 改写为 $XD（菜单 .service 启动的应用生效；plasmashell fork 的子进程仍拿 :0，查有没有幽灵会话）"
+            runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+                XDG_RUNTIME_DIR=$DRM_RT \
+                dbus-update-activation-environment --systemd "DISPLAY=$XD" >/dev/null 2>&1
         fi
         # ---- pc-keyd v2（组合键守护，XTEST/EIS 后端）----
         # 必须 kwin+Xwayland 就绪后启动（连接 X :0 注入）；以会话用户运行（root 的 X 连接
@@ -1576,11 +1612,11 @@ if [ "${AUDIOKEY_PENDING:-0}" = 1 ] && [ -n "$KDPID" ] && [ -d /proc/$KDPID ]; t
     done
     KMIX=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
         runuser -u "$DRM_USER" -- busctl --user get-property org.kde.kglobalaccel \
-        /component/kmix org.kde.kglobalaccel.Component isActive 2>/dev/null)
+        /component/kmix org.kde.kglobalaccel.Component shortcutNames 2>/dev/null)
     if [ "$AHITS2" -gt 0 ]; then
-        echo "AUDIOKEY-RETRY OK audioshortcutsservice 已映射进 kded(pid=$KDPID)（maps $AHITS2 条，kmix isActive=$KMIX）$(date +%T)"
+        echo "AUDIOKEY-RETRY OK audioshortcutsservice 已映射进 kded(pid=$KDPID)（maps $AHITS2 条，kmix 快捷键${KMIX:+已注册}）$(date +%T)"
     else
-        echo "AUDIOKEY-RETRY FAIL $(date +%T): 音频就绪后重发 loadModule 仍未映射（kmix isActive=${KMIX:-无响应}）⇒ 音量键无效；下一轮取证 busctl --user tree org.kde.kded6"
+        echo "AUDIOKEY-RETRY FAIL $(date +%T): 音频就绪后重发 loadModule 仍未映射（kmix 组件=${KMIX:-无响应}）⇒ 音量键无效；下一轮取证 busctl --user tree org.kde.kded6"
     fi
 fi
 if [ "${AUDIO_BRIDGE:-0}" != 1 ]; then
