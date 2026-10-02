@@ -700,15 +700,30 @@ if [ "$KWIN_OK" != 1 ]; then
     rollback "no atomic commit seen: kwin is up but nothing was scanned out (black screen guard)"
 fi
 echo "KWIN-UP kwin 已接管显示并实际提交上屏 $(date +%T)（ATOMIC 计数 $(grep -c ATOMIC $LOGD/kwinatomic.log)，正在起桌面组件）"
+# ---- 3a-0) 轮 kwin 绑定的 X display 探测（10-02 晚定稿，§12.41）----
+# display_daemon（宿主保活）会在 anland 死后 ~2s 整体重拉 anland（17:35:00 实锤：stop 后 2s
+# startplasma 再起），重拉的 anland kwin 的 Xwayland 抢走 :0（带 -auth）。而轮 kwin 的
+# Xwayland 是**按需**起的：kwin 先把下一个空闲 display 的 socket 绑在自己 fd 上
+# （/tmp/.X11-unix/XN，lsof 实锤 17:35 轮 kwin 握着 X1），第一个客户端连上来才 spawn 进程。
+# ⇒ :0 属于幽灵、写死必错；整轮的 display 号一律从轮 kwin 的绑定 socket 现场探测。
+KP2=$(pgrep -P $KPID -x kwin_wayland | head -1); KP2=${KP2:-$KPID}
+XDISCOVER=""
+for _i in $(seq 1 10); do
+    XDISCOVER=$(lsof -p "$KP2" 2>/dev/null | grep -o "/tmp/.X11-unix/X[0-9]*" | head -1)
+    [ -n "$XDISCOVER" ] && break
+    sleep 1
+done
+XNUM=$(basename "${XDISCOVER:-X0}" | tr -d X)
+XNUM=${XNUM:-0}
+XWARGS=("DISPLAY=:${XNUM}")
+XD=":${XNUM}"
+echo "XDISPLAY-DETECTED 轮 kwin 绑定 display=$XD（${XDISCOVER:-未发现绑定，回落 :0}）$(date +%T)"
 # ---- 3a) XWayland（09-24：DRM 桌面缺它，X11-only 应用全打不开——星火商店/ZCode 是
 #      Electron 默认 x11 ozone，报 "Missing X server or $DISPLAY"；usb-manager 的 PyQt5
 #      源码里硬把 QT_QPA_PLATFORM=wayland 改写成 xcb，连退路都没有）。
-#      这里**不 poll 等 Xwayland 出现**：实测 KWin 6 起 Xwayland 的时机晚于 plasmashell
-#      （23:17:42 plasmashell → 23:17:44 Xwayland），起完 kwin 等 10s 只拿得到空，
-#      注入永远是缺省的。改成直接把 :0 写进会话环境（kill_linux_stack 已清掉遗留死
-#      socket，:0 可预期），真实结果由 DESKTOP-UP 之后的 XWAYLAND-OK/MISMATCH 后台核对。
-#      XAUTHORITY 不注入：kwin 起 Xwayland 不带 -auth，实测本地连接不需要 cookie。
-XWARGS=("DISPLAY=:0")
+#      KWin 6 的 Xwayland 按需起：kwin 绑 socket（上面探测到号）⇒ 第一个客户端连上来
+#      才 spawn 进程 ⇒ 会话里注入这个号，第一个 X11 应用就是"第一个客户端"。
+#      按需起的 Xwayland 不带 -auth，本地免 cookie 可连（10-02 实测）。
 # ---- 3a-2) 会话激活环境归一（10-02，修"菜单点开的应用打不开 / VKB 只在个别应用弹"）----
 # 菜单/收藏/桌面图标启动的应用不是 plasmashell 的直接 fork：kicker 把它们包进
 # `systemd-run --user --scope`（10-02 实测 anland 里 app-org.kde.konsole-*.scope /
@@ -731,7 +746,7 @@ normalize_activation_env() {
             DISPLAY=:0 WAYLAND_DISPLAY=taketest \
             QT_IM_MODULE= GTK_IM_MODULE= SDL_IM_MODULE= GLFW_IM_MODULE= \
             XMODIFIERS=@im=fcitx5 2>/dev/null; then
-        echo "ACTENV-OK 激活环境已归一到轮值（DISPLAY=:0 WAYLAND_DISPLAY=taketest，QT/GTK/SDL/GLFW IM 置空）$(date +%T)"
+        echo "ACTENV-OK 激活环境已归一到轮值（DISPLAY=$XD WAYLAND_DISPLAY=taketest，QT/GTK/SDL/GLFW IM 置空）$(date +%T)"
     else
         echo "ACTENV-FAIL $(date +%T): systemd/dbus 激活环境没写成 ⇒ 菜单启动的应用会拿 anland 旧值（打不开/不弹键盘）"
     fi
@@ -974,20 +989,18 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
 # 探针不成立时打 NO-PROBE（glxinfo 没输出/连不上 :0），绝不说成"没有 GPU"。
 (
     sleep 12
-    R=$(runuser -u "$DRM_USER" -- env DISPLAY=:0 timeout 12 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1)
+    R=$(runuser -u "$DRM_USER" -- env DISPLAY="$XD" timeout 12 glxinfo -B 2>/dev/null | sed -n 's/^OpenGL renderer string: //p' | head -1)
     case "$R" in
         *llvmpipe*) echo "GPU-WHICH $(date +%T): $R ⇒ **软渲染**，Xwayland 打不开 render 节点（查补充组/GPU-NODE）" ;;
-        "")         echo "GPU-WHICH $(date +%T): NO-PROBE（glxinfo 无输出/连不上 :0）⇒ 这条没测到，别当作没有 GPU" ;;
+        "")         echo "GPU-WHICH $(date +%T): NO-PROBE（glxinfo 无输出/连不上 $XD）⇒ 这条没测到，别当作没有 GPU" ;;
         *)          echo "GPU-WHICH $(date +%T): $R ⇒ 硬渲染可用" ;;
     esac
 ) &
 
-# ---- 4a) XWayland 事后核对（异步，不阻塞桌面）：确认**轮自己的 kwin**真的把 Xwayland 起在 :0，
-#      也就是会话里注入的 DISPLAY 是对的。它比 plasmashell 晚 ~2s，但 kwin 起不来的
-#      情况也得报出来，所以给 90s 窗口。
-#      10-02 教训：pgrep 第一条 Xwayland 可能是幽灵会话的（systemd 单元复活的 anland kwin
-#      抢先占了 :0，轮的按需 Xwayland 落到 :1）⇒ 旧探针报 XWAYLAND-OK 是**假绿**。
-#      所以这里按父进程认：Xwayland 必须是轮 kwin（kwinwrap 的子进程）的孩子。
+# ---- 4a) XWayland 事后核对（异步，不阻塞桌面）：轮 kwin 绑定的 display（XD）已注入
+#      全会话；这里只核实它的 Xwayland 进程出现没有（按需起 ⇒ 第一个 X11 客户端连上来
+#      才出现，XWAYLAND-PENDING 属正常）。10-02 教训：pgrep 第一条 Xwayland 可能是
+#      display_daemon 重拉的 anland 幽灵的（它抢 :0），所以仍按父进程认亲。
 (
     KP2=$(pgrep -P $KPID -x kwin_wayland | head -1)
     [ -z "$KP2" ] && KP2=$KPID
@@ -1000,32 +1013,18 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         sleep 1
     done
     if [ -z "$XP" ]; then
-        # 10-02 教训：ABSENT 不能连带跳过 pc-keyd/fcitx5（16:18 轮它们俩全没起，X11 输入链全断）。
-        # 按注入值 :0 兜底继续往下走；这两个守护自己会等 X 出现，起早无副作用。
-        echo "XWAYLAND-ABSENT $(date +%T): 轮 kwin 没起 Xwayland，X11-only 应用仍打不开（看 kwin.log）；pc-keyd/fcitx5 仍按 :0 启动"
-        XD=":0"
+        echo "XWAYLAND-PENDING $(date +%T): display=$XD 的 socket 已由轮 kwin 绑定，尚无客户端连入 ⇒ 还没按需 spawn（第一个 X11 应用打开时就会出现）"
     else
-        XD=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -E '^:[0-9]+$' | head -1)
-        # kwin 按需起的 Xwayland 通常不带 -auth（本地免 cookie 可连）；带 -auth 时免 cookie
-        # 会被拒（10-02 实测 "Authorization required"）。菜单启动的应用经 systemd-run --scope
-        # 继承 plasmashell 的 env，里面没有 XAUTHORITY ⇒ 这里从 argv 现取 auth 文件，给会话
-        # 用户加一条**服务器端** localuser 授权（随轮生死，不落任何持久状态）。
+        XD2=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -E '^:[0-9]+$' | head -1)
+        echo "XWAYLAND-OK display=$XD2 pid=$XP（轮注入 $XD）$(date +%T)"
         XAF=$(tr '\0' '\n' < /proc/$XP/cmdline 2>/dev/null | grep -A1 -- '^-auth$' | tail -1)
         if [ -n "$XAF" ] && [ -r "$XAF" ]; then
             runuser -u "$DRM_USER" -- env DISPLAY="$XD" XAUTHORITY="$XAF" \
                 xhost +si:localuser:"$DRM_USER" >/dev/null 2>&1 \
-                && echo "XAUTH-GRANT OK auth=$XAF 已加 localuser 授权（X11 应用免 cookie 可连）$(date +%T)" \
-                || echo "XAUTH-GRANT FAIL $(date +%T): xhost 没成，X11 应用可能连不上（手工等价：XAUTHORITY=$XAF DISPLAY=$XD xhost +si:localuser:$DRM_USER）"
+                && echo "XAUTH-GRANT OK auth=$XAF localuser 授权已加 $(date +%T)"
         fi
-        if [ "$XD" = ":0" ]; then
-            echo "XWAYLAND-OK display=$XD pid=$XP $(date +%T)"
-        else
-            echo "XWAYLAND-MISMATCH display=$XD 但会话注入的是 :0 ⇒ 激活环境里把 DISPLAY 改写为 $XD（菜单 .service 启动的应用生效；plasmashell fork 的子进程仍拿 :0，查有没有幽灵会话）"
-            runuser -u "$DRM_USER" -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
-                XDG_RUNTIME_DIR=$DRM_RT \
-                dbus-update-activation-environment --systemd "DISPLAY=$XD" >/dev/null 2>&1
-        fi
-        # ---- pc-keyd v2（组合键守护，XTEST/EIS 后端）----
+    fi
+# ---- pc-keyd v2（组合键守护，XTEST/EIS 后端）----
         # 必须 kwin+Xwayland 就绪后启动（连接 X :0 注入）；以会话用户运行（root 的 X 连接
         # 被拒，13:41 轮实测）。v2 不创建 uinput 设备 → 安卓"物理键盘"通知消失；
         # 显示号写入 /run/pc-keyd-display 供其 _xdisplay() 读取。
@@ -1072,7 +1071,6 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         else
             echo "FCITX5-BYST FAIL: fcitx5 未上总线（本轮 X11 中文/Ctrl+Space 不可用，不阻塞）—— 看 fcitx5-round.log"
         fi
-    fi
 ) >> $LOGD/desk-takeover.log 2>&1 &
 
     # ---- 5) 容器接管 WiFi：NetworkManager 模式（DRM 桌面设置里可直接点热点、密码持久化） ----
