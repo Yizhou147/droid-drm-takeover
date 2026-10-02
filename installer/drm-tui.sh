@@ -1108,23 +1108,15 @@ main_menu() {
                 2) show_tail_log ;; 3|0) exit 0 ;;
             esac ;;
         failed-round)
-            # 用户明确要求只给这两个选项（都已在安卓了，不需要"完整交还链"）
-            warn "$(msg '上一轮接管没成功：安卓正常，但 Linux 桌面（含 anland）没在跑。' \
-                   'Last round failed: Android is fine but no Linux session (anland included) is running.')"
-            menu "" \
-                "$(msg '重启 anland 会话（把 Linux 桌面放回安卓里）' 'Restart the anland session')" \
-                "$(msg '重试进入 DRM 接管' 'Retry DRM takeover')" \
-                "$(msg '查看上一轮日志' 'Read the last round log')" \
-                "$(msg '退出' 'Quit')"
-            case "$MENU_CHOICE" in
-                1) relaunch_anland ;;
-                2) run_takeover "$TAKEOVER_SCRIPT" "$(msg '进入 DRM 接管' 'Entering DRM takeover')" ;;
-                3) show_tail_log ;; 4|0) exit 0 ;;
-            esac ;;
+            # 10-02 用户改裁定（推翻 10-01 的"只给两个选项"）：这页要**完整功能**——
+            # "桌面没在跑"不一定是失败，用户可能故意不要 anland（RELAUNCH_ANLAND=0
+            # 或手动没起）就直接进 DRM 接管。不再弹"上一轮失败"警告，落到常态完整菜单。
+            ;&
         *)
             menu "" \
                 "$(msg '进入 DRM 接管（停安卓显示栈，Linux 直驱屏幕）' 'Enter DRM takeover (Linux drives the panel)')" \
                 "$(msg '回到安卓（交还显示与网络）' 'Return to Android')" \
+                "$(msg '重启 anland 会话（把 Linux 桌面放回安卓里）' 'Restart the anland session')" \
                 "$(msg '查看上一轮日志' 'Read the last round log')" \
                 "$(msg '重建 Android 调试通道（adb 授权 / 无线地址）' 'Re-establish the Android debug channel (adb authorization / wireless address)')" \
                 "$(msg '设置（组件 / WiFi / anland / 日志 / 语言 / 源）' 'Settings (components, WiFi, anland, log, language, mirror)')" \
@@ -1136,11 +1128,12 @@ main_menu() {
             case "$MENU_CHOICE" in
                 1) run_takeover "$TAKEOVER_SCRIPT" "$(msg '进入 DRM 接管' 'Entering DRM takeover')" ;;
                 2) run_takeover "$STOP_SCRIPT" "$(msg '回到安卓' 'Returning to Android')" ;;
-                3) show_tail_log ;;
-                4) if establish_adb_bridge 1; then ok "$(msg "通道已就绪：$DRM_ADB_DEV" 'Channel ready: '"$DRM_ADB_DEV")"
+                3) relaunch_anland ;;
+                4) show_tail_log ;;
+                5) if establish_adb_bridge 1; then ok "$(msg "通道已就绪：$DRM_ADB_DEV" 'Channel ready: '"$DRM_ADB_DEV")"
                    else [[ "$DRM_ADB_STATUS" == "unauthorized" ]] && auth_remedy; fi ;;
-                5) settings_page ;; 6) check_and_repair ;;
-                7) check_updates ;; 8) advanced_page ;; 9) uninstall ;; 10|0) exit 0 ;;
+                6) settings_page ;; 7) check_and_repair ;;
+                8) check_updates ;; 9) advanced_page ;; 10) uninstall ;; 11|0) exit 0 ;;
             esac ;;
     esac
     # 每一屏读完都要停住：主菜单下一帧就 clear 重绘，之前"字闪一下就没"全因这里没停
