@@ -30,9 +30,9 @@
 
   "keyboard": {
     "repo": "Yizhou147/droid-pc-keyboard",
-    "tag": "v1.1.1",
     "asset_template": "droid-pc-keyboard_{VERSION}_arm64.deb",
     "requires_dry_run": true,
+    "_tag_note": "tag 不在这里、也不生效：键盘组件的 tag 由安装器现问 releases/latest 决定（drm-tui.sh 的 install_keyboard_if_chosen，按 tag 组出资产名再取 release digest）。旧字段 \"tag\": \"v1.1.1\" 已于 10-02 删除，免得误以为安装器按它取版本。",
     "_note": "装前必须 apt --dry-run 看有没有 Remv 行：初版 Breaks 曾把 plasma-keyboard→plasma-workspace→plasma-desktop 整串拆掉（工作总结 §21）。"
   },
 
