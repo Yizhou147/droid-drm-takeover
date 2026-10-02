@@ -153,25 +153,22 @@ stop_supplicant() {
     rm -f /run/desk-wpa.pid
 }
 kill_linux_stack() {
-    # ---- ① 幽灵会话预防（10-02 第三版：前两版都被实测打回，见工作总结 §12.38/§12.39）----
-    # anland 的 Plasma 会话跑在 systemd --user 单元里，kwin 死后**同秒**被重新 start
-    # （15:35/16:18 轮实锤：unit 自己 Restart=no 也拦不住 ⇒ 是外部监督者调 start），
-    # 幽灵 kwin 抢占 :0 ⇒ 所有 X11 应用画进不可见会话（"usb-manager 有托盘无窗口"的真因）。
-    # 教训（两次黑屏强启换来的）：
-    #   ① **绝不能 systemctl stop 这套单元**（无论轮前/轮中）——那是干净关闭整个 anland 会话，
-    #      logind 收割会话 cgroup，连 setsid 脱离过的接管脚本一起杀（16:41 事故）；
-    #   ② 所以这里只用 **runtime mask**：不打任何信号、不影响活着的 anland kwin，只让
-    #      "下一次 start"失败（谁来 start 都一样）；--runtime 落在 /run ⇒ 重启自动消失，
-    #      强启恢复后 anland 不受影响。解 mask 在 desk-stop（交还拉 anland 前）与 rollback。
+    # ---- ① anland 会话整体干净关闭（10-02 晚定稿，§12.39 三次事故合流的结论）----
+    # anland 跑在 plasma-* systemd 用户单元里。今天三轮实测把两条半杀路全部证死：
+    #   a) 只 pkill 进程：单元把 kwin/kded6/plasmashell/xembedsniproxy 逐个拉回来，
+    #      与轮内自拉组件在共享总线打架（幽灵抢 :0、应用全打不开、usb-manager 一点就黑）；
+    #   b) 只 mask kwin：kwin 不复活了，但其余单元照拉 ⇒ 半死的 plasma 会话继续捣乱（17:22 轮）。
+    # 而"整会话 systemctl stop"在 16:41 黑屏的唯一原因 = 脚本树仍会话 cgroup 里被 logind
+    # 连坐收割——这个障碍已被本脚本自脱钩的 system 级 scope（/system.slice，2d836c8）解掉。
+    # ⇒ 现在整会话干净 stop 是安全且唯一正确的形态：kwin 单元 Restart=no，干净 stop 不触发
+    #    重启 ⇒ 幽灵不存在；其它单元一起走 ⇒ 无半杀水蛇；anland 下次由 desk-stop/手动
+    #    startanland-kde.sh 整体拉起（startplasma 重新 start 目标，天然干净）。
     if runuser -u "$DRM_USER" -- env XDG_RUNTIME_DIR=$DRM_RT \
             DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
-            systemctl --user mask --runtime plasma-kwin_wayland.service 2>/dev/null; then
-        echo "PLASMA-KWIN-MASKED 幽灵预防已挂（runtime mask，重启自清、不发信号）$(date +%T)"
+            systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null; then
+        echo "PLASMA-SESSION-STOPPED anland 会话已整体干净关闭（scope 已保脚本不死）$(date +%T)"
     else
-        mkdir -p /run/user/$DRM_UID/systemd/user 2>/dev/null
-        ln -sf /dev/null /run/user/$DRM_UID/systemd/user/plasma-kwin_wayland.service 2>/dev/null \
-            && echo "PLASMA-KWIN-MASKED（root 直挂 /run 符号链兜底）$(date +%T)" \
-            || echo "PLASMA-KWIN-MASK-FAIL $(date +%T): mask 没挂上，若 kwin 被同秒复活成幽灵，X11 应用会画进不可见会话"
+        echo "PLASMA-SESSION-STOP-SKIP $(date +%T): 没有活动的 plasma 用户单元（anland 未以 systemd 会话形态运行）"
     fi
     # v2: 补全实际 cmdline 模式(v1 的 kwinwrap/socket 模式杀不掉真 kwin)，见 desk-stop.sh 头注
     pkill -9 -f "kwinwrap --out" 2>/dev/null
@@ -212,17 +209,6 @@ kill_linux_stack() {
     rm -f $DIR/takeover.ok
 }
 
-# 交还 anland 前必须解 mask（kill_linux_stack ① 挂的 runtime mask），否则 startplasma
-# 起 kwin 直接失败 = anland 没有合成器。systemctl 不可达时用 root 直删符号链兜底
-# （runtime mask 在 /run/user/<uid>/systemd/user/，持久 mask 兜底删 ~/.config 里的）。
-unmask_kwin_unit() {
-    runuser -u "$DRM_USER" -- env XDG_RUNTIME_DIR=$DRM_RT \
-        DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
-        systemctl --user unmask plasma-kwin_wayland.service 2>/dev/null
-    rm -f /run/user/$DRM_UID/systemd/user/plasma-kwin_wayland.service 2>/dev/null
-    rm -f "$DRM_HOME/.config/systemd/user/plasma-kwin_wayland.service" 2>/dev/null
-    echo "PLASMA-KWIN-UNMASKED $(date +%T)"
-}
 rollback() {
     echo "ROLLBACK: $* ($(date +%T))"
     kill_linux_stack
@@ -253,9 +239,6 @@ rollback() {
     # 轮内 fcitx5 实例清理：交还后 anland 会话会自拉自己的 fcitx5（座位同为 fcitx5，
     # 09-29 统一），这里只杀掉本轮起的那个，不动 kwinrc（两模式同值，无需恢复）。
     pkill -x fcitx5 2>/dev/null
-    # 解掉幽灵预防的 runtime mask：rollback 后用户可能手动回 anland（不经 desk-stop），
-    # 带着.mask 回 anland = startplasma 起 kwin 失败 = anland 没有合成器。
-    unmask_kwin_unit
     # GPUFLOOR 还原（1c 段）：共享内核，rollback 不还原 = 钉死的频率泄漏给 anland/安卓。
     # 还原值在 /run/desk-gpufreq.orig；文件丢失时按 takeover 日志里的 GPUFLOOR ORIG 行手工还原。
     if [ -f /run/desk-gpufreq.orig ]; then
