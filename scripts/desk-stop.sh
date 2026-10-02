@@ -315,6 +315,15 @@ echo "STORAGE-FIX launched bg pid=$! log=$LOGD/storage-fix.log"
 # 4b) 复活 anland 会话。RELAUNCH_ANLAND 由 /etc/drm-takeover.conf 控制（drm-tui 设置页里那个开关）：
 #     默认 1＝交还后自动把 Linux 桌面放回安卓里（09-23 白屏坑的修法，绝大多数情况要留着）；
 #     设成 0＝交还后停在纯安卓，用户下次得从 drm-tui 里手动「重启 anland」。
+# 4b-0) 先解掉 kill_linux_stack 挂的幽灵预防 runtime mask（§12.39）：
+#     带着 mask 复活 anland = startplasma 起 plasma-kwin_wayland.service 直接失败 = anland 没有合成器。
+#     systemctl 不可达时 root 直删符号链兜底（/run 的 runtime mask + ~/.config 的持久 mask 都清）。
+runuser -u "$DRM_USER" -- env XDG_RUNTIME_DIR=/run/user/$(id -u "$DRM_USER" 2>/dev/null || echo 1000) \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$DRM_USER" 2>/dev/null || echo 1000)/bus \
+    systemctl --user unmask plasma-kwin_wayland.service 2>/dev/null
+rm -f /run/user/$DRM_UID/systemd/user/plasma-kwin_wayland.service 2>/dev/null
+rm -f "$DRM_HOME/.config/systemd/user/plasma-kwin_wayland.service" 2>/dev/null
+echo "PLASMA-KWIN-UNMASKED $(date +%T)（anland 复活前解除幽灵预防 mask）"
 if [ "${RELAUNCH_ANLAND:-1}" != 1 ]; then
     echo "ANLAND-SKIP $(date +%T)：RELAUNCH_ANLAND=0，交还后不自动拉起 anland（下次进 DRM 接管会重新按 conf 处理）"
 elif [ -x /usr/local/bin/startanland-kde.sh ] || [ -f /usr/local/bin/startanland-kde.sh ]; then
