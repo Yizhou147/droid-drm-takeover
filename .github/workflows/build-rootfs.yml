@@ -153,6 +153,10 @@ jobs:
           } > release-notes.md
 
       # 产物落在 rootfs/ 里，而这一步在仓库根跑，路径要带上目录名
+      # ⚠ prerelease=true 是必需的，不是修饰：本仓库的接管安装器（extract_release / pick_mirror）
+      # 现问 `releases/latest` 取 drm-takeover tar，而 rootfs 的 release 也发在同一条线上。
+      # 若它成了 latest，安装器再问 latest 就拿不到接管资产（rootfs tar 里没有那个文件名），
+      # 表现是"装好的设备升级时取不到产物"。prerelease 不进 latest，两条线才互不干扰。
       - name: 创建草稿 Release
         id: stage-release
         uses: softprops/action-gh-release@v3
@@ -163,11 +167,11 @@ jobs:
           files: rootfs/${{ steps.pack.outputs.file }}
           body_path: rootfs/release-notes.md
           draft: true
-          prerelease: false
+          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # draft 不进 releases/latest、也不进镜像；主项目安装器现问 releases/latest，所以必须转公开。
+      # draft 不进 releases/latest、也不进镜像；转公开后仍因 prerelease 不顶掉接管那条 latest。
       - name: 发布 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -177,7 +181,8 @@ jobs:
           case "$RELEASE_ID" in
             ''|*[!0-9]*) echo "Release 没有返回有效 ID。" >&2; exit 1 ;;
           esac
-          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false --silent
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -F prerelease=true --silent
 
       - name: 汇总
         env:

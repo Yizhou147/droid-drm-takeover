@@ -105,7 +105,10 @@ CI 用两道闸保证它不会被静默跳过：
 - 文件名：`piano-Ubuntu-26-kde-Wayland-Droidspaces-rootfs-aarch64-Runs<N>.tar.xz`
 - 版本号取 Actions 运行号（`Runs<N>`），不是表单项
 - 同时上传 workflow artifact（保留 30 天）与 Release 资产；Release 会**自动从草稿转为公开**
-  （草稿不进 `releases/latest`、也不进镜像，主项目安装器现问 `releases/latest`）
+  （草稿不进 `releases/latest`、也不进镜像）
+- ⚠ rootfs 的 Release 固定 **`prerelease=true`**：它和接管产物发在同一条仓库线上，而安装器现问
+  `releases/latest` 取 `drm-takeover-aarch64.tar.gz`。rootfs 的包里没有那个文件，
+  一旦它顶掉 latest，安装器就取不到接管产物。prerelease 不进 latest，两条线互不干扰
 - Release 说明与任务汇总里给出文件名的 `sha256`
 
 ## 文件来源与上游同步

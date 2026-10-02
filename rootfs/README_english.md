@@ -114,8 +114,12 @@ Two CI gates keep it from being skipped silently:
 - File name: `piano-Ubuntu-26-kde-Wayland-Droidspaces-rootfs-aarch64-Runs<N>.tar.xz`
 - The version is the Actions run number (`Runs<N>`), not a form field
 - Both a workflow artifact (kept 30 days) and a Release asset are uploaded; the Release is
-  **automatically converted from draft to public** (a draft never appears in `releases/latest` and
-  never reaches mirrors, and the main project's installer queries `releases/latest`)
+  **automatically converted from draft to public** (a draft never appears in `releases/latest` and never
+  reaches mirrors)
+- ⚠ The rootfs Release is pinned to **`prerelease=true`**: it shares this repository's release line with
+  the takeover artifacts, and the installer queries `releases/latest` for the takeover tar. A plain
+  (non-prerelease) rootfs Release would become `latest` and starve the installer of its asset —
+  prereleases are excluded from `releases/latest`, keeping the two lines independent
 - The `sha256` of the artifact is reported in the release notes and the job summary
 
 ## Provenance and upstream sync
