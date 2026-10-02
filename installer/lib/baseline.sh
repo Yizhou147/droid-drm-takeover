@@ -32,6 +32,12 @@ apply_kwin_baseline() {
     # 等于替每个新用户改界面大小（10-01 用户就问了"你为什么要动我的缩放"）。
     # `[Xwayland] Scale=2` 已删；`Effect-overview BorderActivate`、wobbly 参数、
     # kdecoration2/Breeze 也一并删。要恢复成个人偏好请各自在系统设置里调，不由安装器代劳。
+    #
+    # 【10-02 推翻】`[Xwayland] Scale=2` 从"个人偏好"改判为**功能必需**：轮内 X11 应用的
+    # 缩放只吃它（desk-takeover 的 XFTDPI 段按此现算 Xft.dpi=Scale×96 写进轮的 Xwayland）。
+    # 全新容器没写它 ⇒ usb-manager 等 X11 应用按 96dpi 渲染、字体元素极小（drm2 实测）。
+    # 与桌面 UI 缩放不同：本容器（drm）与良好容器（Ubuntu-Wayland）实测值都是 2。
+    drm_kconfig_set "$rc" Xwayland Scale 2
     drm_kconfig_set "$rc" TouchEdges Bottom ShowDesktop
     ok "$(msg "  kwinrc 已写入：$rc" '  kwinrc written')"
 }
@@ -101,6 +107,11 @@ EOF
 #    良好容器有；缺了它们 A2DP/配对在接管轮里不可用）
 baseline_extra_packages() {
     printf '%s\n' bluez-obexd libspa-0.2-bluetooth plasma-nm mesa-utils
+    # 【10-02】字体全家（与良好容器 dpkg 实测一致）：新容器默认只有 dejavu/liberation 等
+    # 32 个族，usb-manager 等 Qt/X11 应用的中文字形与排版严重残缺。§12.23 曾裁定"不进
+    # 依赖表"，drm2 实测（装最新安装器后 usb-manager 字体极小）推翻：属功能必需。
+    printf '%s\n' fonts-noto fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-core \
+        fonts-noto-ui-core fonts-noto-color-emoji fonts-ubuntu fonts-droid-fallback fonts-liberation
 }
 
 # 6) 校验：把"体验是否已对齐"变成可判定的实测，而不是看日志措辞

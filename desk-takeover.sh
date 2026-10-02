@@ -975,7 +975,31 @@ done
 if [ -z "$PDEV" ]; then
     echo "POWERDEVIL-FAIL $(date +%T): 找不到 /usr/lib/*/libexec/org_kde_powerdevil（powerdevil 包没装？）⇒ 托盘亮度与电池不可用"
 elif [ -n "$PDALIVE" ]; then
-    echo "POWERDEVIL-OK pid=$PDALIVE $(date +%T)（托盘亮度/电池的宿主）"
+    # pid 活着 ≠ 上了总线：drm2 实测 powerdevil 起来即死时 log 是 0 字节、总线上没有
+    # org.kde.powerdevil（§12.23 记的"起来即死"）。这里补总线名硬判据；名不在就重拉一次。
+    PDONBUS=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+        runuser -u "$DRM_USER" -- busctl --user list-names 2>/dev/null | grep -c "org.kde.powerdevil")
+    if [ "$PDONBUS" -gt 0 ]; then
+        echo "POWERDEVIL-OK pid=$PDALIVE 总线名在 $(date +%T)（托盘亮度/电池的宿主）"
+    else
+        echo "POWERDEVIL-NAMELESS pid=$PDALIVE 没上总线 → 重拉一次（drm2 起死症状，见 powerdevil.log）$(date +%T)"
+        pkill -x org_kde_powerdevil 2>/dev/null; sleep 1
+        nohup runuser -u "$DRM_USER" -- env -u DISPLAY -u QT_IM_MODULE \
+            ${DESK_ENV[@]+"${DESK_ENV[@]}"} WAYLAND_DISPLAY=taketest \
+            HOME="$DRM_HOME" XDG_RUNTIME_DIR=$DRM_RT \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+            QT_QPA_PLATFORM=wayland \
+            "$PDEV" >> $LOGD/powerdevil.log 2>&1 &
+        sleep 3
+        PDONBUS=$(XDG_RUNTIME_DIR=$DRM_RT DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$DRM_UID/bus \
+            runuser -u "$DRM_USER" -- busctl --user list-names 2>/dev/null | grep -c "org.kde.powerdevil")
+        if [ "$PDONBUS" -gt 0 ]; then
+            echo "POWERDEVIL-RELAUNCH-OK $(date +%T): 重拉后总线名在（亮度/电池恢复）"
+        else
+            echo "POWERDEVIL-RELAUNCH-FAIL $(date +%T): 重拉后仍没上总线，powerdevil.log 尾部："
+            tail -n 6 $LOGD/powerdevil.log 2>&1
+        fi
+    fi
 else
     echo "POWERDEVIL-FAIL $(date +%T): 拉起了但 6 秒内不在了，powerdevil.log 尾部："
     tail -n 6 $LOGD/powerdevil.log 2>&1
