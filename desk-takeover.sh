@@ -1082,8 +1082,10 @@ echo "DESKTOP-UP $(date +%T) kwin pid $KPID"
         # ---- X11 应用缩放（10-02 深夜）：anland 的 Xwayland 根窗口带 Xft.dpi=Scale×96
         # （实测 Xft.dpi: 192），X11 应用靠它放大；轮的按需 Xwayland 没人写 ⇒ 96dpi 极小。
         # 这里按 kwinrc 的 Scale 现算现写（与 dev 容器同款配置等价）。
-        XSCALE=$(grep -A1 '\[Xwayland\]' "$DRM_HOME/.config/kwinrc" 2>/dev/null | grep -o 'Scale=[0-9]*' | cut -d= -f2 | head -1)
-        XSCALE=${XSCALE:-1}
+        # 缩放值优先 conf 的 DRM_X11_SCALE（默认 2，与良好容器一致）；不再读 kwinrc：
+        # drm2 实测 baseline 写的 Scale=2 会被 kwin 运行时同步成 1（output scale=1 时写回），
+        # 读它 = 时对时错。conf 显式配的值才是意图。
+        XSCALE=${DRM_X11_SCALE:-2}
         XDPI=$((XSCALE * 96))
         printf 'Xft.dpi: %s\n' "$XDPI" | runuser -u "$DRM_USER" -- env DISPLAY="$XD" XDG_RUNTIME_DIR=$DRM_RT \
             xrdb -merge - 2>/dev/null \

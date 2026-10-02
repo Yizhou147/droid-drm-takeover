@@ -47,6 +47,10 @@ drm_conf_defaults() {
     DRM_CONF[RELAUNCH_ANLAND]="1"      # 返回安卓时自动拉起 anland（默认开；关掉它 anland 就不会自己回来）
     DRM_CONF[GPUFLOOR]="0"             # 高级页，默认关（实测只值 6~16%，噪声就有 8.7%）
     DRM_CONF[PERFMAX]="0"              # 高级页，默认关（die 能到 69°C，只作跑分）
+    # 轮内 X11 应用的缩放倍率（10-02：desk-takeover 按它现算 Xft.dpi=此值×96 写进轮的 Xwayland）。
+    # 默认 2 = 与良好容器（Ubuntu-Wayland）一致；不读 kwinrc——kwin 运行时会按 output scale
+    # 把 kwinrc 里的 Scale 同步写回 1（drm2 实测），读它时对时错。
+    DRM_CONF[DRM_X11_SCALE]="2"
     # 装/更新时写回的 release tag（如 v0.1.0）。TUI 主界面靠它判断有没有新版可更。
     DRM_CONF[INSTALLED_VERSION]=""
 }

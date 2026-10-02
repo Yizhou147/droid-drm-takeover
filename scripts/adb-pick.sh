@@ -18,6 +18,11 @@
 pick_adb_dev() {
     local tmo="${1:-6}" out first rest line picked=""
     timeout 15 adb start-server >/dev/null 2>&1
+    # 10-02 drm2 实锤：容器 adb server 冷启动时设备表里**没有**回环条目，只剩安装期遗留的
+    # 无线调试地址（换网/重连后必 stale）——pick 把它当"唯一 device"选中，交还链跑到
+    # 一半它 offline，安卓永远拉不回来（两次黑屏强启）。回环 127.0.0.1:5555 与网络无关、
+    # 恒通（§12.19），所以先补连（幂等，绝不 kill-server）。
+    timeout 10 adb connect 127.0.0.1:5555 >/dev/null 2>&1
     out=$(timeout 12 adb devices 2>/dev/null | awk '$2=="device"{print $1}')
     [[ -n "$out" ]] || return 1
     first=$(printf '%s\n' "$out" | grep -E '^(emulator-|127\.0\.0\.1:)')

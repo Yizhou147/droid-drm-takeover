@@ -58,6 +58,16 @@ run() {
     # timeout 只是保命；124 必须打进日志，否则下次又只剩"某行之后没输出"这种糊账
     local out rc
     out=$(timeout 12 adb -s "$DEV" shell "su -c '$1'" 2>&1); rc=$?
+    # 10-02 drm2 两次黑屏：pick 选中的无线调试地址在交还链中途 offline，主流程对它无限
+    # 重试、安卓永远拉不回来。这里做一次自愈：掉线就重连回环（恒通，§12.19）再试一次。
+    if [ $rc -ne 0 ] && printf '%s' "$out" | grep -qiE "offline|not found|no devices|protocol fault"; then
+        timeout 10 adb connect 127.0.0.1:5555 >/dev/null 2>&1
+        if timeout 8 adb -s 127.0.0.1:5555 shell getprop ro.build.version.sdk >/dev/null 2>&1; then
+            DEV=127.0.0.1:5555
+            echo "ADB-SWITCHED 换到回环 127.0.0.1:5555 重试（原地址离线）$(date +%T)"
+            out=$(timeout 12 adb -s "$DEV" shell "su -c '$1'" 2>&1); rc=$?
+        fi
+    fi
     [ $rc -eq 124 ] && echo "RUN-TIMEOUT(12s): $1"
     printf '%s\n' "$out"
     return $rc
