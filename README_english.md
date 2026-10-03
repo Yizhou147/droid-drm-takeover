@@ -50,7 +50,6 @@ drm-takeover.sh         Single-round/persistent takeover (no full desktop), with
 scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
                         / vkb-show / aa-feeder / bt-keepalive / bt-power-watcher / bt-anland-baseline / input-node-sync / power-state-sync / log收集
 src/                    kwinwrap (core) + KMS probe suite + touchdraw/touchtest/touchinj
-rootfs/                 RootFS build ported from Droidspaces-rootfs-KDE-builder (Ubuntu-26 + KDE, takeover pre-installed)
 configs/                desk-wifi.conf.example (WiFi fallback config sample)
 docs/tools.md           Usage manual for all build artifacts + new-device adaptation flow
 installer/              One-command installer & runtime TUI (drm-tui.sh / install-drm-tui.sh /
@@ -108,28 +107,6 @@ tar cannot carry its own digest), so for this component the installer queries th
 > measured clean from this container (gh-proxy source, byte-identical). **The full install flow has
 > not been run end-to-end on a fresh container yet**; the `extract_release()` case that read the
 > empty embedded lock is fixed (it now queries `releases/latest`).
-
-## Building a rootfs that ships the takeover (from Actions)
-
-This repository's Actions has a **构建 RootFS（piano / Ubuntu-26 / KDE）** workflow. Run workflow asks
-for four things only: machine model (`piano` for now), distribution (`Ubuntu-26` for now), custom
-username (default `xyz`), and desktop (`KDE` for now); every other build switch is pinned in
-`rootfs/presets/piano.env`.
-
-The produced rootfs ships this takeover **already installed**: `drmtui`, the takeover scripts and
-binaries, the desktop baseline, shortcuts and sudoers are all in place, together with the patched KWin
-(installed through the `anland-wayland` backend path, and CI verifies `PCKEYD_INPUT_SOCKET` inside the
-artifact itself). A build environment has no real device, so the adb channel, the
-`ro.product.device == piano` gate and the Android-side bridge artifacts cannot happen inside the image —
-the first `drmtui` run on the tablet finishes them via Check installation / repair.
-
-Details, the full piano preset values, and the diff list against upstream `Droidspaces-rootfs-KDE-builder`
-live in [rootfs/README.md](rootfs/README.md) ([English](rootfs/README_english.md)).
-
-> ⚠ This chain pulls the **published release** (`releases/latest`), not the commit that triggered the
-> build: after editing `installer/` or the takeover scripts, cut a release first, then run the rootfs build.
-> At the moment `--preinstall-offline` (`67a745a`) and the whole `rootfs/` tree are neither pushed nor in
-> any release, and **the rootfs build has not been tested end-to-end**.
 
 ## Quick start
 

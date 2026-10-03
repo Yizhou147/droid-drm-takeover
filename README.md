@@ -40,7 +40,6 @@ desk-takeover.sh        全自动接管入口：显示 + 桌面 + WiFi + 蓝牙 
 drm-takeover.sh         单轮/常驻接管（无完整桌面），带回滚；常驻用 PERSIST=1 MODE=kwin
 scripts/                desk-stop / drm-stop / storage-fix / kwin-restart / keepbright / dmesg-harvester
                         / vkb-show / aa-feeder / bt-keepalive / bt-power-watcher / bt-anland-baseline / input-node-sync / power-state-sync / log收集
-rootfs/                 从 Droidspaces-rootfs-KDE-builder 移植来的 rootfs 构建（Ubuntu-26 + KDE + 预装本接管） / power-state-sync / log收集
 src/                    kwinwrap（核心）+ KMS 探针组 + touchdraw/touchtest/touchinj
 configs/                desk-wifi.conf.example（WiFi 兜底配置样例）
 docs/tools.md           全部编译产物的用法手册与新设备适配流程（英文版 docs/tools_english.md）
@@ -85,25 +84,6 @@ release 里那份**独立**的清单资产上（tar 内嵌那份必然是空的�
 
 > 状态说明：主仓 release `v0.1.0` 已公开，下载链与 sha256 校验在本容器实测通过（gh-proxy 源，字节一致）；
 > **整套装机流程尚未在全新容器上跑完**，`extract_release()` 读空清单那一处已修（改为现问 `releases/latest`）。
-
-## 构建自带接管的 rootfs（Actions 里直接选）
-
-本仓库的 Actions 有一条 **构建 RootFS（piano / Ubuntu-26 / KDE）**，Run workflow 只问四件事：
-机型（当前只有 `piano`）、发行版（当前只有 `Ubuntu-26`）、自定义用户名（默认 `xyz`）、桌面（当前只有 `KDE`）；
-其余构建开关钉在 `rootfs/presets/piano.env` 里。
-
-产出的 rootfs 出厂即**已装好**本接管：`drmtui`、接管脚本与二进制、桌面基线、快捷方式、sudoers 都在，
-并且带着打过补丁的 kwin（`anland-wayland` 后端那条链装进来的，CI 会从产物里实测 `PCKEYD_INPUT_SOCKET`）。
-构建环境里没有真机，所以 adb 通道、`ro.product.device==piano` 闸门、安卓侧桥产物这三步没法在镜像里做，
-由设备上首次运行 `drmtui` 的「检查安装 / 修复」补齐。
-
-细节、piano 预设全量取值、以及它与上游 `Droidspaces-rootfs-KDE-builder` 的差异清单见
-[rootfs/README.md](rootfs/README.md)（英文版 [rootfs/README_english.md](rootfs/README_english.md)）。
-
-> ⚠ 这条链取的是**已发布的 release**（`releases/latest`），不是触发构建的那个提交：
-> 改完 `installer/` 或接管脚本要先发版，再跑 rootfs 构建。
-> 目前 `--preinstall-offline`（`67a745a`）与整个 `rootfs/` 尚未推送、未进任何 release，
-> **rootfs 构建整体未实测**。
 
 ## 快速开始
 
